@@ -36,7 +36,7 @@ public extension MetaDetail {
     var logoURL: URL? { logo ?? ArtworkURLs.logo(for: id) }
 }
 
-public extension LibraryItem {
+public extension StremioLibraryItem {
     var backdropURL: URL? { ArtworkURLs.backdrop(for: id, size: .medium) ?? poster }
     var preview: MetaPreview { MetaPreview(id: id, type: type, name: name, poster: poster) }
 }

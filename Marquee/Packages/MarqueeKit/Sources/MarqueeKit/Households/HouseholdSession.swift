@@ -17,7 +17,7 @@ public struct HouseholdSettings: Codable, Hashable, Sendable {
 
 /// One entry in Continue Watching.
 public struct ContinueItem: Hashable, Identifiable, Sendable {
-    public var item: LibraryItem
+    public var item: StremioLibraryItem
     public var id: String { item.id }
 }
 
@@ -37,8 +37,8 @@ public final class HouseholdSession: @unchecked Sendable {
     private let roster: ProfileRoster
     private let lock = NSLock()
     private var _settings: HouseholdSettings
-    private var libraries: [UUID: [String: LibraryItem]] = [:]
-    private var dirtyAccountItems: [String: LibraryItem] = [:]
+    private var libraries: [UUID: [String: StremioLibraryItem]] = [:]
+    private var dirtyAccountItems: [String: StremioLibraryItem] = [:]
 
     private static let authKeyName = "stremio.authKey"
 
@@ -172,24 +172,24 @@ public final class HouseholdSession: @unchecked Sendable {
 
     // MARK: Library
 
-    private func libraryFile(_ profile: Profile) -> JSONFile<[LibraryItem]> {
+    private func libraryFile(_ profile: Profile) -> JSONFile<[StremioLibraryItem]> {
         scope.file("library-\(profile.isOwner ? "account" : profile.id.uuidString).json")
     }
 
     /// Caller holds the lock.
-    private func loadLibrary(_ profile: Profile) -> [String: LibraryItem] {
+    private func loadLibrary(_ profile: Profile) -> [String: StremioLibraryItem] {
         let items = libraryFile(profile).load() ?? []
         return Dictionary(items.map { ($0.id, $0) }, uniquingKeysWith: { $0.modified > $1.modified ? $0 : $1 })
     }
 
-    public func library(for profile: Profile) -> [LibraryItem] {
+    public func library(for profile: Profile) -> [StremioLibraryItem] {
         lock.lock(); defer { lock.unlock() }
         let items = libraries[profile.id] ?? loadLibrary(profile)
         libraries[profile.id] = items
         return Array(items.values)
     }
 
-    public func item(_ id: String, for profile: Profile) -> LibraryItem? {
+    public func item(_ id: String, for profile: Profile) -> StremioLibraryItem? {
         library(for: profile).first { $0.id == id }
     }
 
@@ -200,7 +200,7 @@ public final class HouseholdSession: @unchecked Sendable {
             .map(ContinueItem.init)
     }
 
-    public func myList(for profile: Profile) -> [LibraryItem] {
+    public func myList(for profile: Profile) -> [StremioLibraryItem] {
         library(for: profile).filter(\.isInLibrary).sorted { $0.modified > $1.modified }
     }
 
@@ -225,10 +225,10 @@ public final class HouseholdSession: @unchecked Sendable {
         }
     }
 
-    private func mutate(_ meta: MetaPreview, _ profile: Profile, _ change: (inout LibraryItem) -> Void) {
+    private func mutate(_ meta: MetaPreview, _ profile: Profile, _ change: (inout StremioLibraryItem) -> Void) {
         lock.lock()
         var items = libraries[profile.id] ?? loadLibrary(profile)
-        var item = items[meta.id] ?? LibraryItem(meta: meta)
+        var item = items[meta.id] ?? StremioLibraryItem(meta: meta)
         if item.name.isEmpty { item.name = meta.name }
         if item.poster == nil { item.poster = meta.poster }
         change(&item)

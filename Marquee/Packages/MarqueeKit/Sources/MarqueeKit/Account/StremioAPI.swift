@@ -77,16 +77,16 @@ public struct StremioAPI: Sendable {
 
     // MARK: Library
 
-    public func library(authKey: String) async throws -> [LibraryItem] {
+    public func library(authKey: String) async throws -> [StremioLibraryItem] {
         struct Body: Encodable {
             let authKey: String; let collection = "libraryItem"; let ids: [String] = []; let all = true
         }
-        let items = try await call("datastoreGet", Body(authKey: authKey), as: [Lossy<LibraryItem>].self)
+        let items = try await call("datastoreGet", Body(authKey: authKey), as: [Lossy<StremioLibraryItem>].self)
         return items.compactMap(\.value)
     }
 
-    public func putLibrary(authKey: String, items: [LibraryItem]) async throws {
-        struct Body: Encodable { let authKey: String; let collection = "libraryItem"; let changes: [LibraryItem] }
+    public func putLibrary(authKey: String, items: [StremioLibraryItem]) async throws {
+        struct Body: Encodable { let authKey: String; let collection = "libraryItem"; let changes: [StremioLibraryItem] }
         struct Ignored: Decodable {}
         guard !items.isEmpty else { return }
         _ = try await call("datastorePut", Body(authKey: authKey, changes: items), as: Ignored.self)

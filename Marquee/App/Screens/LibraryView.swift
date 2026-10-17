@@ -31,7 +31,7 @@ struct LibraryView: View {
     }
 
     @ViewBuilder
-    private func shelf(_ title: String, _ items: [LibraryItem]) -> some View {
+    private func shelf(_ title: String, _ items: [StremioLibraryItem]) -> some View {
         if !items.isEmpty {
             Shelf(title: title, items: items) { item in
                 NavigationLink(value: Route.title(item.preview)) { PosterCardLabel(meta: item.preview) }

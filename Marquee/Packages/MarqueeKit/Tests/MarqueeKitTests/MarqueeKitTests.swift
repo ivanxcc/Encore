@@ -170,18 +170,18 @@ final class LibraryTests: XCTestCase {
          "_ctime":"2024-01-01T00:00:00.000Z","_mtime":"2024-02-01T10:00:00.000Z",
          "state":{"lastWatched":"2024-02-01T10:00:00.000Z","timeOffset":600000,"duration":2400000.0,"video_id":"tt1:1:3","timesWatched":0,"flaggedWatched":0}}
         """
-        let item = try JSONDecoder().decode(LibraryItem.self, from: Data(json.utf8))
+        let item = try JSONDecoder().decode(StremioLibraryItem.self, from: Data(json.utf8))
         XCTAssertEqual(item.progress, 0.25, accuracy: 0.0001)
         XCTAssertEqual(item.state.videoID, "tt1:1:3")
         XCTAssertTrue(item.isInProgress && item.isInLibrary)
-        let back = try JSONDecoder().decode(LibraryItem.self, from: JSONEncoder().encode(item))
+        let back = try JSONDecoder().decode(StremioLibraryItem.self, from: JSONEncoder().encode(item))
         XCTAssertEqual(back, item)
         let raw = String(data: try JSONEncoder().encode(item), encoding: .utf8)!
         XCTAssertTrue(raw.contains("\"_id\"") && raw.contains("\"video_id\"") && raw.contains("\"_mtime\""))
     }
 
     func testFinishingClearsResume() {
-        var item = LibraryItem(meta: MetaPreview(id: "tt2", type: "movie", name: "M"))
+        var item = StremioLibraryItem(meta: MetaPreview(id: "tt2", type: "movie", name: "M"))
         item.recordProgress(videoID: nil, position: 1200, duration: 6000)
         XCTAssertTrue(item.isInProgress)
         item.recordProgress(videoID: nil, position: 5800, duration: 6000)

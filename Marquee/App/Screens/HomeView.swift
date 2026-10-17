@@ -93,7 +93,7 @@ struct ContinueWatchingShelf: View {
 }
 
 private struct ContinueCard: View {
-    let item: LibraryItem
+    let item: StremioLibraryItem
     @EnvironmentObject private var app: AppModel
     @EnvironmentObject private var playback: PlaybackCenter
 
@@ -202,7 +202,7 @@ struct HeroInfo: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             TitleLogo(logo: item.logoURL, title: item.name, maxWidth: logoWidth)
-            MetaLine(parts: [item.releaseInfo, item.imdbRating.map { "★ \($0)" }, item.genres?.prefix(2).joined(separator: ", ")])
+            MetaLine(parts: metaParts)
             if let description = item.description {
                 Text(description)
                     .font(Theme.Fonts.body)
@@ -229,6 +229,12 @@ struct HeroInfo: View {
             }
             .focusSection()
         }
+    }
+
+    private var metaParts: [String?] {
+        let rating: String? = item.imdbRating.map { "★ " + $0 }
+        let genres: String? = item.genres.map { $0.prefix(2).joined(separator: ", ") }
+        return [item.releaseInfo, rating, genres]
     }
 
     private var logoWidth: CGFloat {

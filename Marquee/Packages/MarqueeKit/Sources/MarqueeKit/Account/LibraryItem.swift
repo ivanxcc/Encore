@@ -3,7 +3,7 @@ import Foundation
 /// A Stremio library item (datastore collection `libraryItem`). Field names and units match the
 /// official clients exactly (offsets and durations in MILLISECONDS) so edits made here round-trip
 /// through Stremio on every other device.
-public struct LibraryItem: Codable, Hashable, Identifiable, Sendable {
+public struct StremioLibraryItem: Codable, Hashable, Identifiable, Sendable {
     public var id: String
     public var name: String
     public var type: String

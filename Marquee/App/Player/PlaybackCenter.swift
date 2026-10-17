@@ -35,7 +35,7 @@ final class PlaybackCenter: ObservableObject {
         request = PlaybackRequest(meta: meta, video: video, resumeAt: resume, explicit: explicit)
     }
 
-    func resume(_ item: LibraryItem, app: AppModel) {
+    func resume(_ item: StremioLibraryItem, app: AppModel) {
         let video = item.state.videoID.flatMap { id -> Video? in
             guard id != item.id else { return nil }
             let parts = id.split(separator: ":")

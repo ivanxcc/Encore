@@ -77,15 +77,12 @@ struct DetailView: View {
     }
 
     @ViewBuilder
-    private func header(_ libraryItem: LibraryItem?) -> some View {
+    private func header(_ libraryItem: StremioLibraryItem?) -> some View {
         let meta = model.meta
         VStack(alignment: .leading, spacing: 20) {
             Spacer(minLength: 0)
             TitleLogo(logo: meta?.logoURL ?? preview.logoURL, title: meta?.name ?? preview.name, maxWidth: logoWidth)
-            MetaLine(parts: [meta?.releaseInfo ?? preview.releaseInfo,
-                             (meta?.imdbRating ?? preview.imdbRating).map { "★ \($0)" },
-                             meta?.runtime,
-                             (meta?.genres ?? preview.genres)?.prefix(3).joined(separator: ", ")])
+            MetaLine(parts: metaParts)
             if let description = meta?.description ?? preview.description {
                 Text(description)
                     .font(Theme.Fonts.body)
@@ -103,6 +100,15 @@ struct DetailView: View {
         .frame(height: headerHeight, alignment: .bottomLeading)
     }
 
+    private var metaParts: [String?] {
+        let meta = model.meta
+        let year: String? = meta?.releaseInfo ?? preview.releaseInfo
+        let rating: String? = (meta?.imdbRating ?? preview.imdbRating).map { "★ " + $0 }
+        let genres: [String]? = meta?.genres ?? preview.genres
+        let genreText: String? = genres.map { $0.prefix(3).joined(separator: ", ") }
+        return [year, rating, meta?.runtime, genreText]
+    }
+
     private var logoWidth: CGFloat {
         #if os(tvOS)
         return 700
@@ -111,14 +117,14 @@ struct DetailView: View {
         #endif
     }
 
-    private func currentVideo(_ item: LibraryItem?) -> Video? {
+    private func currentVideo(_ item: StremioLibraryItem?) -> Video? {
         guard let meta = model.meta else { return nil }
         if let id = item?.state.videoID, let video = meta.videos.first(where: { $0.id == id }) { return video }
         return meta.seasons.first.flatMap { meta.episodes(inSeason: $0).first }
     }
 
     @ViewBuilder
-    private func actions(_ libraryItem: LibraryItem?) -> some View {
+    private func actions(_ libraryItem: StremioLibraryItem?) -> some View {
         let resuming = libraryItem?.isInProgress == true
         let video = currentVideo(libraryItem)
         HStack(spacing: 18) {
@@ -163,7 +169,7 @@ struct DetailView: View {
         return (resuming ? "Resume" : "Play") + episode
     }
 
-    private func remaining(_ item: LibraryItem) -> String {
+    private func remaining(_ item: StremioLibraryItem) -> String {
         let minutes = max(1, Int((item.state.duration - item.state.timeOffset) / 60_000))
         return minutes >= 60 ? "\(minutes / 60)h \(minutes % 60)m left" : "\(minutes)m left"
     }
@@ -172,7 +178,7 @@ struct DetailView: View {
 private struct EpisodesSection: View {
     let meta: MetaDetail
     @Binding var season: Int
-    let libraryItem: LibraryItem?
+    let libraryItem: StremioLibraryItem?
     let play: (Video) -> Void
 
     var body: some View {

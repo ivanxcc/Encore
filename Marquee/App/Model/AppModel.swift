@@ -143,12 +143,12 @@ final class AppModel: ObservableObject {
         return session.continueWatching(for: profile)
     }
 
-    func myList() -> [LibraryItem] {
+    func myList() -> [StremioLibraryItem] {
         guard let profile = activeProfile else { return [] }
         return session.myList(for: profile)
     }
 
-    func libraryItem(_ id: String) -> LibraryItem? {
+    func libraryItem(_ id: String) -> StremioLibraryItem? {
         guard let profile = activeProfile else { return nil }
         return session.item(id, for: profile)
     }
