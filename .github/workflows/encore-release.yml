@@ -13,7 +13,8 @@ name: Encore Release
 
 on:
   push:
-    branches: [main]
+    # claude/marquee-native-app is the working branch until it is merged into main; remove it after the merge.
+    branches: [main, claude/marquee-native-app]
     paths: ["Encore/**", ".github/workflows/encore-release.yml"]
     tags: ["v*"]
   workflow_dispatch:
