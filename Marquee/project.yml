@@ -65,6 +65,9 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.ivanxcc.marquee.tv
+        # tvOS needs a layered "App Icon & Top Shelf" brand asset set; until one is designed the app builds
+        # without an icon (it installs and runs normally, with a blank tile).
+        ASSETCATALOG_COMPILER_APPICON_NAME: ""
         INFOPLIST_FILE: Config/Info-tvOS.plist
         TARGETED_DEVICE_FAMILY: "3"
 
