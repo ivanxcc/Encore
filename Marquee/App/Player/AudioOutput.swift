@@ -29,7 +29,11 @@ enum AudioSessionConfigurator {
     static func configureForPlayback() -> Int {
         #if os(iOS) || os(tvOS)
         let session = AVAudioSession.sharedInstance()
+        #if os(iOS)
         try? session.setCategory(.playback, mode: .moviePlayback, policy: .longFormVideo)
+        #else
+        try? session.setCategory(.playback, mode: .moviePlayback)
+        #endif
         guard AudioOutputMode.current != .stereo else {
             try? session.setPreferredOutputNumberOfChannels(2)
             try? session.setActive(true)
