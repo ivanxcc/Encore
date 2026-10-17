@@ -312,3 +312,39 @@ final class AccountTests: XCTestCase {
         }
     }
 }
+
+final class ArtworkTests: XCTestCase {
+    func testMetahubFallbacks() {
+        XCTAssertEqual(ArtworkURLs.backdrop(for: "tt0903747:1:2")?.absoluteString, "https://images.metahub.space/background/large/tt0903747/img")
+        XCTAssertNil(ArtworkURLs.logo(for: "kitsu:123"))
+        let meta = MetaPreview(id: "tt1", type: "movie", name: "M", background: URL(string: "https://own/bg.jpg"))
+        XCTAssertEqual(meta.backdropURL?.absoluteString, "https://own/bg.jpg")
+    }
+}
+
+final class PlaybackPlanTests: XCTestCase {
+    private func ranked(_ streams: [AddonStream]) throws -> [RankedStream] {
+        let a = try addon("https://s.test", streamAddonJSON)
+        return streams.enumerated().map { RankedStream(stream: $1, addon: a, traits: StreamTraits($1), score: 0, addonRank: $0) }
+    }
+
+    func testAutomaticPlanIsBoundedAndFallsBackNativeToMPV() throws {
+        let candidates = try ranked([
+            AddonStream(url: URL(string: "https://x/1.mp4")!),
+            AddonStream(infoHash: String(repeating: "a", count: 40)),   // unplayable without a server: skipped
+            AddonStream(url: URL(string: "https://x/2.mkv")!),
+            AddonStream(url: URL(string: "https://x/3.mkv")!),
+            AddonStream(url: URL(string: "https://x/4.mkv")!),
+        ])
+        let plan = PlaybackPlan(candidates: candidates, explicit: false, streamingServer: nil, title: "t")
+        XCTAssertEqual(plan.attempts.map(\.engine), [.native, .mpv, .mpv, .mpv])
+        XCTAssertEqual(plan.attempts.map(\.candidate), [0, 0, 2, 3])
+        XCTAssertEqual(Set(plan.attempts.map(\.candidate)).count, PlaybackPlan.maxSources)
+    }
+
+    func testExplicitPickNeverSwapsSource() throws {
+        let candidates = try ranked([AddonStream(url: URL(string: "https://x/pick.mkv")!), AddonStream(url: URL(string: "https://x/other.mkv")!)])
+        let plan = PlaybackPlan(candidates: Array(candidates.prefix(1)), explicit: true, streamingServer: nil, title: "t")
+        XCTAssertEqual(plan.attempts.map(\.source.url.lastPathComponent), ["pick.mkv"])
+    }
+}

@@ -1,0 +1,96 @@
+# Marquee: a native Apple TV / iPhone / iPad / Mac client for the Stremio add-on ecosystem.
+# Generate the Xcode project with:  brew install xcodegen && xcodegen generate
+#
+# Three targets share one source tree. The only dependencies are public Swift packages:
+#   - MarqueeKit (local, pure Swift): add-on protocol, Stremio account, ranking, households.
+#   - MPVKit (mpvkit/MPVKit): libmpv for MKV and everything AVFoundation can't open.
+name: Marquee
+options:
+  bundleIdPrefix: com.ivanxcc
+  deploymentTarget:
+    iOS: "18.0"
+    tvOS: "18.0"
+    macOS: "15.0"
+  createIntermediateGroups: true
+  developmentLanguage: en
+
+packages:
+  MarqueeKit:
+    path: Packages/MarqueeKit
+  MPVKit:
+    url: https://github.com/mpvkit/MPVKit
+    minVersion: 0.41.0
+    maxVersion: 2.0.0
+
+settings:
+  base:
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_VERSION: "5.0"
+    GENERATE_INFOPLIST_FILE: YES
+    INFOPLIST_KEY_CFBundleDisplayName: Marquee
+    PRODUCT_NAME: Marquee
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    DEAD_CODE_STRIPPING: YES
+    CODE_SIGN_STYLE: Automatic
+    DEVELOPMENT_TEAM: ""   # set your team in Xcode, or pass DEVELOPMENT_TEAM=XXXXXXXXXX to xcodebuild
+
+targetTemplates:
+  MarqueeApp:
+    type: application
+    sources:
+      - path: App
+    dependencies:
+      - package: MarqueeKit
+      - package: MPVKit
+        product: MPVKit
+
+targets:
+  Marquee-iOS:
+    templates: [MarqueeApp]
+    platform: iOS
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.ivanxcc.marquee
+        INFOPLIST_FILE: Config/Info-iOS.plist
+        TARGETED_DEVICE_FAMILY: "1,2"
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+
+  Marquee-tvOS:
+    templates: [MarqueeApp]
+    platform: tvOS
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.ivanxcc.marquee.tv
+        INFOPLIST_FILE: Config/Info-tvOS.plist
+        TARGETED_DEVICE_FAMILY: "3"
+
+  Marquee-macOS:
+    templates: [MarqueeApp]
+    platform: macOS
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.ivanxcc.marquee.mac
+        INFOPLIST_FILE: Config/Info-macOS.plist
+        # Universal: Apple silicon and Intel. Every dependency ships both slices.
+        ARCHS: "$(ARCHS_STANDARD)"
+        ONLY_ACTIVE_ARCH[config=Release]: NO
+        ENABLE_HARDENED_RUNTIME: NO
+        INFOPLIST_KEY_NSHumanReadableCopyright: "GPL-3.0"
+
+schemes:
+  Marquee-iOS:
+    build: { targets: { Marquee-iOS: all } }
+    run: { config: Debug }
+    archive: { config: Release }
+  Marquee-tvOS:
+    build: { targets: { Marquee-tvOS: all } }
+    run: { config: Debug }
+    archive: { config: Release }
+  Marquee-macOS:
+    build: { targets: { Marquee-macOS: all } }
+    run: { config: Debug }
+    archive: { config: Release }

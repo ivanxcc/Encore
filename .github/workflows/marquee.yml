@@ -1,0 +1,88 @@
+name: Marquee
+
+# Builds the Marquee apps from public sources only: no secrets, no private engine.
+#  - engine: MarqueeKit's tests on Linux (fast, cheap, catches protocol/ranking/household regressions).
+#  - apps:   unsigned iOS, tvOS, and universal macOS builds on a macOS runner. The macOS .app is uploaded
+#            as an artifact, and its executable must contain both arm64 and x86_64.
+
+on:
+  push:
+    paths: ["Marquee/**", ".github/workflows/marquee.yml"]
+  pull_request:
+    paths: ["Marquee/**", ".github/workflows/marquee.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: marquee-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  engine:
+    runs-on: ubuntu-24.04
+    container: swift:6.1-noble
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test MarqueeKit
+        working-directory: Marquee/Packages/MarqueeKit
+        run: swift test
+
+  apps:
+    runs-on: macos-15
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - scheme: Marquee-iOS
+            destination: generic/platform=iOS Simulator
+          - scheme: Marquee-tvOS
+            destination: generic/platform=tvOS Simulator
+          - scheme: Marquee-macOS
+            destination: generic/platform=macOS
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode
+        run: |
+          sudo xcode-select -s "$(ls -d /Applications/Xcode_16*.app | sort -V | tail -1)"
+          xcodebuild -version
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate project
+        working-directory: Marquee
+        run: xcodegen generate
+      - name: Cache Swift packages
+        uses: actions/cache@v4
+        with:
+          path: Marquee/build/SourcePackages
+          key: spm-${{ runner.os }}-${{ hashFiles('Marquee/project.yml') }}
+      - name: Build ${{ matrix.scheme }}
+        working-directory: Marquee
+        run: |
+          set -o pipefail
+          ARCH_FLAGS=()
+          if [ "${{ matrix.scheme }}" = "Marquee-macOS" ]; then ARCH_FLAGS=(ARCHS="arm64 x86_64" ONLY_ACTIVE_ARCH=NO); fi
+          xcodebuild -project Marquee.xcodeproj -scheme "${{ matrix.scheme }}" \
+            -configuration Release -destination "${{ matrix.destination }}" \
+            -derivedDataPath build -clonedSourcePackagesDirPath build/SourcePackages \
+            -skipPackagePluginValidation -skipMacroValidation \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO "${ARCH_FLAGS[@]}" \
+            -quiet build 2>&1 | tee build.log || { grep -E "error:" build.log | sort -u | head -80; exit 1; }
+      - name: Verify universal Mac binary
+        if: matrix.scheme == 'Marquee-macOS'
+        working-directory: Marquee
+        run: |
+          APP=build/Build/Products/Release/Marquee.app
+          archs="$(lipo -archs "$APP/Contents/MacOS/Marquee")"
+          echo "Marquee.app: $archs"
+          [[ " $archs " == *" arm64 "* && " $archs " == *" x86_64 "* ]] || { echo "::error::not universal"; exit 1; }
+          ditto -c -k --keepParent "$APP" Marquee-macOS.zip
+      - name: Upload Mac app
+        if: matrix.scheme == 'Marquee-macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Marquee-macOS-universal
+          path: Marquee/Marquee-macOS.zip
