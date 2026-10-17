@@ -53,3 +53,13 @@ A dead title ends on a clear message in about a minute instead of retrying forev
 
 Torrent sources play through a Stremio streaming server (Stremio Service on a Mac, PC, or NAS). Set its
 address in Settings → Streaming Server. Debrid and direct sources never need it.
+
+## Picture and sound (Apple TV 4K)
+
+- **Match Content**: each title plays at its own frame rate and in Dolby Vision / HDR10 / HLG. Also turn on
+  tvOS Settings › Video and Audio › Match Content (both switches).
+- **HDR from libmpv**: PQ/HLG output into a correctly tagged layer, never tone mapped on an HDR TV.
+- **Audio**: TrueHD and DTS-HD MA are decoded on device to uncompressed multichannel PCM (up to 7.1), the
+  same approach Infuse uses on Apple TV. Dolby Digital Plus with Atmos in MP4/HLS is passed through.
+- **Next**: on-the-fly MKV → HLS remux into the native player, for true Dolby Vision signalling and DD+
+  Atmos passthrough from MKV files.
