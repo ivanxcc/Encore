@@ -21,6 +21,8 @@ final class MPVEngine: ObservableObject, PlayerEngine {
     @Published private(set) var isPaused = false
     @Published private(set) var audioTracks: [MediaTrack] = []
     @Published private(set) var subtitleTracks: [MediaTrack] = []
+    /// What is actually being decoded and output, for the info panel ("4K · Dolby Vision · TrueHD 7.1").
+    @Published private(set) var info = PlaybackInfo()
 
     /// The mpv handle is used from mpv's own event queue, so it is not actor-isolated.
     nonisolated(unsafe) private var handle: OpaquePointer?
@@ -38,19 +40,33 @@ final class MPVEngine: ObservableObject, PlayerEngine {
     private func create() {
         guard let mpv = mpv_create() else { return }
         handle = mpv
+        let grantedChannels = AudioSessionConfigurator.configureForPlayback()
         var layer = metalLayer
         mpv_set_option(mpv, "wid", MPV_FORMAT_INT64, &layer)
-        let options: [(String, String)] = [
+        var options: [(String, String)] = [
             ("vo", "gpu-next"),
             ("gpu-api", "vulkan"),
             ("gpu-context", "moltenvk"),
+            // Hardware decode for H.264/HEVC/VP9 (and AV1 on chips that have it); libmpv falls back to software
+            // per stream, which is why MKV, 10-bit HEVC, and AV1 that the stock iOS player rejects still play.
             ("hwdec", "videotoolbox"),
+            ("hwdec-codecs", "all"),
+            // HDR: tag the output with the content's own transfer function (set per file in applyDynamicRange),
+            // measure peaks for tone mapping only when the display cannot show HDR.
             ("target-colorspace-hint", "yes"),
-            ("video-sync", "display-resample"),
+            ("hdr-compute-peak", "auto"),
+            ("tone-mapping", "auto"),
+            // With the TV switched to the content's frame rate, audio-clock sync is exact; no resampling games.
+            ("video-sync", "audio"),
+            ("interpolation", "no"),
+            // Decode every codec (TrueHD, DTS-HD MA, E-AC-3) to multichannel PCM for the route the session granted.
+            ("ao", Self.audioOutputDriver),
+            ("audio-channels", AudioSessionConfigurator.mpvChannelPolicy(granted: grantedChannels)),
+            ("audio-normalize-downmix", "yes"),
             ("cache", "yes"),
-            ("demuxer-max-bytes", "300MiB"),
+            ("demuxer-max-bytes", "400MiB"),
             ("demuxer-max-back-bytes", "100MiB"),
-            ("demuxer-readahead-secs", "30"),
+            ("demuxer-readahead-secs", "45"),
             ("network-timeout", "25"),
             ("keep-open", "no"),
             ("idle", "yes"),
@@ -60,11 +76,13 @@ final class MPVEngine: ObservableObject, PlayerEngine {
             ("terminal", "no"),
             ("msg-level", "all=warn"),
             ("sub-auto", "fuzzy"),
+            ("sub-ass-override", "no"),     // keep styled anime/foreign subtitles exactly as authored
             ("slang", Self.preferredLanguages),
             ("alang", Self.preferredLanguages),
             ("subs-fallback", "default"),
             ("user-agent", "Marquee/1.0"),
         ]
+        options += VideoQuality.current.mpvOptions
         for (name, value) in options { mpv_set_option_string(mpv, name, value) }
         guard mpv_initialize(mpv) >= 0 else {
             mpv_terminate_destroy(mpv)
@@ -76,6 +94,8 @@ final class MPVEngine: ObservableObject, PlayerEngine {
         mpv_observe_property(mpv, 3, "pause", MPV_FORMAT_FLAG)
         mpv_observe_property(mpv, 4, "paused-for-cache", MPV_FORMAT_FLAG)
         mpv_observe_property(mpv, 5, "track-list/count", MPV_FORMAT_INT64)
+        mpv_observe_property(mpv, 6, "video-params/gamma", MPV_FORMAT_STRING)
+        mpv_observe_property(mpv, 7, "audio-params/channel-count", MPV_FORMAT_INT64)
 
         // The callback fires on an mpv thread. It holds a retained reference released in stop(), so it
         // can never outlive the engine.
@@ -85,6 +105,14 @@ final class MPVEngine: ObservableObject, PlayerEngine {
             guard let context else { return }
             Unmanaged<MPVEngine>.fromOpaque(context).takeUnretainedValue().wakeUp()
         }, retained.toOpaque())
+    }
+
+    private static var audioOutputDriver: String {
+        #if os(macOS)
+        return "coreaudio"
+        #else
+        return "audiounit"
+        #endif
     }
 
     private static var preferredLanguages: String {
@@ -127,6 +155,7 @@ final class MPVEngine: ObservableObject, PlayerEngine {
     }
 
     func stop() {
+        DisplayModeMatcher.reset()
         guard let mpv = handle else { return }
         handle = nil
         mpv_set_wakeup_callback(mpv, nil, nil)
@@ -167,6 +196,8 @@ final class MPVEngine: ObservableObject, PlayerEngine {
             switch id {
             case MPV_EVENT_PLAYBACK_RESTART:
                 DispatchQueue.main.async { [weak self] in self?.handleRestart() }
+            case MPV_EVENT_VIDEO_RECONFIG:
+                DispatchQueue.main.async { [weak self] in self?.applyDynamicRange() }
             case MPV_EVENT_FILE_LOADED:
                 DispatchQueue.main.async { [weak self] in self?.handleFileLoaded() }
             case MPV_EVENT_END_FILE:
@@ -207,6 +238,10 @@ final class MPVEngine: ObservableObject, PlayerEngine {
             DispatchQueue.main.async { [weak self] in self?.isPaused = paused }
         case ("track-list/count", _):
             DispatchQueue.main.async { [weak self] in self?.refreshTracks() }
+        case ("video-params/gamma", _):
+            DispatchQueue.main.async { [weak self] in self?.applyDynamicRange() }
+        case ("audio-params/channel-count", _):
+            DispatchQueue.main.async { [weak self] in self?.refreshInfo() }
         default:
             break
         }
@@ -224,6 +259,85 @@ final class MPVEngine: ObservableObject, PlayerEngine {
         }
         pendingSubtitles = []
         refreshTracks()
+    }
+
+    // MARK: Output quality
+
+    private func string(_ property: String) -> String? {
+        guard let mpv = handle, let raw = mpv_get_property_string(mpv, property) else { return nil }
+        defer { mpv_free(raw) }
+        let value = String(cString: raw)
+        return value.isEmpty ? nil : value
+    }
+
+    private func double(_ property: String) -> Double {
+        guard let mpv = handle else { return 0 }
+        var value = 0.0
+        mpv_get_property(mpv, property, MPV_FORMAT_DOUBLE, &value)
+        return value
+    }
+
+    private var appliedRange: ContentDynamicRange?
+
+    /// Output the content's real dynamic range instead of a tone-mapped SDR picture:
+    ///  - tvOS: switch the TV into the matching HDMI mode (and frame rate), then render PQ/HLG into a layer
+    ///    tagged with that colorspace. Dolby Vision on this engine is output as HDR10 (libplacebo applies the
+    ///    DV reshaping, so profile 5 colors are right); true DV signalling needs the native engine.
+    ///  - iPhone/iPad/Mac: render into an EDR layer when the screen has HDR headroom, else tone map to SDR.
+    private func applyDynamicRange() {
+        guard let mpv = handle else { return }
+        let gamma = string("video-params/gamma") ?? ""
+        let isDolbyVision = string("current-tracks/video/dolby-vision-profile") != nil
+        var range: ContentDynamicRange
+        switch gamma {
+        case "pq": range = isDolbyVision ? .dolbyVision : .hdr10
+        case "hlg": range = .hlg
+        default: range = isDolbyVision ? .dolbyVision : .sdr
+        }
+        if range != .sdr && !Self.displaySupportsHDR { range = .sdr }
+        refreshInfo(range: range)
+        guard range != appliedRange else { return }
+        appliedRange = range
+
+        let outputRange: ContentDynamicRange = range == .dolbyVision ? .hdr10 : range
+        mpv_set_property_string(mpv, "target-trc", outputRange == .hdr10 ? "pq" : outputRange == .hlg ? "hlg" : "auto")
+        mpv_set_property_string(mpv, "target-prim", outputRange == .sdr ? "auto" : "bt.2020")
+        switch outputRange {
+        case .hdr10, .dolbyVision: metalLayer.colorspace = CGColorSpace(name: CGColorSpace.itur_2100_PQ)
+        case .hlg: metalLayer.colorspace = CGColorSpace(name: CGColorSpace.itur_2100_HLG)
+        case .sdr: metalLayer.colorspace = nil
+        }
+        #if os(iOS) || os(macOS)
+        metalLayer.wantsExtendedDynamicRangeContent = outputRange != .sdr
+        #endif
+        #if os(tvOS)
+        let fps = double("container-fps") > 0 ? double("container-fps") : double("estimated-vf-fps")
+        DisplayModeMatcher.request(outputRange, fps: fps,
+                                   width: Int(double("video-params/w")), height: Int(double("video-params/h")))
+        #endif
+    }
+
+    private static var displaySupportsHDR: Bool {
+        #if os(iOS)
+        return (UIApplication.shared.connectedScenes.compactMap { ($0 as? UIWindowScene)?.screen }.first?.potentialEDRHeadroom ?? 1) > 1
+        #elseif os(macOS)
+        return (NSScreen.main?.maximumPotentialExtendedDynamicRangeColorComponentValue ?? 1) > 1
+        #else
+        return true   // tvOS: the HDMI mode switch decides; the TV tone maps if it must
+        #endif
+    }
+
+    private func refreshInfo(range: ContentDynamicRange? = nil) {
+        var next = info
+        if let range { next.dynamicRange = range }
+        next.width = Int(double("video-params/w"))
+        next.height = Int(double("video-params/h"))
+        next.frameRate = double("container-fps")
+        next.videoCodec = string("current-tracks/video/codec")
+        next.hardwareDecoding = (string("hwdec-current") ?? "no") != "no"
+        next.audioCodec = string("current-tracks/audio/codec")
+        next.audioChannels = Int(double("audio-params/channel-count"))
+        if next != info { info = next }
     }
 
     private func refreshTracks() {

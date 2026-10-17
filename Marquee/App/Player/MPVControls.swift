@@ -91,6 +91,15 @@ struct MPVControls: View {
                     Text([episode, session.episodeTitle].compactMap { $0 }.joined(separator: " · "))
                         .font(Theme.Fonts.cardSubtitle).foregroundStyle(Theme.Colors.secondary)
                 }
+                // Infuse-style truth panel: what is actually being decoded and sent to the TV/receiver.
+                if !engine.info.videoLine.isEmpty {
+                    Label(engine.info.videoLine, systemImage: "film")
+                        .font(Theme.Fonts.cardSubtitle).foregroundStyle(Theme.Colors.tertiary)
+                }
+                if !engine.info.audioLine.isEmpty {
+                    Label(engine.info.audioLine, systemImage: "speaker.wave.3")
+                        .font(Theme.Fonts.cardSubtitle).foregroundStyle(Theme.Colors.tertiary)
+                }
             }
             Spacer()
             trackMenus

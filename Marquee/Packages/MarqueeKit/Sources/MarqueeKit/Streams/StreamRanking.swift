@@ -28,6 +28,25 @@ public struct StreamTraits: Hashable, Sendable {
     public var sizeBytes: Int64?
     public var seeders: Int?
     public var codec: String?
+    /// Untouched Blu-ray/UHD video and audio.
+    public var isRemux: Bool
+    public var audio: Audio?
+    public var isAtmos: Bool
+    /// 8 = 7.1, 6 = 5.1, 2 = stereo; nil when not stated.
+    public var channels: Int?
+
+    public enum Audio: String, Sendable {
+        case trueHD = "TrueHD", dtsHDMA = "DTS-HD MA", dtsX = "DTS:X", eac3 = "DD+", ac3 = "DD", dts = "DTS", aac = "AAC"
+        public var isLossless: Bool { self == .trueHD || self == .dtsHDMA || self == .dtsX }
+    }
+
+    public var audioLabel: String? {
+        var parts: [String] = []
+        if let audio { parts.append(audio.rawValue) }
+        if isAtmos { parts.append("Atmos") }
+        if let channels { parts.append(channels == 8 ? "7.1" : channels == 6 ? "5.1" : channels == 2 ? "2.0" : "\(channels)ch") }
+        return parts.isEmpty ? nil : parts.joined(separator: " ")
+    }
 
     public init(_ stream: AddonStream) {
         let text = ([stream.name, stream.title, stream.description, stream.behaviorHints?.filename]
@@ -48,6 +67,20 @@ public struct StreamTraits: Hashable, Sendable {
         isCached = !isUncached && (has(["+]", "⚡", "cached", "instant"]) || lower.contains("rd+"))
         isCam = has(["camrip", " cam ", "hdcam", " ts ", "telesync", "hdts", "telecine"])
         codec = has(["x265", "hevc", "h265", "h.265"]) ? "HEVC" : has(["av1"]) ? "AV1" : has(["x264", "h264", "avc"]) ? "H.264" : nil
+        isRemux = has(["remux", "bdremux", "uhd bluray", "bdmv"]) && !has(["webrip", "web-dl", "web dl"])
+        isAtmos = has(["atmos"])
+        if has(["truehd", "true-hd"]) { audio = .trueHD }
+        else if has(["dts:x", "dts-x", "dtsx"]) { audio = .dtsX }
+        else if has(["dts-hd", "dts hd", "dtshd", "dts-ma", "dts ma"]) { audio = .dtsHDMA }
+        else if has(["ddp", "dd+", "eac3", "e-ac-3", "e-ac3"]) { audio = .eac3 }
+        else if has(["dts"]) { audio = .dts }
+        else if has([" dd5", "dd 5", "ac3", " dd2"]) { audio = .ac3 }
+        else if has(["aac"]) { audio = .aac }
+        else { audio = nil }
+        if has(["7.1", "7 1ch", "8ch"]) { channels = 8 }
+        else if has(["5.1", "6ch"]) { channels = 6 }
+        else if has(["2.0", "stereo"]) { channels = 2 }
+        else { channels = nil }
         sizeBytes = stream.behaviorHints?.videoSize ?? Self.parseSize(text)
         seeders = Self.parseSeeders(text)
     }
@@ -143,6 +176,15 @@ public enum StreamRanking {
         if res > p.maxResolution { s -= 2500 } else { s += Double(res) * 300 }
         if t.resolution == .unknown { s -= 150 }
         if p.preferHDR && t.isHDR && res <= p.maxResolution { s += 120 }
+        if p.preferHDR && t.isDolbyVision && res <= p.maxResolution { s += 40 }
+        // Home-theater quality inside the same resolution tier: untouched remux, lossless and object audio,
+        // full surround. Each bonus is smaller than one resolution step, so a 1080p remux never outranks 4K.
+        if res <= p.maxResolution {
+            if t.isRemux { s += 90 }
+            if t.audio?.isLossless == true { s += 60 } else if t.audio == .eac3 { s += 20 }
+            if t.isAtmos { s += 50 }
+            if let channels = t.channels { s += channels >= 8 ? 30 : channels >= 6 ? 20 : 0 }
+        }
         // Bigger file at the same tier usually means higher bitrate; log-scaled so it never dominates.
         if let size = t.sizeBytes, size > 0 { s += min(log2(Double(size) / Double(1 << 20)), 18) * 8 }
         // Gentle preference for the add-on's own order.

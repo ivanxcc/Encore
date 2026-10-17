@@ -348,3 +348,28 @@ final class PlaybackPlanTests: XCTestCase {
         XCTAssertEqual(plan.attempts.map(\.source.url.lastPathComponent), ["pick.mkv"])
     }
 }
+
+final class QualityTraitTests: XCTestCase {
+    func testDetectsHomeTheaterAudioAndRemux() {
+        let t = StreamTraits(AddonStream(url: URL(string: "https://x/a.mkv")!, name: "[RD+] 4K DV",
+                                         title: "Dune.Part.Two.2024.2160p.UHD.BluRay.REMUX.DV.HDR.HEVC.TrueHD.Atmos.7.1"))
+        XCTAssertTrue(t.isRemux && t.isAtmos && t.isDolbyVision)
+        XCTAssertEqual(t.audio, .trueHD)
+        XCTAssertEqual(t.channels, 8)
+        XCTAssertEqual(t.audioLabel, "TrueHD Atmos 7.1")
+        let web = StreamTraits(AddonStream(url: URL(string: "https://x/b.mkv")!, name: "1080p", title: "Show.S01E01.1080p.WEB-DL.DDP5.1.H.264"))
+        XCTAssertFalse(web.isRemux)
+        XCTAssertEqual(web.audio, .eac3)
+        XCTAssertEqual(web.channels, 6)
+    }
+
+    func testRemuxWinsWithinTierButNeverBeatsHigherResolution() throws {
+        let a = try addon("https://s.test", streamAddonJSON)
+        let remux1080 = AddonStream(url: URL(string: "https://x/r.mkv")!, name: "[RD+] 1080p", title: "Movie.1080p.BluRay.REMUX.TrueHD.Atmos.7.1")
+        let web1080 = AddonStream(url: URL(string: "https://x/w.mkv")!, name: "[RD+] 1080p", title: "Movie.1080p.WEB-DL.DDP5.1")
+        let web4k = AddonStream(url: URL(string: "https://x/4.mkv")!, name: "[RD+] 4K", title: "Movie.2160p.WEB-DL.DDP5.1")
+        let ranked = StreamRanking.rank([StreamGroup(addon: a, streams: [web1080, remux1080, web4k])],
+                                        preferences: StreamPreferences(), torrentsPlayable: false)
+        XCTAssertEqual(ranked.map(\.stream), [web4k, remux1080, web1080])
+    }
+}

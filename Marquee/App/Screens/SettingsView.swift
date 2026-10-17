@@ -86,6 +86,8 @@ struct SettingsView: View {
                     set: { value in app.updateSettings { $0.preferences.allowTorrents = value } }))
             }
 
+            VideoAudioSection()
+
             Section("About") {
                 LabeledContent("Version", value: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")
             }
@@ -247,6 +249,43 @@ struct StreamingServerView: View {
         .onAppear { address = app.settings.streamingServer?.absoluteString ?? "" }
         #if os(macOS)
         .formStyle(.grouped)
+        #endif
+    }
+}
+
+/// Picture and sound, device-wide (these describe this TV and receiver, not a household).
+private struct VideoAudioSection: View {
+    @AppStorage(DisplayModeMatcher.enabledKey) private var matchContent = true
+    @AppStorage(AudioOutputMode.key) private var audioOutput = AudioOutputMode.auto.rawValue
+    @AppStorage(VideoQuality.key) private var videoQuality = VideoQuality.balanced.rawValue
+
+    var body: some View {
+        Section {
+            #if os(tvOS)
+            Toggle("Match Frame Rate and Dynamic Range", isOn: $matchContent)
+            #endif
+            Picker("Audio Output", selection: $audioOutput) {
+                ForEach(AudioOutputMode.allCases) { Text($0.label).tag($0.rawValue) }
+            }
+            Picker("Picture Processing", selection: $videoQuality) {
+                ForEach(VideoQuality.allCases) { Text($0.label).tag($0.rawValue) }
+            }
+        } header: {
+            Text("Video and Audio")
+        } footer: {
+            Text(footer)
+        }
+    }
+
+    private var footer: String {
+        #if os(tvOS)
+        let system = DisplayModeMatcher.isEnabledInSystemSettings
+            ? "Match Content is on in tvOS Settings."
+            : "Also turn on Settings › Video and Audio › Match Content › Match Dynamic Range and Match Frame Rate on your Apple TV; tvOS ignores the request otherwise."
+        return "Plays each title at its own frame rate and in Dolby Vision, HDR10, or HLG. " + system
+            + " Lossless TrueHD and DTS-HD are decoded to uncompressed multichannel PCM; Dolby Atmos in Dolby Digital Plus is passed through. High Quality scaling suits Apple TV 4K (2022)."
+        #else
+        return "Lossless TrueHD and DTS-HD are decoded to uncompressed multichannel PCM. HDR plays in HDR on screens that support it and is tone mapped elsewhere."
         #endif
     }
 }

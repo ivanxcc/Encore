@@ -63,6 +63,8 @@ private struct SourceRow: View {
                 if let label = ranked.traits.resolution.label { Badge(text: label, strong: true) }
                 if ranked.traits.isDolbyVision { Badge(text: "Dolby Vision") }
                 else if ranked.traits.isHDR { Badge(text: "HDR") }
+                if ranked.traits.isRemux { Badge(text: "REMUX") }
+                if let audio = ranked.traits.audioLabel { Badge(text: audio) }
                 if ranked.traits.isCached { Badge(text: "Instant") }
                 if ranked.stream.url == nil { Badge(text: "Torrent") }
                 Spacer()

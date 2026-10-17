@@ -25,10 +25,8 @@ final class NativeEngine: PlayerEngine {
 
     init() {
         player.automaticallyWaitsToMinimizeStalling = true
-        #if os(iOS) || os(tvOS)
-        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
-        try? AVAudioSession.sharedInstance().setActive(true)
-        #endif
+        // Multichannel route first, so Dolby Digital Plus / Atmos is passed through rather than downmixed.
+        AudioSessionConfigurator.configureForPlayback()
     }
 
     func load(_ source: PlaybackSource, startAt: TimeInterval) {
@@ -142,6 +140,11 @@ struct NativePlayerView: UIViewControllerRepresentable {
     func makeUIViewController(context: Context) -> AVPlayerViewController {
         let controller = AVPlayerViewController()
         controller.player = player
+        #if os(tvOS)
+        // Match Content: the system player switches the TV to the item's frame rate and dynamic range
+        // (including true Dolby Vision) when the viewer has Match Content on in tvOS Settings.
+        controller.appliesPreferredDisplayCriteriaAutomatically = DisplayModeMatcher.isEnabledInApp
+        #endif
         #if os(iOS)
         controller.allowsPictureInPicturePlayback = true
         controller.canStartPictureInPictureAutomaticallyFromInline = true
