@@ -156,7 +156,7 @@ private struct UpNextCard: View {
         .padding(24)
         .frame(maxWidth: 520, alignment: .leading)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
-        .focusSection()
+        .tvFocusSection()
     }
 }
 

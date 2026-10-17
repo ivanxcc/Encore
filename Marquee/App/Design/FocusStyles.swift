@@ -117,3 +117,14 @@ extension View {
         #endif
     }
 }
+
+extension View {
+    /// Groups a row for the tvOS focus engine (and macOS keyboard focus); no-op on iOS, which has none.
+    @ViewBuilder func tvFocusSection() -> some View {
+        #if os(iOS)
+        self
+        #else
+        self.focusSection()
+        #endif
+    }
+}

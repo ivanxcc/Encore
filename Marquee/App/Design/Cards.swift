@@ -128,7 +128,7 @@ struct Shelf<Item: Identifiable, Card: View>: View {
             }
             .scrollTargetBehavior(.viewAligned)
             .scrollClipDisabled()
-            .focusSection()
+            .tvFocusSection()
         }
     }
 }

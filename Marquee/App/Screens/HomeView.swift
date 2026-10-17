@@ -227,7 +227,7 @@ struct HeroInfo: View {
                 Spacer()
                 PageDots(count: count, index: index)
             }
-            .focusSection()
+            .tvFocusSection()
         }
     }
 

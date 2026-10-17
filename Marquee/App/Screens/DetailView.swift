@@ -155,7 +155,7 @@ struct DetailView: View {
             .pillButtonStyle(.secondary)
             .accessibilityLabel("Choose Source")
         }
-        .focusSection()
+        .tvFocusSection()
         if let libraryItem, resuming {
             HStack(spacing: 12) {
                 ProgressBar(value: libraryItem.progress).frame(width: 160)
@@ -196,7 +196,7 @@ private struct EpisodesSection: View {
                 .padding(.vertical, 12)
             }
             .scrollClipDisabled()
-            .focusSection()
+            .tvFocusSection()
 
             Shelf(title: "", items: meta.episodes(inSeason: season)) { video in
                 LandscapeCard(image: video.thumbnail ?? meta.backdropURL,

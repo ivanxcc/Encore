@@ -31,7 +31,7 @@ struct ProfilePickerView: View {
                 .frame(maxWidth: .infinity)
             }
             .scrollClipDisabled()
-            .focusSection()
+            .tvFocusSection()
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
