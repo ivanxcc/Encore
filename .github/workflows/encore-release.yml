@@ -1,0 +1,180 @@
+name: Encore Release
+
+# Fully automated releases. Every push to main that touches Encore (or any v* tag) builds:
+#   - Encore-iOS-<version>.ipa    iPhone + iPad, unsigned (sideload re-signs it)
+#   - Encore-tvOS-<version>.ipa   Apple TV, unsigned (sideload re-signs it)
+#   - Encore-macOS-<version>.dmg  universal (Apple silicon + Intel), ad-hoc signed
+#   - altstore-source.json        AltStore / SideStore source that always points at this release
+# and publishes them as a GitHub Release with notes generated from the commits since the last one.
+#
+# Versioning: MARKETING_VERSION comes from Encore/project.yml; the build number is the workflow run
+# number. A pushed tag (v1.2.3) sets the version explicitly; a main push is tagged v<version>-build.<n>.
+# No secrets are needed: everything builds from public sources.
+
+on:
+  push:
+    branches: [main]
+    paths: ["Encore/**", ".github/workflows/encore-release.yml"]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: encore-release
+  cancel-in-progress: false
+
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      build: ${{ steps.v.outputs.build }}
+      tag: ${{ steps.v.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        run: |
+          base="$(grep -m1 'MARKETING_VERSION:' Encore/project.yml | sed -E 's/.*"([^"]+)".*/\1/')"
+          build="${{ github.run_number }}"
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            tag="${GITHUB_REF#refs/tags/}"
+            version="${tag#v}"
+          else
+            version="${base}"
+            tag="v${base}-build.${build}"
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "build=${build}" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "Encore ${version} (${build}) -> ${tag}"
+
+  build:
+    needs: version
+    runs-on: macos-15
+    timeout-minutes: 60
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - platform: iOS
+            destination: generic/platform=iOS
+            products: Release-iphoneos
+          - platform: tvOS
+            destination: generic/platform=tvOS
+            products: Release-appletvos
+          - platform: macOS
+            destination: generic/platform=macOS
+            products: Release
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      BUILD: ${{ needs.version.outputs.build }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode
+        run: |
+          sudo xcode-select -s "$(ls -d /Applications/Xcode_16*.app | sort -V | tail -1)"
+          xcodebuild -version
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate project
+        working-directory: Encore
+        run: xcodegen generate
+      - name: Cache Swift packages
+        uses: actions/cache@v4
+        with:
+          path: Encore/build/SourcePackages
+          key: spm-release-${{ runner.os }}-${{ hashFiles('Encore/project.yml') }}
+      - name: Build Encore for ${{ matrix.platform }}
+        working-directory: Encore
+        run: |
+          set -o pipefail
+          EXTRA=()
+          if [ "${{ matrix.platform }}" = "macOS" ]; then EXTRA=(ARCHS="arm64 x86_64" ONLY_ACTIVE_ARCH=NO); fi
+          xcodebuild -project Encore.xcodeproj -scheme "Encore-${{ matrix.platform }}" \
+            -configuration Release -destination "${{ matrix.destination }}" \
+            -derivedDataPath build -clonedSourcePackagesDirPath build/SourcePackages \
+            -skipPackagePluginValidation -skipMacroValidation \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            MARKETING_VERSION="$VERSION" CURRENT_PROJECT_VERSION="$BUILD" "${EXTRA[@]}" \
+            -quiet build 2>&1 | tee build.log || { grep -E "error:" build.log | sort -u | head -80; exit 1; }
+      - name: Package
+        working-directory: Encore
+        run: |
+          set -euo pipefail
+          APP="build/Build/Products/${{ matrix.products }}/Encore.app"
+          test -d "$APP" || { echo "::error::$APP missing"; exit 1; }
+          mkdir -p out
+          case "${{ matrix.platform }}" in
+            iOS|tvOS)
+              rm -rf Payload && mkdir Payload && cp -R "$APP" Payload/
+              (zip -qry "out/Encore-${{ matrix.platform }}-${VERSION}.ipa" Payload)
+              ;;
+            macOS)
+              archs="$(lipo -archs "$APP/Contents/MacOS/Encore")"
+              echo "Encore.app architectures: $archs"
+              [[ " $archs " == *" arm64 "* && " $archs " == *" x86_64 "* ]] || { echo "::error::Mac app is not universal"; exit 1; }
+              # Ad-hoc sign the whole bundle so it launches on Apple silicon without a Developer ID.
+              codesign --force --deep --sign - "$APP"
+              codesign --verify --deep --strict "$APP"
+              rm -rf dmg && mkdir dmg && cp -R "$APP" dmg/ && ln -s /Applications dmg/Applications
+              hdiutil create -volname Encore -srcfolder dmg -format UDZO "out/Encore-macOS-${VERSION}.dmg"
+              ;;
+          esac
+          ls -la out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: encore-${{ matrix.platform }}
+          path: Encore/out/*
+
+  release:
+    needs: [version, build]
+    runs-on: ubuntu-24.04
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      BUILD: ${{ needs.version.outputs.build }}
+      TAG: ${{ needs.version.outputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Write AltStore / SideStore source
+        run: |
+          set -euo pipefail
+          IPA="Encore-iOS-${VERSION}.ipa"
+          SIZE=$(stat -c %s "dist/${IPA}")
+          cp "Encore/App/Resources/Assets.xcassets/AppIcon.appiconset/icon-1024.png" dist/icon.png
+          base="https://github.com/${REPO}/releases/download/${TAG}"
+          jq -n \
+            --arg version "$VERSION" --arg build "$BUILD" --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg url "${base}/${IPA}" --argjson size "$SIZE" --arg icon "${base}/icon.png" \
+            --arg site "https://github.com/${REPO}" \
+            '{
+              name: "Encore", identifier: "com.ivanxcc.encore.source", website: $site,
+              subtitle: "An Apple TV-style home for your Stremio add-ons.", iconURL: $icon, tintColor: "4C5BD4",
+              apps: [{
+                name: "Encore", bundleIdentifier: "com.ivanxcc.encore", developerName: "ivanxcc",
+                subtitle: "Stream beautifully on iPhone and iPad.",
+                localizedDescription: "Encore is a native client for the Stremio add-on ecosystem, designed after the Apple TV app, with households, profiles, and libmpv playback.",
+                iconURL: $icon, tintColor: "4C5BD4", category: "entertainment",
+                versions: [{ version: $version, buildVersion: $build, date: $date, downloadURL: $url, size: $size, minOSVersion: "18.0" }],
+                appPermissions: { entitlements: [], privacy: {} }
+              }],
+              news: []
+            }' > dist/altstore-source.json
+          cat dist/altstore-source.json
+      - name: Publish release
+        run: |
+          set -euo pipefail
+          ls -la dist
+          if gh release view "$TAG" -R "$REPO" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber -R "$REPO"
+          else
+            gh release create "$TAG" dist/* -R "$REPO" --target "$GITHUB_SHA" \
+              --title "Encore ${VERSION} (build ${BUILD})" --generate-notes --latest
+          fi

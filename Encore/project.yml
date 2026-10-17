@@ -1,0 +1,98 @@
+# Encore: a native Apple TV / iPhone / iPad / Mac client for the Stremio add-on ecosystem.
+# Generate the Xcode project with:  brew install xcodegen && xcodegen generate
+#
+# Three targets share one source tree. The only dependencies are public Swift packages:
+#   - EncoreKit (local, pure Swift): add-on protocol, Stremio account, ranking, households.
+#   - MPVKit (mpvkit/MPVKit): libmpv for MKV and everything AVFoundation can't open.
+name: Encore
+options:
+  bundleIdPrefix: com.ivanxcc
+  deploymentTarget:
+    iOS: "18.0"
+    tvOS: "18.0"
+    macOS: "15.0"
+  createIntermediateGroups: true
+  developmentLanguage: en
+
+packages:
+  EncoreKit:
+    path: Packages/EncoreKit
+  MPVKit:
+    url: https://github.com/mpvkit/MPVKit
+    minVersion: 0.41.0
+    maxVersion: 2.0.0
+
+settings:
+  base:
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_VERSION: "5.0"
+    GENERATE_INFOPLIST_FILE: YES
+    INFOPLIST_KEY_CFBundleDisplayName: Encore
+    PRODUCT_NAME: Encore
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    DEAD_CODE_STRIPPING: YES
+    CODE_SIGN_STYLE: Automatic
+    DEVELOPMENT_TEAM: ""   # set your team in Xcode, or pass DEVELOPMENT_TEAM=XXXXXXXXXX to xcodebuild
+
+targetTemplates:
+  EncoreApp:
+    type: application
+    sources:
+      - path: App
+    dependencies:
+      - package: EncoreKit
+      - package: MPVKit
+        product: MPVKit
+
+targets:
+  Encore-iOS:
+    templates: [EncoreApp]
+    platform: iOS
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.ivanxcc.encore
+        INFOPLIST_FILE: Config/Info-iOS.plist
+        TARGETED_DEVICE_FAMILY: "1,2"
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+
+  Encore-tvOS:
+    templates: [EncoreApp]
+    platform: tvOS
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.ivanxcc.encore.tv
+        # Layered parallax icon + Top Shelf images (App Icon & Top Shelf Image.brandassets).
+        ASSETCATALOG_COMPILER_APPICON_NAME: "App Icon & Top Shelf Image"
+        INFOPLIST_FILE: Config/Info-tvOS.plist
+        TARGETED_DEVICE_FAMILY: "3"
+
+  Encore-macOS:
+    templates: [EncoreApp]
+    platform: macOS
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.ivanxcc.encore.mac
+        INFOPLIST_FILE: Config/Info-macOS.plist
+        # Universal: Apple silicon and Intel. Every dependency ships both slices.
+        ARCHS: "$(ARCHS_STANDARD)"
+        ONLY_ACTIVE_ARCH[config=Release]: NO
+        ENABLE_HARDENED_RUNTIME: NO
+        INFOPLIST_KEY_NSHumanReadableCopyright: "GPL-3.0"
+
+schemes:
+  Encore-iOS:
+    build: { targets: { Encore-iOS: all } }
+    run: { config: Debug }
+    archive: { config: Release }
+  Encore-tvOS:
+    build: { targets: { Encore-tvOS: all } }
+    run: { config: Debug }
+    archive: { config: Release }
+  Encore-macOS:
+    build: { targets: { Encore-macOS: all } }
+    run: { config: Debug }
+    archive: { config: Release }
