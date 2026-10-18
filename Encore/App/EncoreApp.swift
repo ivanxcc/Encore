@@ -24,6 +24,14 @@ struct EncoreApp: App {
                 // Every launch: offer a newer build if one has been released.
                 .task { await updater.check() }
                 .sheet(isPresented: $updater.isPromptPresented) { UpdatePromptView(updater: updater) }
+                .alert("The update didn't install", isPresented: Binding(
+                    get: { updater.previousResult != nil },
+                    set: { if !$0 { updater.previousResult = nil } })) {
+                    Button("Show Log") { NSWorkspace.shared.open(MacUpdater.logFile) }
+                    Button("OK", role: .cancel) {}
+                } message: {
+                    Text(updater.previousResult ?? "")
+                }
                 #endif
         }
         #if os(macOS)

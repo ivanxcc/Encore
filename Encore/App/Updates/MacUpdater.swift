@@ -13,12 +13,16 @@ enum EncoreRelease {
     }
 }
 
-/// In-place updates for the Mac app, no Sparkle and no Developer ID needed:
-///  1. On every launch, read the latest release's `encore-update.json`.
-///  2. If its build is newer, offer it.
-///  3. "Update Now" downloads the zipped app, refuses it unless its SHA-256 matches the manifest, unpacks
-///     it, and hands a tiny shell script the job of swapping the bundle once Encore has quit, then
-///     relaunching. A failed swap restores the previous app.
+/// In-place updates for the Mac app, built the way Sparkle does it (no Developer ID needed):
+///
+///  1. On launch, read the latest release's `encore-update.json`; offer it if its build is newer.
+///  2. Download it with a plain download task, verify its SHA-256, and unpack it into
+///     ~/Library/Application Support/Encore/Updates. All of this runs off the main thread.
+///  3. Hand a small installer script the staged app, then quit. The installer waits for Encore to
+///     exit, swaps the bundle (asking for an administrator password only if the folder needs it), clears
+///     quarantine, and reopens Encore. The app never modifies itself while it is running.
+///  4. Every step is logged to ~/Library/Logs/Encore/Updater.log. If the swap fails, the old app is put
+///     back and reopened, and on launch Encore shows why.
 @MainActor
 final class MacUpdater: ObservableObject {
     static let shared = MacUpdater()
@@ -34,12 +38,21 @@ final class MacUpdater: ObservableObject {
 
     @Published var state: State = .idle
     @Published var isPromptPresented = false
+    /// The outcome of the update that ran while Encore was closed, shown once after relaunch.
+    @Published var previousResult: String?
 
     var installedBuild: Int { Int(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "") ?? 0 }
     var installedVersion: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "" }
 
+    nonisolated static let workDirectory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("Encore/Updates", isDirectory: true)
+    nonisolated static let logFile = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Logs/Encore/Updater.log")
+    nonisolated private static let resultFile = workDirectory.appendingPathComponent("result.txt")
+
     /// - Parameter userInitiated: from Settings; reports "up to date" instead of staying silent.
     func check(userInitiated: Bool = false) async {
+        if !userInitiated { readPreviousResult() }
         guard let manifest = await UpdateManifest.fetchLatest(repository: EncoreRelease.repository) else {
             if userInitiated { state = .upToDate }
             return
@@ -56,47 +69,41 @@ final class MacUpdater: ObservableObject {
         Task {
             do {
                 state = .downloading(manifest, 0)
+                log("Updating from build \(installedBuild) to \(manifest.build) (\(manifest.url.absoluteString))")
                 let archive = try await download(manifest)
                 state = .installing(manifest)
-                let newApp = try unpack(archive)
-                try relaunch(replacingWith: newApp)
+                let staged = try await Task.detached(priority: .userInitiated) { try await Self.stage(archive, build: manifest.build) }.value
+                try launchInstaller(staged: staged, build: manifest.build)
+                log("Installer started; quitting so it can replace the app")
+                NSApp.terminate(nil)
             } catch {
-                state = .failed(manifest, (error as? UpdateError)?.message ?? error.localizedDescription)
+                let message = (error as? UpdateError)?.message ?? error.localizedDescription
+                log("Update failed: \(message)")
+                state = .failed(manifest, message)
             }
         }
     }
 
-    // MARK: Steps
+    // MARK: Download
 
     struct UpdateError: Error { let message: String }
 
-    /// A plain file download (the system writes it straight to disk on its own thread), then a chunked
-    /// SHA-256 check. Progress comes from the download task, so the UI never slows the transfer.
     private func download(_ manifest: UpdateManifest) async throws -> URL {
-        let delegate = DownloadProgress { [weak self] fraction in
+        try? FileManager.default.createDirectory(at: Self.workDirectory, withIntermediateDirectories: true)
+        let destination = Self.workDirectory.appendingPathComponent("Encore-\(manifest.build).zip")
+        let downloader = Downloader(destination: destination) { [weak self] fraction in
             Task { @MainActor in
                 guard let self, case .downloading = self.state else { return }
                 self.state = .downloading(manifest, fraction)
             }
         }
-        let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = 60        // stalls longer than this fail
-        config.timeoutIntervalForResource = 60 * 60  // a slow connection still finishes
-        config.waitsForConnectivity = true
-        let session = URLSession(configuration: config)
-        defer { session.finishTasksAndInvalidate() }
-        let (temporary, response) = try await session.download(from: manifest.url, delegate: delegate)
-        guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw UpdateError(message: "The download is not available.") }
-
-        let destination = FileManager.default.temporaryDirectory.appendingPathComponent("Encore-update-\(manifest.build).zip")
-        try? FileManager.default.removeItem(at: destination)
-        try FileManager.default.moveItem(at: temporary, to: destination)
-
+        try await downloader.run(manifest.url)
         let digest = try await Task.detached(priority: .userInitiated) { try Self.sha256(of: destination) }.value
         guard digest == manifest.sha256.lowercased() else {
             try? FileManager.default.removeItem(at: destination)
             throw UpdateError(message: "The download did not match the published checksum, so it was discarded.")
         }
+        log("Downloaded and verified \(destination.lastPathComponent)")
         return destination
     }
 
@@ -108,61 +115,105 @@ final class MacUpdater: ObservableObject {
         return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
-    private func unpack(_ archive: URL) throws -> URL {
-        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("Encore-update-\(UUID().uuidString)")
+    // MARK: Stage
+
+    /// Unpack the update next to the work directory and check it is really Encore.
+    nonisolated private static func stage(_ archive: URL, build: Int) async throws -> URL {
+        let folder = workDirectory.appendingPathComponent("staged-\(build)", isDirectory: true)
+        try? FileManager.default.removeItem(at: folder)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        try run("/usr/bin/ditto", ["-x", "-k", archive.path, folder.path])
+        try await runTool("/usr/bin/ditto", ["-x", "-k", archive.path, folder.path], failure: "Unpacking the update failed.")
         let app = folder.appendingPathComponent("Encore.app")
-        guard FileManager.default.fileExists(atPath: app.appendingPathComponent("Contents/MacOS/Encore").path) else {
+        guard let bundle = Bundle(url: app),
+              bundle.bundleIdentifier == Bundle.main.bundleIdentifier,
+              FileManager.default.isExecutableFile(atPath: app.appendingPathComponent("Contents/MacOS/Encore").path) else {
             throw UpdateError(message: "The update did not contain the Encore app.")
         }
-        try? run("/usr/bin/xattr", ["-cr", app.path])
+        try? await runTool("/usr/bin/xattr", ["-cr", app.path], failure: "")
+        try? FileManager.default.removeItem(at: archive)
         return app
     }
 
-    /// Install the new app over this one, then relaunch it.
-    ///
-    /// The swap replaces the bundle's *contents* (Encore.app/Contents), so it only needs write access to
-    /// Encore.app itself, which the person who dragged it into Applications owns; /Applications being
-    /// root-owned doesn't matter. If even that isn't writable (installed by another user, or by sudo),
-    /// macOS asks for an administrator password once and the bundle is handed back to this user so
-    /// later updates are silent again.
-    private func relaunch(replacingWith newApp: URL) throws {
-        let target = Self.installedLocation()
-        let script = """
-        set -e
-        target=\(Self.quoted(target.path))
-        new=\(Self.quoted(newApp.path))
-        rm -rf "$target/.Contents-new" "$target/.Contents-old"
-        /usr/bin/ditto "$new/Contents" "$target/.Contents-new"
-        mv "$target/Contents" "$target/.Contents-old"
-        if mv "$target/.Contents-new" "$target/Contents"; then
-          rm -rf "$target/.Contents-old"
-        else
-          mv "$target/.Contents-old" "$target/Contents"; exit 1
-        fi
-        /usr/bin/xattr -cr "$target" 2>/dev/null || true
-        /usr/bin/touch "$target"
-        """
-        let writable = FileManager.default.isWritableFile(atPath: target.path)
-            && FileManager.default.isWritableFile(atPath: target.appendingPathComponent("Contents").path)
-        if !(writable && (try? run("/bin/sh", ["-c", script])) != nil) {
-            let owner = "\(getuid()):\(getgid())"
-            let privileged = script + "\nchown -R \(owner) \"$target\"\n"
-            let source = "do shell script \(Self.appleScriptString(privileged)) with administrator privileges"
-            var error: NSDictionary?
-            guard NSAppleScript(source: source)?.executeAndReturnError(&error) != nil else {
-                let detail = error?[NSAppleScript.errorMessage] as? String ?? ""
-                throw UpdateError(message: "Encore couldn't replace \(target.path). If macOS asked whether Encore may modify apps, allow it in System Settings › Privacy & Security › App Management, then try again. \(detail)")
+    /// Run a command line tool without blocking any thread while it runs.
+    nonisolated private static func runTool(_ tool: String, _ arguments: [String], failure: String) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: tool)
+            process.arguments = arguments
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            process.terminationHandler = { finished in
+                if finished.terminationStatus == 0 { continuation.resume() }
+                else { continuation.resume(throwing: UpdateError(message: failure)) }
             }
+            do { try process.run() } catch { continuation.resume(throwing: error) }
         }
-        // Reopen once this process has exited (the old binary keeps running until then).
-        let relaunch = Process()
-        relaunch.executableURL = URL(fileURLWithPath: "/bin/sh")
-        relaunch.arguments = ["-c", "while kill -0 \(ProcessInfo.processInfo.processIdentifier) 2>/dev/null; do sleep 0.2; done; /usr/bin/open \(Self.quoted(target.path))"]
-        try relaunch.run()
-        NSApp.terminate(nil)
     }
+
+    // MARK: Install
+
+    /// Write the installer script and start it. It outlives Encore: it waits for this process to exit.
+    private func launchInstaller(staged: URL, build: Int) throws {
+        let target = Self.installedLocation()
+        let script = Self.workDirectory.appendingPathComponent("install.sh")
+        try Self.installerScript.write(to: script, atomically: true, encoding: .utf8)
+        try? FileManager.default.createDirectory(at: Self.logFile.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? FileManager.default.removeItem(at: Self.resultFile)
+        log("Installing \(staged.path) over \(target.path)")
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = [script.path, String(ProcessInfo.processInfo.processIdentifier), staged.path, target.path,
+                             Self.logFile.path, Self.resultFile.path, String(build)]
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+    }
+
+    /// Arguments: <pid> <staged app> <installed app> <log> <result file> <build>
+    private static let installerScript = #"""
+    #!/bin/bash
+    PID="$1"; STAGED="$2"; TARGET="$3"; LOG="$4"; RESULT="$5"; BUILD="$6"
+    exec >>"$LOG" 2>&1
+    echo "[$(date '+%F %T')] installer: waiting for Encore ($PID) to quit"
+
+    for _ in $(seq 1 150); do kill -0 "$PID" 2>/dev/null || break; sleep 0.2; done
+    if kill -0 "$PID" 2>/dev/null; then echo "Encore did not quit; stopping it"; kill -9 "$PID"; sleep 1; fi
+
+    PARENT="$(dirname "$TARGET")"
+    NEW="$PARENT/.Encore-$BUILD-new-$$.app"
+    OLD="$PARENT/.Encore-previous-$$.app"
+    rm -rf "$PARENT"/.Encore-*-new-*.app "$PARENT"/.Encore-previous-*.app 2>/dev/null   # leftovers, best effort
+
+    # Copy next to the old app, then swap with two renames (same folder, so each is atomic).
+    # If the second rename fails the previous app is put back. A retry first restores the previous
+    # app if an earlier attempt left it aside, so it is never deleted.
+    SWAP="{ [ -e '$TARGET' ] || mv '$OLD' '$TARGET'; } && rm -rf '$NEW' && /usr/bin/ditto '$STAGED' '$NEW' && mv '$TARGET' '$OLD' && { mv '$NEW' '$TARGET' || { mv '$OLD' '$TARGET'; false; }; } && { rm -rf '$OLD' 2>/dev/null; true; }"
+
+    if [ -w "$PARENT" ] && /bin/bash -c "$SWAP"; then
+      echo "swapped as $(id -un)"
+    else
+      echo "needs an administrator; asking"
+      CMD="$SWAP && /usr/sbin/chown -R $(id -u):$(id -g) '$TARGET'"
+      ESCAPED="${CMD//\\/\\\\}"; ESCAPED="${ESCAPED//\"/\\\"}"
+      if /usr/bin/osascript -e "do shell script \"$ESCAPED\" with administrator privileges with prompt \"Encore wants to install an update.\""; then
+        echo "swapped as administrator"
+      else
+        echo "FAILED: could not replace $TARGET"
+        echo "Encore couldn't replace itself at $TARGET. The previous version is still installed. Details are in ~/Library/Logs/Encore/Updater.log." > "$RESULT"
+        [ -d "$TARGET" ] || { [ -d "$OLD" ] && mv "$OLD" "$TARGET"; }
+        /usr/bin/open "$TARGET"
+        exit 1
+      fi
+    fi
+
+    /usr/bin/xattr -dr com.apple.quarantine "$TARGET" 2>/dev/null
+    rm -rf "$(dirname "$STAGED")"
+    echo "updated:$BUILD" > "$RESULT"
+    echo "[$(date '+%F %T')] installer: done, reopening"
+    /usr/bin/open "$TARGET"
+    """#
 
     /// Where Encore is really installed. An app opened with "Open Anyway" after a browser download can
     /// run from a read-only randomized copy (App Translocation); this resolves it back to the original.
@@ -178,32 +229,57 @@ final class MacUpdater: ObservableObject {
         return URL(fileURLWithPath: "/Applications/Encore.app")
     }
 
-    private static func quoted(_ path: String) -> String {
-        "'" + path.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    // MARK: After relaunch
+
+    private func readPreviousResult() {
+        guard let text = try? String(contentsOf: Self.resultFile, encoding: .utf8) else { return }
+        try? FileManager.default.removeItem(at: Self.resultFile)
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasPrefix("updated:") {
+            log("Relaunched as build \(installedBuild)")
+        } else if !trimmed.isEmpty {
+            previousResult = trimmed
+        }
     }
 
-    private static func appleScriptString(_ text: String) -> String {
-        "\"" + text.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
-    }
-
-    @discardableResult
-    private func run(_ tool: String, _ arguments: [String]) throws -> Int32 {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: tool)
-        process.arguments = arguments
-        try process.run()
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else { throw UpdateError(message: "Unpacking the update failed.") }
-        return process.terminationStatus
+    private func log(_ message: String) {
+        let line = "[\(Date().formatted(.iso8601))] app: \(message)\n"
+        try? FileManager.default.createDirectory(at: Self.logFile.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if let handle = try? FileHandle(forWritingTo: Self.logFile) {
+            handle.seekToEndOfFile()
+            handle.write(Data(line.utf8))
+            try? handle.close()
+        } else {
+            try? Data(line.utf8).write(to: Self.logFile)
+        }
     }
 }
 
-/// Reports download progress from the URLSession delegate queue.
-private final class DownloadProgress: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+/// A classic delegate-based download task: the file is written by the system, progress arrives as it
+/// downloads, and the finished file is moved into place before the system deletes it.
+private final class Downloader: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+    private let destination: URL
     private let report: @Sendable (Double) -> Void
+    private var continuation: CheckedContinuation<Void, Error>?
+    private var moveError: Error?
     private var lastReported = -1.0
 
-    init(report: @escaping @Sendable (Double) -> Void) { self.report = report }
+    init(destination: URL, report: @escaping @Sendable (Double) -> Void) {
+        self.destination = destination
+        self.report = report
+    }
+
+    func run(_ url: URL) async throws {
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 60        // a stall longer than this fails
+        config.timeoutIntervalForResource = 60 * 60  // a slow connection still finishes
+        let session = URLSession(configuration: config, delegate: self, delegateQueue: nil)
+        defer { session.finishTasksAndInvalidate() }
+        try await withCheckedThrowingContinuation { continuation in
+            self.continuation = continuation
+            session.downloadTask(with: url).resume()
+        }
+    }
 
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64,
                     totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
@@ -214,8 +290,24 @@ private final class DownloadProgress: NSObject, URLSessionDownloadDelegate, @unc
         report(fraction)
     }
 
-    // The async download(from:delegate:) call delivers the file; nothing to do here.
-    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {}
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
+        if let status = (downloadTask.response as? HTTPURLResponse)?.statusCode, status != 200 {
+            moveError = MacUpdater.UpdateError(message: "The download is not available (HTTP \(status)).")
+            return
+        }
+        do {
+            try? FileManager.default.removeItem(at: destination)
+            try FileManager.default.moveItem(at: location, to: destination)
+        } catch {
+            moveError = error
+        }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        let result = error ?? moveError
+        if let result { continuation?.resume(throwing: result) } else { continuation?.resume() }
+        continuation = nil
+    }
 }
 
 /// The launch popup.
@@ -275,7 +367,7 @@ struct UpdatePromptView: View {
         case let .downloading(_, progress):
             ProgressView(value: progress) { Text("Downloading…") }
         case .installing:
-            ProgressView { Text("Installing. Encore will reopen in a moment.") }
+            ProgressView { Text("Installing. Encore will close and reopen in a moment.") }
         case let .failed(_, message):
             Label(message, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
         default:
