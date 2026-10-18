@@ -80,6 +80,32 @@ jobs:
           echo "Encore.app: $archs"
           [[ " $archs " == *" arm64 "* && " $archs " == *" x86_64 "* ]] || { echo "::error::not universal"; exit 1; }
           ditto -c -k --keepParent "$APP" Encore-macOS.zip
+      - name: Mac updater end-to-end (real installer, real app)
+        if: matrix.scheme == 'Encore-macOS'
+        working-directory: Encore
+        run: |
+          set -euo pipefail
+          T="$RUNNER_TEMP/updater"; rm -rf "$T"; mkdir -p "$T/Apps" "$T/staged"
+          APP=build/Build/Products/Release/Encore.app
+          codesign --force --deep --sign - "$APP"
+          ditto "$APP" "$T/Apps/Encore.app"
+          # The "update": the same app with a higher build number, signed like a release.
+          ditto "$APP" "$T/staged/Encore.app"
+          plutil -replace CFBundleVersion -string 9999 "$T/staged/Encore.app/Contents/Info.plist"
+          codesign --force --deep --sign - "$T/staged/Encore.app"
+          # The installer exactly as the app writes it.
+          awk '/installerScript = #"""/{f=1;next} /^    """#/{f=0} f' App/Updates/MacUpdater.swift | sed 's/^    //' > "$T/install.sh"
+          bash -n "$T/install.sh"
+          sleep 2 & PID=$!
+          bash "$T/install.sh" "$PID" "$T/staged/Encore.app" "$T/Apps/Encore.app" "$T/update.log" "$T/result" 9999
+          cat "$T/update.log"
+          test "$(cat "$T/result")" = "updated:9999"
+          test "$(plutil -extract CFBundleVersion raw "$T/Apps/Encore.app/Contents/Info.plist")" = "9999"
+          codesign --verify --deep --strict "$T/Apps/Encore.app"
+          ls -A "$T/Apps"
+          for _ in $(seq 1 30); do pgrep -f "$T/Apps/Encore.app/Contents/MacOS/Encore" >/dev/null && break; sleep 1; done
+          pgrep -f "$T/Apps/Encore.app/Contents/MacOS/Encore" || { echo "::error::the updated app did not reopen"; exit 1; }
+          pkill -f "$T/Apps/Encore.app/Contents/MacOS/Encore" || true
       - name: Upload Mac app
         if: matrix.scheme == 'Encore-macOS'
         uses: actions/upload-artifact@v4
