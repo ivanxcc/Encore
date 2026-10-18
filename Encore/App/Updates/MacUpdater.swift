@@ -70,37 +70,42 @@ final class MacUpdater: ObservableObject {
 
     struct UpdateError: Error { let message: String }
 
+    /// A plain file download (the system writes it straight to disk on its own thread), then a chunked
+    /// SHA-256 check. Progress comes from the download task, so the UI never slows the transfer.
     private func download(_ manifest: UpdateManifest) async throws -> URL {
-        let (bytes, response) = try await URLSession.shared.bytes(from: manifest.url)
-        guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw UpdateError(message: "The download is not available.") }
-        let expected = max(response.expectedContentLength, 1)
-        let destination = FileManager.default.temporaryDirectory.appendingPathComponent("Encore-update-\(manifest.build).zip")
-        try? FileManager.default.removeItem(at: destination)
-        FileManager.default.createFile(atPath: destination.path, contents: nil)
-        let handle = try FileHandle(forWritingTo: destination)
-        defer { try? handle.close() }
-        var hasher = SHA256()
-        var buffer = Data()
-        var received: Int64 = 0
-        buffer.reserveCapacity(1 << 20)
-        for try await byte in bytes {
-            buffer.append(byte)
-            if buffer.count >= 1 << 20 {
-                hasher.update(data: buffer)
-                try handle.write(contentsOf: buffer)
-                received += Int64(buffer.count)
-                buffer.removeAll(keepingCapacity: true)
-                state = .downloading(manifest, min(1, Double(received) / Double(expected)))
+        let delegate = DownloadProgress { [weak self] fraction in
+            Task { @MainActor in
+                guard let self, case .downloading = self.state else { return }
+                self.state = .downloading(manifest, fraction)
             }
         }
-        hasher.update(data: buffer)
-        try handle.write(contentsOf: buffer)
-        let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 60        // stalls longer than this fail
+        config.timeoutIntervalForResource = 60 * 60  // a slow connection still finishes
+        config.waitsForConnectivity = true
+        let session = URLSession(configuration: config)
+        defer { session.finishTasksAndInvalidate() }
+        let (temporary, response) = try await session.download(from: manifest.url, delegate: delegate)
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw UpdateError(message: "The download is not available.") }
+
+        let destination = FileManager.default.temporaryDirectory.appendingPathComponent("Encore-update-\(manifest.build).zip")
+        try? FileManager.default.removeItem(at: destination)
+        try FileManager.default.moveItem(at: temporary, to: destination)
+
+        let digest = try await Task.detached(priority: .userInitiated) { try Self.sha256(of: destination) }.value
         guard digest == manifest.sha256.lowercased() else {
             try? FileManager.default.removeItem(at: destination)
             throw UpdateError(message: "The download did not match the published checksum, so it was discarded.")
         }
         return destination
+    }
+
+    nonisolated private static func sha256(of url: URL) throws -> String {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var hasher = SHA256()
+        while let chunk = try handle.read(upToCount: 4 << 20), !chunk.isEmpty { hasher.update(data: chunk) }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
     private func unpack(_ archive: URL) throws -> URL {
@@ -148,6 +153,26 @@ final class MacUpdater: ObservableObject {
         guard process.terminationStatus == 0 else { throw UpdateError(message: "Unpacking the update failed.") }
         return process.terminationStatus
     }
+}
+
+/// Reports download progress from the URLSession delegate queue.
+private final class DownloadProgress: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+    private let report: @Sendable (Double) -> Void
+    private var lastReported = -1.0
+
+    init(report: @escaping @Sendable (Double) -> Void) { self.report = report }
+
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64,
+                    totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
+        guard totalBytesExpectedToWrite > 0 else { return }
+        let fraction = Double(totalBytesWritten) / Double(totalBytesExpectedToWrite)
+        guard fraction - lastReported >= 0.01 || fraction >= 1 else { return }
+        lastReported = fraction
+        report(fraction)
+    }
+
+    // The async download(from:delegate:) call delivers the file; nothing to do here.
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {}
 }
 
 /// The launch popup.

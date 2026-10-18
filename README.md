@@ -188,7 +188,6 @@ Encore/                 the app (this is what ships)
   Packages/EncoreKit/   Stremio add-on protocol, account and library, ranking, households
   App/                  SwiftUI app for tvOS, iOS/iPadOS, and macOS
   Cloud/                Encore Cloud, the optional sync service (Cloudflare Worker + D1)
-app/, android/, ...     the original VortX sources this fork started from (not built or shipped)
 ```
 
 ## Credits and license
@@ -196,5 +195,5 @@ app/, android/, ...     the original VortX sources this fork started from (not b
 Encore is based on [VortX](https://github.com/VortXTV/VortX) and is not affiliated with or endorsed by the
 VortX project or Stremio. It works with the [Stremio](https://www.stremio.com) add-on ecosystem and plays
 media with [libmpv](https://mpv.io) via [MPVKit](https://github.com/mpvkit/MPVKit). Licensed under the
-GNU General Public License v3.0, the same as VortX; see [LICENSE](LICENSE) and
-[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+GNU General Public License v3.0, the same as VortX; see [LICENSE](LICENSE). The original VortX sources
+remain available in this repository's history and upstream.

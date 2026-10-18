@@ -1,7 +1,0 @@
-{
-  "$schema": "../gen/schemas/desktop-schema.json",
-  "identifier": "default",
-  "description": "Default permissions for the StremioX main window.",
-  "windows": ["main"],
-  "permissions": ["core:default"]
-}
