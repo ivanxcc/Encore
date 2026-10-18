@@ -69,7 +69,7 @@ The easiest way is one line in Terminal. It downloads the latest build, checks i
 to Applications, and opens it, with no "unidentified developer" prompt:
 
 ```sh
-curl -fsSL https://github.com/ivanxcc/Encore/releases/latest/download/install-mac.sh | sh
+curl -fsSL https://github.com/ivanxcc/Encore/releases/latest/download/install-mac.sh | bash
 ```
 
 Or open the DMG and drag Encore to Applications. Because the app is signed ad hoc rather than with an

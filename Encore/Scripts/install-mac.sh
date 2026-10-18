@@ -17,7 +17,8 @@ trap 'rm -rf "$work"' EXIT
 
 echo "Encore: checking the latest release…"
 curl -fsSL "$manifest_url" -o "$work/update.json"
-read_json() { /usr/bin/python3 -c "import json,sys; print(json.load(open('$work/update.json'))['$1'])"; }
+# plutil reads JSON on every supported macOS (python3 would prompt to install developer tools).
+read_json() { /usr/bin/plutil -extract "$1" raw -o - "$work/update.json"; }
 version="$(read_json version)"; build="$(read_json build)"; url="$(read_json url)"; sha="$(read_json sha256)"
 
 echo "Encore: downloading ${version} (build ${build})…"
