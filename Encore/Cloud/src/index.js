@@ -23,7 +23,12 @@ const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no 0/O or 1/I
 
 export default {
   async fetch(request, env, ctx) {
-    return handle(request, env, { fetchStremio: fetch, now: () => Math.floor(Date.now() / 1000) });
+    // Wrap fetch: the Workers runtime throws "Illegal invocation" when fetch is called as a method of
+    // another object (deps.fetchStremio(...)), which made every signed-in request fail with a 500.
+    return handle(request, env, {
+      fetchStremio: (url, init) => fetch(url, init),
+      now: () => Math.floor(Date.now() / 1000),
+    });
   },
 };
 

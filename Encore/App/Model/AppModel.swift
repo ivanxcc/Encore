@@ -186,8 +186,12 @@ final class AppModel: ObservableObject {
             cloudStatus = .synced(Date())
         } catch CloudClient.CloudError.signedOut {
             cloudStatus = .failed("Sign in to Stremio again to keep this household in sync.")
+        } catch let CloudClient.CloudError.server(status) {
+            cloudStatus = .failed("Encore Cloud had a problem (error \(status)). Changes are saved here and will sync later.")
+        } catch let error as URLError {
+            cloudStatus = .failed("Couldn't reach Encore Cloud (\(error.localizedDescription)). Changes are saved here and will sync later.")
         } catch {
-            cloudStatus = .failed("Couldn't reach Encore Cloud. Changes are saved here and will sync later.")
+            cloudStatus = .failed("Encore Cloud sync failed: \(error.localizedDescription)")
         }
     }
 
