@@ -7,9 +7,9 @@ name: Encore
 
 on:
   push:
-    paths: ["Encore/**", ".github/workflows/encore.yml"]
+    paths: ["Encore/**", ".github/workflows/encore-ci.yml"]
   pull_request:
-    paths: ["Encore/**", ".github/workflows/encore.yml"]
+    paths: ["Encore/**", ".github/workflows/encore-ci.yml"]
   workflow_dispatch:
 
 permissions:
