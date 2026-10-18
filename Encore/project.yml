@@ -19,8 +19,8 @@ packages:
     path: Packages/EncoreKit
   MPVKit:
     url: https://github.com/mpvkit/MPVKit
-    minVersion: 0.41.0
-    maxVersion: 2.0.0
+    # Pinned: a new MPVKit release must not change a build without a commit that says so.
+    exactVersion: 1.0.0
 
 settings:
   base:

@@ -58,7 +58,20 @@ jobs:
         uses: actions/cache@v4
         with:
           path: Encore/build/SourcePackages
-          key: spm-${{ runner.os }}-${{ hashFiles('Encore/project.yml') }}
+          key: spm-${{ github.repository }}-${{ runner.os }}-${{ hashFiles('Encore/project.yml') }}
+      - name: Resolve Swift packages
+        working-directory: Encore
+        run: |
+          set -o pipefail
+          # Package downloads are the flakiest part of a build; retry them on their own.
+          for attempt in 1 2 3; do
+            xcodebuild -resolvePackageDependencies -project Encore.xcodeproj -scheme "${{ matrix.scheme }}" \
+              -clonedSourcePackagesDirPath build/SourcePackages -skipPackagePluginValidation 2>&1 | tail -20 && exit 0
+            echo "::warning::Package resolution attempt $attempt failed; retrying"
+            rm -rf build/SourcePackages
+            sleep $((attempt * 15))
+          done
+          echo "::error::Could not resolve Swift packages after 3 attempts"; exit 1
       - name: Build ${{ matrix.scheme }}
         working-directory: Encore
         run: |
@@ -70,7 +83,7 @@ jobs:
             -derivedDataPath build -clonedSourcePackagesDirPath build/SourcePackages \
             -skipPackagePluginValidation -skipMacroValidation \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO "${ARCH_FLAGS[@]}" \
-            -quiet build 2>&1 | tee build.log || { grep -E "error:" build.log | sort -u | head -80; exit 1; }
+            -quiet build 2>&1 | tee build.log || { grep -E "error:" build.log | sort -u | head -30 | sed 's/^/::error::/'; tail -15 build.log | sed 's/^/::error::/'; exit 1; }
       - name: Verify universal Mac binary
         if: matrix.scheme == 'Encore-macOS'
         working-directory: Encore
