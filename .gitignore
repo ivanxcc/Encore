@@ -102,3 +102,6 @@ core/target/
 
 # Compiled test-harness binaries (produced by .harness/run-suites.sh)
 .harness/bin/
+Encore/Packages/EncoreKit/.build/
+Encore/*.xcodeproj
+Encore/build/
