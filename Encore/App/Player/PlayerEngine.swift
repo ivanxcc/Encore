@@ -33,3 +33,24 @@ protocol PlayerEngine: AnyObject {
     func selectAudio(_ id: Int)
     func selectSubtitle(_ id: Int?)
 }
+
+/// The single contextual button the player offers, like the TV app's "Skip Intro".
+enum PlayerAction: Equatable {
+    case skip(SkipSegment)
+    /// `countdown` is set while Up Next is about to start on its own.
+    case nextEpisode(countdown: Int?)
+
+    var title: String {
+        switch self {
+        case let .skip(segment): segment.kind.actionTitle
+        case let .nextEpisode(countdown): countdown.map { "Next Episode in \($0)" } ?? "Next Episode"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .skip: "forward.fill"
+        case .nextEpisode: "forward.end.fill"
+        }
+    }
+}

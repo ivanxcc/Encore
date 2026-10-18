@@ -66,6 +66,14 @@ public final class HouseholdDirectory: @unchecked Sendable {
         return HouseholdScope(household: household, directory: dir, secrets: makeSecrets(household.id, dir))
     }
 
+    /// The household on this device that belongs to a Stremio user, if any.
+    public func household(boundTo userID: String) -> Household? {
+        registry().households.first { household in
+            JSONFile<HouseholdSettings>(directory(for: household.id).appendingPathComponent("settings.json"))
+                .load()?.accountUserID == userID
+        }
+    }
+
     @discardableResult
     public func add(name: String, symbol: String = "house.fill") -> Household {
         var reg = registry()

@@ -6,6 +6,8 @@ import EncoreKit
 struct SourcesView: View {
     let meta: MetaPreview
     let video: Video?
+    /// What a pick does. Defaults to closing this sheet and playing the pick.
+    var onPick: ((RankedStream) -> Void)? = nil
     @EnvironmentObject private var app: AppModel
     @EnvironmentObject private var playback: PlaybackCenter
     @Environment(\.dismiss) private var dismiss
@@ -21,8 +23,12 @@ struct SourcesView: View {
                 } else if let streams {
                     List(streams) { ranked in
                         Button {
-                            dismiss()
-                            playback.play(meta: meta, video: video, app: app, explicit: ranked)
+                            if let onPick {
+                                onPick(ranked)
+                            } else {
+                                dismiss()
+                                playback.play(meta: meta, video: video, app: app, explicit: ranked, afterDismissal: true)
+                            }
                         } label: {
                             SourceRow(ranked: ranked)
                         }

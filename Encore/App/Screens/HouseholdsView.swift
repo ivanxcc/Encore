@@ -69,39 +69,17 @@ private struct HouseholdEditor: View {
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        NavigationStack {
-            Form {
-                TextField("Name", text: $name)
-                Section("Icon") {
-                    LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 5), spacing: 14) {
-                        ForEach(HouseholdsView.symbols, id: \.self) { candidate in
-                            Button { symbol = candidate } label: {
-                                Image(systemName: candidate)
-                                    .frame(width: 54, height: 54)
-                                    .background(candidate == symbol ? Color.white : Color.white.opacity(0.1),
-                                                in: RoundedRectangle(cornerRadius: 12))
-                                    .foregroundStyle(candidate == symbol ? Color.black : Color.white)
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                }
-            }
-            .navigationTitle(title)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
-                        save(name.trimmingCharacters(in: .whitespaces), symbol)
-                        dismiss()
-                    }
-                    .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
-                }
-            }
+        EditorSheet(title: title, canSave: !name.trimmingCharacters(in: .whitespaces).isEmpty,
+                    save: { save(name.trimmingCharacters(in: .whitespaces), symbol); dismiss() },
+                    cancel: { dismiss() }) {
+            Image(systemName: symbol)
+                .font(.system(size: 44, weight: .semibold))
+                .frame(width: 110, height: 110)
+                .background(Color.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 28, style: .continuous))
+            EditorTextField(placeholder: "Household name", text: $name)
+            EditorLabel("Icon")
+            SymbolPicker(symbols: HouseholdsView.symbols, selection: $symbol)
         }
-        #if os(macOS)
-        .frame(minWidth: 440, minHeight: 380)
-        #endif
     }
 }
 
@@ -150,73 +128,175 @@ private struct ProfileEditor: View {
     @EnvironmentObject private var app: AppModel
     @Environment(\.dismiss) private var dismiss
     @State private var pin = ""
+    @State private var confirmDelete = false
 
-    private let avatars = ["person.fill", "star.fill", "heart.fill", "bolt.fill", "pawprint.fill", "gamecontroller.fill", "film.fill", "music.note"]
+    private let avatars = ["person.fill", "star.fill", "heart.fill", "bolt.fill", "pawprint.fill",
+                           "gamecontroller.fill", "film.fill", "music.note", "leaf.fill", "sparkles"]
+
+    private var pinIsValid: Bool { pin.isEmpty || pin.filter(\.isNumber).count == 4 }
+    private var canSave: Bool { !profile.name.trimmingCharacters(in: .whitespaces).isEmpty && pinIsValid }
 
     var body: some View {
-        NavigationStack {
-            Form {
-                Section {
-                    HStack { Spacer(); ProfileAvatar(profile: profile, size: 96); Spacer() }
-                    TextField("Name", text: $profile.name)
-                }
-                Section("Avatar") {
-                    LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 4), spacing: 14) {
-                        ForEach(avatars, id: \.self) { symbol in
-                            Button { profile.avatar = symbol } label: {
-                                Image(systemName: symbol).frame(width: 50, height: 50)
-                                    .background(profile.avatar == symbol ? Color.white.opacity(0.3) : Color.clear, in: Circle())
-                            }
-                            .buttonStyle(.plain)
-                        }
+        EditorSheet(title: isNew ? "New Profile" : "Edit Profile", canSave: canSave, save: save, cancel: { dismiss() }) {
+            ProfileAvatar(profile: profile, size: 110)
+                .animation(Theme.Motion.focus, value: profile.avatar)
+                .animation(Theme.Motion.focus, value: profile.colorIndex)
+            EditorTextField(placeholder: "Name", text: $profile.name)
+
+            EditorLabel("Avatar")
+            SymbolPicker(symbols: avatars, selection: $profile.avatar)
+
+            EditorLabel("Color")
+            HStack(spacing: 14) {
+                ForEach(Theme.Colors.avatarColors.indices, id: \.self) { index in
+                    Button { profile.colorIndex = index } label: {
+                        Circle().fill(Theme.Colors.avatarColors[index])
+                            .frame(width: 34, height: 34)
+                            .overlay(Circle().strokeBorder(.white, lineWidth: profile.colorIndex == index ? 3 : 0).padding(-4))
+                            .contentShape(Circle())
                     }
-                    LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 6), spacing: 14) {
-                        ForEach(Theme.Colors.avatarColors.indices, id: \.self) { index in
-                            Button { profile.colorIndex = index } label: {
-                                Circle().fill(Theme.Colors.avatarColors[index])
-                                    .frame(width: 36, height: 36)
-                                    .overlay(Circle().strokeBorder(.white, lineWidth: profile.colorIndex == index ? 3 : 0))
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Color \(index + 1)")
                 }
-                Section {
-                    Toggle("Kids Profile", isOn: $profile.isKids)
-                    SecureField(profile.hasPin ? "Change 4-digit PIN" : "4-digit PIN (optional)", text: $pin)
+            }
+
+            VStack(spacing: 0) {
+                Toggle(isOn: $profile.isKids) {
+                    Label("Kids profile", systemImage: "figure.and.child.holdinghands")
+                }
+                .padding(.vertical, 12)
+                Divider().overlay(Color.white.opacity(0.1))
+                HStack {
+                    Label("PIN", systemImage: "lock.fill")
+                    Spacer()
+                    SecureField(profile.hasPin ? "Change" : "Optional", text: $pin)
+                        .multilineTextAlignment(.trailing)
+                        .frame(maxWidth: 140)
                         #if os(iOS)
                         .keyboardType(.numberPad)
                         #endif
+                        .onChange(of: pin) { _, value in pin = String(value.filter(\.isNumber).prefix(4)) }
                     if profile.hasPin {
-                        Button("Remove PIN") { profile.pinHash = nil }
+                        Button("Remove") { profile.pinHash = nil; pin = "" }
+                            .buttonStyle(.borderless)
                     }
                 }
-                if !isNew && !profile.isOwner {
-                    Section {
-                        Button("Delete Profile", role: .destructive) {
-                            app.deleteProfile(profile)
-                            dismiss()
-                        }
-                    }
-                }
+                .padding(.vertical, 12)
             }
-            .navigationTitle(isNew ? "New Profile" : "Edit Profile")
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
-                        let digits = pin.filter(\.isNumber)
-                        if digits.count == 4 { profile.pinHash = Profile.hashPin(digits, profileID: profile.id) }
-                        profile.name = profile.name.trimmingCharacters(in: .whitespaces)
-                        app.saveProfile(profile)
-                        dismiss()
+            .padding(.horizontal, 16)
+            .background(Color.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+
+            if !isNew && !profile.isOwner {
+                Button("Delete Profile", role: .destructive) { confirmDelete = true }
+                    .buttonStyle(.borderless)
+                    .padding(.top, 6)
+                    .confirmationDialog("Delete \(profile.name)?", isPresented: $confirmDelete, titleVisibility: .visible) {
+                        Button("Delete", role: .destructive) { app.deleteProfile(profile); dismiss() }
+                    } message: {
+                        Text("Their Continue Watching and list on this device are removed.")
                     }
-                    .disabled(profile.name.trimmingCharacters(in: .whitespaces).isEmpty || (!pin.isEmpty && pin.filter(\.isNumber).count != 4))
-                }
             }
         }
+    }
+
+    private func save() {
+        if pin.count == 4 { profile.pinHash = Profile.hashPin(pin, profileID: profile.id) }
+        profile.name = profile.name.trimmingCharacters(in: .whitespaces)
+        app.saveProfile(profile)
+        dismiss()
+    }
+}
+
+// MARK: - Editor building blocks
+
+/// A focused edit sheet: Cancel / title / Save bar, then centered content. Replaces Form-based editors,
+/// where several buttons in one row behave as one big button (tapping any avatar picked the last one).
+private struct EditorSheet<Content: View>: View {
+    let title: String
+    let canSave: Bool
+    let save: () -> Void
+    let cancel: () -> Void
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Button("Cancel", action: cancel).buttonStyle(.borderless)
+                Spacer()
+                Text(title).font(.headline)
+                Spacer()
+                Button("Save", action: save).buttonStyle(.borderless).fontWeight(.semibold).disabled(!canSave)
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 14)
+            Divider().overlay(Color.white.opacity(0.08))
+            ScrollView {
+                VStack(spacing: 18) { content }
+                    .padding(24)
+                    .frame(maxWidth: 520)
+                    .frame(maxWidth: .infinity)
+            }
+        }
+        .encoreCanvas()
         #if os(macOS)
-        .frame(minWidth: 440, minHeight: 520)
+        .frame(minWidth: 460, minHeight: 560)
         #endif
+        #if os(iOS)
+        .presentationDetents([.large])
+        .presentationDragIndicator(.visible)
+        #endif
+    }
+}
+
+private struct EditorTextField: View {
+    let placeholder: String
+    @Binding var text: String
+
+    var body: some View {
+        TextField(placeholder, text: $text)
+            .font(.title3.weight(.semibold))
+            .multilineTextAlignment(.center)
+            .textFieldStyle(.plain)
+            .padding(.vertical, 12)
+            .padding(.horizontal, 16)
+            .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+}
+
+private struct EditorLabel: View {
+    let text: String
+    init(_ text: String) { self.text = text }
+
+    var body: some View {
+        Text(text.uppercased())
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(Theme.Colors.tertiary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, 6)
+    }
+}
+
+/// A grid of SF Symbols where each tile is its own button with its own hit area.
+private struct SymbolPicker: View {
+    let symbols: [String]
+    @Binding var selection: String
+
+    var body: some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 56, maximum: 72), spacing: 12)], spacing: 12) {
+            ForEach(symbols, id: \.self) { symbol in
+                Button { selection = symbol } label: {
+                    Image(systemName: symbol)
+                        .font(.system(size: 22, weight: .semibold))
+                        .frame(width: 56, height: 56)
+                        .foregroundStyle(symbol == selection ? Color.black : Color.white)
+                        .background(symbol == selection ? Color.white : Color.white.opacity(0.1),
+                                    in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        .contentShape(RoundedRectangle(cornerRadius: 14))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(symbol)
+                .accessibilityAddTraits(symbol == selection ? .isSelected : [])
+            }
+        }
     }
 }

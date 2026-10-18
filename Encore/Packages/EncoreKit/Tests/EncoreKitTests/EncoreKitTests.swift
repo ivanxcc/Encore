@@ -373,3 +373,68 @@ final class QualityTraitTests: XCTestCase {
         XCTAssertEqual(ranked.map(\.stream), [web4k, remux1080, web1080])
     }
 }
+
+final class SkipAndBindingTests: XCTestCase {
+    func testTheIntroDBSegmentsAndOpenEnds() async {
+        let mock = MockTransport()
+        mock.on("api.theintrodb.org/v3/media", #"{"intro":[{"start_ms":null,"end_ms":62000}],"recap":[],"credits":[{"start_ms":2500000,"end_ms":null}],"preview":null}"#)
+        let segments = await SkipSegmentService(http: HTTPClient(transport: mock))
+            .segments(metaID: "tt0903747", season: 1, episode: 2, duration: 2700)
+        XCTAssertEqual(segments, [SkipSegment(kind: .intro, start: 0, end: 62), SkipSegment(kind: .credits, start: 2500, end: 2700)])
+        let url = mock.requests.first!.url!.absoluteString
+        XCTAssertTrue(url.contains("imdb_id=tt0903747") && url.contains("season=1") && url.contains("episode=2") && url.contains("duration_ms=2700000"))
+        XCTAssertTrue(segments[0].isActive(at: 30))
+        XCTAssertFalse(segments[0].isActive(at: 61))
+    }
+
+    func testAniSkipViaKitsu() async {
+        let mock = MockTransport()
+        mock.on("kitsu.io", #"{"data":[{"attributes":{"externalSite":"anidb","externalId":"1"}},{"attributes":{"externalSite":"myanimelist/anime","externalId":"21"}}]}"#)
+        mock.on("api.aniskip.com/v2/skip-times/21/5", #"{"found":true,"results":[{"interval":{"startTime":90.5,"endTime":180.5},"skipType":"op"},{"interval":{"startTime":1300,"endTime":1390},"skipType":"ed"}]}"#)
+        let segments = await SkipSegmentService(http: HTTPClient(transport: mock))
+            .segments(metaID: "kitsu:12:5", season: 1, episode: 5, duration: 1420)
+        XCTAssertEqual(segments.map(\.kind), [.intro, .credits])
+        XCTAssertEqual(segments.first?.start, 90.5)
+    }
+
+    func testChapterMarkers() {
+        let segments = SkipSegmentService.fromChapters(
+            [("Prologue", 0), ("Opening", 95), ("Part A", 185), ("Ending", 1290), ("Next Time Preview", 1380)],
+            duration: 1420)
+        XCTAssertEqual(segments.map(\.kind), [.intro, .credits, .preview])
+        XCTAssertEqual(segments[0].end, 185)
+    }
+
+    func testHouseholdBindsToFirstAccountOnly() async throws {
+        let mock = MockTransport()
+        mock.on("/addonCollectionGet", #"{"result":{"addons":[]}}"#)
+        mock.on("/datastoreGet", #"{"result":[]}"#)
+        mock.on("/logout", #"{"result":{}}"#)
+        let http = HTTPClient(transport: mock)
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("encore-bind-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dir = HouseholdDirectory(root: root) { _, d in FileSecretStore(url: d.appendingPathComponent("s.json")) }
+        let home = dir.registry().households[0]
+        let session = HouseholdSession(scope: dir.scope(for: home), addonService: AddonService(http: http), api: StremioAPI(http: http))
+        let me = StremioAPI.Session(authKey: "A", user: .init(id: "u-me", email: "me@x.com"))
+        let sister = StremioAPI.Session(authKey: "B", user: .init(id: "u-sis", email: "sis@x.com"))
+        try await session.adopt(me)
+        XCTAssertEqual(dir.household(boundTo: "u-me")?.id, home.id)
+        await session.signOut()
+        XCTAssertFalse(session.accepts(sister), "a signed-out household still belongs to its account")
+        do { try await session.adopt(sister); XCTFail("expected binding error") }
+        catch { XCTAssertEqual(error as? HouseholdSession.BindingError, .belongsToAnotherAccount(email: "me@x.com")) }
+        XCTAssertTrue(session.accepts(me))
+        session.forgetAccountBinding()
+        XCTAssertTrue(session.accepts(sister))
+    }
+
+    func testUpdateManifest() throws {
+        let json = #"{"version":"0.2.0","build":7,"url":"https://github.com/o/r/releases/download/t/Encore-macOS-0.2.0.zip","sha256":"ab","notes":"New"}"#
+        let manifest = try JSONDecoder().decode(UpdateManifest.self, from: Data(json.utf8))
+        XCTAssertTrue(manifest.isNewer(thanBuild: 6))
+        XCTAssertFalse(manifest.isNewer(thanBuild: 7))
+        XCTAssertEqual(UpdateManifest.latestURL(repository: "o/r")?.absoluteString,
+                       "https://github.com/o/r/releases/latest/download/encore-update.json")
+    }
+}

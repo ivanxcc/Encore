@@ -34,16 +34,24 @@ struct SettingsView: View {
                 Text("Each household has its own accounts, add-ons, profiles, and watch history. Nothing is shared between households.")
             }
 
-            Section("Stremio Account") {
+            Section {
                 if let email = app.settings.accountEmail {
                     LabeledContent("Signed in as", value: email)
                     Button("Sync Now") { Task { await app.refresh() } }
                     Button("Sign Out", role: .destructive) { Task { await app.signOut() } }
                 } else {
                     NavigationLink { SignInView() } label: {
-                        Label("Sign In to Stremio", systemImage: "person.crop.circle.badge.plus")
+                        Label(app.settings.ownerEmail.map { "Sign In as \($0)" } ?? "Sign In to Stremio",
+                              systemImage: "person.crop.circle.badge.plus")
+                    }
+                    if app.settings.ownerEmail != nil {
+                        Button("Release Household from This Account", role: .destructive) { app.releaseHouseholdFromAccount() }
                     }
                 }
+            } header: {
+                Text("Stremio Account")
+            } footer: {
+                Text("A household belongs to the first Stremio account that signs in to it. Signing in with another account opens that account's own household, so two people's libraries and history never mix.")
             }
 
             Section {
@@ -89,7 +97,10 @@ struct SettingsView: View {
             VideoAudioSection()
 
             Section("About") {
-                LabeledContent("Version", value: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")
+                LabeledContent("Version", value: versionText)
+                #if os(macOS)
+                MacUpdateRow()
+                #endif
             }
         }
         .navigationTitle("Settings")
@@ -97,7 +108,32 @@ struct SettingsView: View {
         .formStyle(.grouped)
         #endif
     }
+
+    private var versionText: String {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? ""
+        return "\(version) (\(build))"
+    }
 }
+
+#if os(macOS)
+private struct MacUpdateRow: View {
+    @ObservedObject private var updater = MacUpdater.shared
+    @State private var checking = false
+
+    var body: some View {
+        HStack {
+            Button(checking ? "Checking…" : "Check for Updates") {
+                checking = true
+                Task { await updater.check(userInitiated: true); checking = false }
+            }
+            .disabled(checking)
+            Spacer()
+            if updater.state == .upToDate { Text("Encore is up to date").foregroundStyle(.secondary) }
+        }
+    }
+}
+#endif
 
 struct SignInView: View {
     @EnvironmentObject private var app: AppModel
@@ -120,7 +156,7 @@ struct SignInView: View {
                 SecureField("Password", text: $password)
                     .textContentType(.password)
             } footer: {
-                Text("Your library, add-ons, and progress come with your Stremio account. They stay inside the \(app.household.name) household.")
+                Text("Your library, add-ons, and progress come with your Stremio account. If this account already has a household on this device, or \(app.household.name) belongs to someone else, Encore opens the account's own household.")
             }
             if let error {
                 Section { Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.red) }

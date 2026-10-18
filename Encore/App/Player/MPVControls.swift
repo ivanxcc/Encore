@@ -1,5 +1,8 @@
 import SwiftUI
 import EncoreKit
+#if os(macOS)
+import AppKit
+#endif
 
 /// Transport controls for the libmpv engine, laid out like the system player so switching engines is
 /// invisible to the viewer: title top-left, track menus top-right, scrubber with elapsed/remaining at the
@@ -13,7 +16,8 @@ struct MPVControls: View {
     @State private var hideTask: Task<Void, Never>?
     @State private var scrubPosition: Double?
     #if os(tvOS)
-    @FocusState private var surfaceFocused: Bool
+    private enum Focus: Hashable { case surface, action }
+    @FocusState private var focus: Focus?
     #endif
 
     var body: some View {
@@ -26,9 +30,55 @@ struct MPVControls: View {
             if session.isBuffering {
                 ProgressView().tint(.white).scaleEffect(1.6)
             }
+            // Skip Intro / Next Episode stays on screen even when the rest of the chrome has faded, exactly
+            // like the TV app. On Apple TV it takes focus as it appears, so one click of the remote skips.
+            if let action = session.action {
+                actionButton(action)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                    .padding(.horizontal, Theme.Metrics.edge)
+                    .padding(.bottom, bottomPadding + (visible ? actionLift : 0))
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
+            }
         }
         .animation(.easeInOut(duration: 0.25), value: visible)
+        .animation(Theme.Motion.content, value: session.action)
         .onAppear { scheduleHide() }
+        #if os(tvOS)
+        // Move focus only when a button appears or goes away, not on every countdown tick, so a viewer who
+        // moved to "Watch Credits" is not pulled back.
+        .onChange(of: session.action != nil) { _, hasAction in focus = hasAction ? .action : .surface }
+        #endif
+        #if os(macOS)
+        .onChange(of: visible) { _, isVisible in if !isVisible { NSCursor.setHiddenUntilMouseMoves(true) } }
+        #endif
+    }
+
+    @ViewBuilder
+    private func actionButton(_ action: PlayerAction) -> some View {
+        #if os(tvOS)
+        HStack(spacing: 14) {
+            if action.isCountdown {
+                Button("Watch Credits") { session.cancelUpNext() }.pillButtonStyle(.secondary)
+            }
+            Button { session.performAction() } label: {
+                Label(action.title, systemImage: action.systemImage)
+            }
+            .pillButtonStyle(.primary)
+            .focused($focus, equals: .action)
+        }
+        .tvFocusSection()
+        #else
+        PlayerActionButton(action: action, perform: { session.performAction(); reveal() },
+                           dismiss: action.isCountdown ? { session.cancelUpNext() } : nil)
+        #endif
+    }
+
+    private var actionLift: CGFloat {
+        #if os(tvOS)
+        return 90
+        #else
+        return 70
+        #endif
     }
 
     // MARK: Input surface
@@ -40,8 +90,8 @@ struct MPVControls: View {
         }
         .buttonStyle(InvisibleButtonStyle())
         .focusEffectDisabled()
-        .focused($surfaceFocused)
-        .onAppear { surfaceFocused = true }
+        .focused($focus, equals: .surface)
+        .onAppear { focus = .surface }
         .onMoveCommand { direction in
             switch direction {
             case .left: skip(-10)
@@ -50,11 +100,21 @@ struct MPVControls: View {
             }
         }
         .onPlayPauseCommand { togglePause() }
+        #elseif os(macOS)
+        // Mac: moving the mouse brings the controls back (and the cursor, which hides with them); a click
+        // shows or hides them; a double-click toggles full screen, as in QuickTime and Infuse.
+        Color.clear
+            .contentShape(Rectangle())
+            .onContinuousHover { phase in
+                if case .active = phase { reveal() }
+            }
+            .onTapGesture(count: 2) { toggleFullScreen() }
+            .onTapGesture { toggleVisibility() }
         #else
         Color.clear
             .contentShape(Rectangle())
-            .onTapGesture { toggleVisibility() }
             .onTapGesture(count: 2) { togglePause() }
+            .onTapGesture { toggleVisibility() }
         #endif
     }
 
@@ -108,6 +168,12 @@ struct MPVControls: View {
 
     private var trackMenus: some View {
         HStack(spacing: 14) {
+            if session.canPlayNext {
+                Button { session.playNext() } label: {
+                    Image(systemName: "forward.end.fill").frame(width: 44, height: 44)
+                }
+                .accessibilityLabel("Next Episode")
+            }
             if !engine.audioTracks.isEmpty {
                 Menu {
                     ForEach(engine.audioTracks) { track in
@@ -133,6 +199,14 @@ struct MPVControls: View {
                 Image(systemName: "captions.bubble").frame(width: 44, height: 44)
             }
             .accessibilityLabel("Subtitles")
+            #if os(macOS)
+            Button { toggleFullScreen() } label: {
+                Image(systemName: isFullScreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
+                    .frame(width: 44, height: 44)
+            }
+            .keyboardShortcut("f", modifiers: [])
+            .accessibilityLabel("Full Screen")
+            #endif
         }
         .menuStyle(.button)
         .buttonStyle(.plain)
@@ -200,6 +274,14 @@ struct MPVControls: View {
     }
 
     // MARK: Actions
+
+    #if os(macOS)
+    private var isFullScreen: Bool { NSApp.keyWindow?.styleMask.contains(.fullScreen) ?? false }
+    private func toggleFullScreen() {
+        NSApp.keyWindow?.toggleFullScreen(nil)
+        reveal()
+    }
+    #endif
 
     private func toggleVisibility() {
         visible.toggle()

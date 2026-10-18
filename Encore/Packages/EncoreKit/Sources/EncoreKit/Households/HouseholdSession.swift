@@ -3,14 +3,20 @@ import Foundation
 /// Household-level settings that are not secrets.
 public struct HouseholdSettings: Codable, Hashable, Sendable {
     public var accountEmail: String?
+    /// The Stremio user this household belongs to. Set on first sign-in and kept after sign-out, so the
+    /// household stays that person's: signing in with a different account opens (or creates) that
+    /// account's own household instead of mixing the two.
+    public var accountUserID: String?
+    /// The email of that account, kept after sign-out so the household can say whose it is.
+    public var ownerEmail: String?
     public var addons: [Addon]
     /// A Stremio streaming server (Stremio Service on a Mac/PC/NAS). Only torrents need it.
     public var streamingServer: URL?
     public var preferences: StreamPreferences
 
-    public init(accountEmail: String? = nil, addons: [Addon] = DefaultAddons.all,
+    public init(accountEmail: String? = nil, accountUserID: String? = nil, addons: [Addon] = DefaultAddons.all,
                 streamingServer: URL? = nil, preferences: StreamPreferences = StreamPreferences()) {
-        self.accountEmail = accountEmail; self.addons = addons
+        self.accountEmail = accountEmail; self.accountUserID = accountUserID; self.addons = addons
         self.streamingServer = streamingServer; self.preferences = preferences
     }
 }
@@ -78,10 +84,30 @@ public final class HouseholdSession: @unchecked Sendable {
 
     // MARK: Account
 
+    public enum BindingError: Error, Equatable, Sendable {
+        /// This household belongs to another Stremio account.
+        case belongsToAnotherAccount(email: String?)
+    }
+
     public func signIn(email: String, password: String) async throws {
-        let session = try await api.login(email: email, password: password)
+        try await adopt(try await api.login(email: email, password: password))
+    }
+
+    /// Whether `session` may sign in here: an unclaimed household, or the account it already belongs to.
+    public func accepts(_ session: StremioAPI.Session) -> Bool {
+        let owner = settings.accountUserID
+        return owner == nil || owner == session.user.id
+    }
+
+    /// Store a signed-in session in this household and claim the household for that account.
+    public func adopt(_ session: StremioAPI.Session) async throws {
+        guard accepts(session) else { throw BindingError.belongsToAnotherAccount(email: settings.ownerEmail) }
         scope.secrets.set(session.authKey, for: Self.authKeyName)
-        updateSettings { $0.accountEmail = session.user.email }
+        updateSettings {
+            $0.accountEmail = session.user.email
+            $0.accountUserID = session.user.id
+            $0.ownerEmail = session.user.email
+        }
         try await refreshFromAccount()
     }
 
@@ -98,6 +124,12 @@ public final class HouseholdSession: @unchecked Sendable {
             if let owner { libraries[owner.id] = [:] }
         }
         if let owner = roster.load().first(where: \.isOwner) { libraryFile(owner).remove() }
+    }
+
+    /// Release a signed-out household from its account so a different account can claim it.
+    public func forgetAccountBinding() {
+        guard !isSignedIn else { return }
+        updateSettings { $0.accountUserID = nil; $0.ownerEmail = nil }
     }
 
     /// Pull the account's add-ons and library. A failure leaves the cached state untouched.

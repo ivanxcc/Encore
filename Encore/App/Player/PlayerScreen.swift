@@ -22,7 +22,10 @@ struct PlayerScreen: View {
             switch session.engineKind {
             case .native:
                 if let native = session.native {
-                    NativePlayerView(player: native.player).ignoresSafeArea()
+                    // tvOS: Skip Intro / Next Episode ride the system player's own contextual action button,
+                    // which is the only control the remote can reach while AVPlayerViewController has focus.
+                    NativePlayerView(player: native.player, action: session.action) { session.performAction() }
+                        .ignoresSafeArea()
                 }
             case .mpv:
                 if let mpv = session.mpv {
@@ -40,15 +43,17 @@ struct PlayerScreen: View {
                     .transition(.opacity)
             }
 
-            if let countdown = session.upNextCountdown, let next = session.nextEpisode {
-                UpNextCard(meta: session.meta, next: next, countdown: countdown,
-                           play: { session.playNext() }, dismiss: { session.cancelUpNext() })
+            #if !os(tvOS)
+            // iPhone, iPad, Mac with the system player: the same button floats bottom-right.
+            if session.engineKind == .native, session.phase == .playing, let action = session.action {
+                PlayerActionButton(action: action, perform: { session.performAction() },
+                                   dismiss: action.isCountdown ? { session.cancelUpNext() } : nil)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
-                    .padding(Theme.Metrics.edge)
+                    .padding(.horizontal, Theme.Metrics.edge)
+                    .padding(.bottom, 90)
                     .transition(.move(edge: .trailing).combined(with: .opacity))
             }
 
-            #if !os(tvOS)
             if session.engineKind == .native, session.phase == .playing {
                 CloseButton(action: close)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -57,7 +62,7 @@ struct PlayerScreen: View {
             #endif
         }
         .animation(Theme.Motion.content, value: session.phase)
-        .animation(Theme.Motion.content, value: session.upNextCountdown != nil)
+        .animation(Theme.Motion.content, value: session.action)
         .preferredColorScheme(.dark)
         #if os(tvOS) || os(macOS)
         .onExitCommand { close() }
@@ -135,28 +140,32 @@ private struct LoadingCurtain: View {
     }
 }
 
-private struct UpNextCard: View {
-    let meta: MetaPreview
-    let next: Video
-    let countdown: Int
-    let play: () -> Void
-    let dismiss: () -> Void
+/// The contextual button (Skip Intro, Skip Recap, Next Episode with its countdown), styled like the
+/// TV app's: a bright capsule that sits bottom-right, with an optional "Not Now" beside the countdown.
+struct PlayerActionButton: View {
+    let action: PlayerAction
+    let perform: () -> Void
+    var dismiss: (() -> Void)?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Up Next").font(Theme.Fonts.meta).foregroundStyle(Theme.Colors.secondary)
-            Text([next.episodeLabel, next.title].compactMap { $0 }.joined(separator: " · "))
-                .font(Theme.Fonts.cardTitle).foregroundStyle(.white).lineLimit(2)
-            HStack(spacing: 14) {
-                Button(action: play) { Label("Play in \(countdown)", systemImage: "play.fill") }
-                    .pillButtonStyle(.primary)
-                Button("Not Now", action: dismiss).pillButtonStyle(.secondary)
+        HStack(spacing: 14) {
+            if let dismiss {
+                Button("Watch Credits", action: dismiss).pillButtonStyle(.secondary)
             }
+            Button(action: perform) {
+                Label(action.title, systemImage: action.systemImage)
+                    .contentTransition(.numericText())
+            }
+            .pillButtonStyle(.primary)
         }
-        .padding(24)
-        .frame(maxWidth: 520, alignment: .leading)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
-        .tvFocusSection()
+        .shadow(color: .black.opacity(0.4), radius: 20)
+    }
+}
+
+extension PlayerAction {
+    var isCountdown: Bool {
+        if case .nextEpisode(countdown: .some) = self { return true }
+        return false
     }
 }
 

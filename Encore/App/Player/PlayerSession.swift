@@ -22,6 +22,10 @@ final class PlayerSession: ObservableObject {
     @Published private(set) var video: Video?
     @Published private(set) var nextEpisode: Video?
     @Published var upNextCountdown: Int?
+    /// Intro / recap / credits markers for the playing episode.
+    @Published private(set) var skipSegments: [SkipSegment] = []
+    /// The one contextual button the player shows right now ("Skip Intro", "Next Episode"), if any.
+    @Published private(set) var action: PlayerAction?
 
     let meta: MetaPreview
     private let explicit: RankedStream?
@@ -36,6 +40,9 @@ final class PlayerSession: ObservableObject {
     private var lastRecorded: TimeInterval = 0
     private var episodes: [Video] = []
     private var countdownTask: Task<Void, Never>?
+    private var segmentsTask: Task<Void, Never>?
+    /// Segments the viewer already skipped or watched through, so the button does not come back.
+    private var dismissedSegments: Set<SkipSegment> = []
 
     init(request: PlaybackRequest) {
         meta = request.meta
@@ -69,6 +76,7 @@ final class PlayerSession: ObservableObject {
 
     func close() {
         recordProgress(force: true)
+        segmentsTask?.cancel()
         watchdog?.cancel()
         countdownTask?.cancel()
         native?.stop()
@@ -157,13 +165,20 @@ final class PlayerSession: ObservableObject {
         case .started:
             watchdog?.cancel()
             withAnimation(Theme.Motion.content) { phase = .playing }
+            loadSkipSegments()
         case let .progress(position, duration):
             self.position = position
-            if duration > 0 { self.duration = duration }
+            if duration > 0 {
+                if self.duration == 0, skipSegments.isEmpty { self.duration = duration; loadSkipSegments() }
+                self.duration = duration
+            }
             recordProgress(force: false)
-            if nextEpisode != nil, duration > 0, duration - position < 25, upNextCountdown == nil, phase == .playing {
+            // Up Next starts when the credits begin (when the databases know them), else in the last 25s.
+            let inCredits = skipSegments.contains { $0.kind == .credits && $0.isActive(at: position) && $0.end >= duration - 60 }
+            if nextEpisode != nil, duration > 0, inCredits || duration - position < 25, upNextCountdown == nil, phase == .playing {
                 startUpNextCountdown()
             }
+            updateAction()
         case let .buffering(buffering):
             isBuffering = buffering
         case .ended:
@@ -173,6 +188,52 @@ final class PlayerSession: ObservableObject {
             advance()
         }
     }
+
+    // MARK: Skip Intro / Next Episode
+
+    private func loadSkipSegments() {
+        guard meta.type == "series" || meta.type == "anime" || meta.type == "movie", duration > 0 else { return }
+        segmentsTask?.cancel()
+        let metaID = meta.id, season = video?.season, episode = video?.episode, length = duration
+        let videoID = video?.id
+        segmentsTask = Task { [weak self] in
+            var found = await SkipSegmentService().segments(metaID: metaID, season: season, episode: episode, duration: length)
+            if found.isEmpty, let chapters = self?.mpv?.chapters(), !chapters.isEmpty {
+                found = SkipSegmentService.fromChapters(chapters, duration: length)
+            }
+            guard !Task.isCancelled, let self, self.video?.id == videoID else { return }
+            self.skipSegments = found
+            self.updateAction()
+        }
+    }
+
+    private func updateAction() {
+        let next: PlayerAction?
+        if let countdown = upNextCountdown, nextEpisode != nil {
+            next = .nextEpisode(countdown: countdown)
+        } else if let segment = skipSegments.first(where: { $0.isActive(at: position) && !dismissedSegments.contains($0) }) {
+            next = segment.kind == .credits && nextEpisode != nil ? .nextEpisode(countdown: nil) : .skip(segment)
+        } else {
+            next = nil
+        }
+        if next != action { withAnimation(Theme.Motion.content) { action = next } }
+    }
+
+    /// The button was pressed.
+    func performAction() {
+        switch action {
+        case let .skip(segment):
+            dismissedSegments.insert(segment)
+            engine?.seek(to: min(segment.end, max(duration - 1, 0)))
+            action = nil
+        case .nextEpisode:
+            playNext()
+        case nil:
+            break
+        }
+    }
+
+    var canPlayNext: Bool { nextEpisode != nil }
 
     // MARK: Progress
 
@@ -205,6 +266,7 @@ final class PlayerSession: ObservableObject {
         upNextCountdown = 10
         countdownTask = Task { [weak self] in
             while let self, let remaining = self.upNextCountdown, remaining > 0, !Task.isCancelled {
+                self.updateAction()
                 try? await Task.sleep(for: .seconds(1))
                 guard !Task.isCancelled, self.upNextCountdown != nil else { return }
                 self.upNextCountdown = remaining - 1
@@ -217,14 +279,20 @@ final class PlayerSession: ObservableObject {
     func cancelUpNext() {
         countdownTask?.cancel()
         upNextCountdown = nil
-        nextEpisode = nil   // the viewer said no; do not ask again for this episode
+        // The viewer said "not now": keep watching the credits, but leave the Next Episode button available.
+        for segment in skipSegments where segment.kind == .credits { dismissedSegments.insert(segment) }
+        updateAction()
     }
 
     func playNext() {
         guard let next = nextEpisode else { return }
         recordProgress(force: true, finished: true)
         countdownTask?.cancel()
+        segmentsTask?.cancel()
         upNextCountdown = nil
+        skipSegments = []
+        dismissedSegments = []
+        action = nil
         video = next
         resumeAt = 0
         position = 0

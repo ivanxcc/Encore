@@ -137,6 +137,9 @@ struct HeroCarousel: View {
     /// While the viewer is on the hero's buttons it must hold still; rotating under the focus would move
     /// their selection to a different title.
     @FocusState private var focus: HeroInfo.Focus?
+    #if os(macOS)
+    @State private var hovering = false
+    #endif
 
     var body: some View {
         GeometryReader { proxy in
@@ -156,22 +159,40 @@ struct HeroCarousel: View {
                     .padding(.bottom, 36)
             }
             .animation(Theme.Motion.hero, value: index)
-            #if !os(tvOS)
+            #if os(iOS)
             .gesture(DragGesture(minimumDistance: 30).onEnded { value in
                 interacted = true
                 step(value.translation.width < 0 ? 1 : -1)
             })
+            #elseif os(macOS)
+            // Mac: two-finger trackpad swipes (and horizontal mouse wheels), click-drag, and arrows that
+            // appear on hover. A mouse drag alone was the only input before, which is why swiping did nothing.
+            .overlay { MacHeroControls(hovering: $hovering) { delta in interacted = true; step(delta) } }
+            .gesture(DragGesture(minimumDistance: 30).onEnded { value in
+                interacted = true
+                step(value.translation.width < 0 ? 1 : -1)
+            })
+            .onHover { hovering = $0 }
             #endif
         }
         .frame(height: heroHeight)
-        .task(id: interacted || focus != nil) {
-            guard !interacted, focus == nil else { return }
+        .task(id: interacted || focus != nil || isHovering) {
+            guard !interacted, focus == nil, !isHovering else { return }
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(8))
                 guard !Task.isCancelled else { return }
                 step(1)
             }
         }
+    }
+
+    /// Rotation pauses while the pointer rests on the hero (Mac), like it does while the remote is on it.
+    private var isHovering: Bool {
+        #if os(macOS)
+        return hovering
+        #else
+        return false
+        #endif
     }
 
     private var heroHeight: CGFloat {
@@ -222,7 +243,7 @@ struct HeroInfo: View {
                     let _ = app.libraryRevision
                     Image(systemName: app.libraryItem(item.id)?.isInLibrary == true ? "checkmark" : "plus")
                 }
-                .pillButtonStyle(.secondary)
+                .pillButtonStyle(.icon)
                 .focused(focus, equals: .list)
                 Spacer()
                 PageDots(count: count, index: index)
@@ -320,3 +341,72 @@ struct MetaLine: View {
             .foregroundStyle(Theme.Colors.secondary)
     }
 }
+
+#if os(macOS)
+import AppKit
+
+/// Arrows on hover plus a scroll-wheel monitor for trackpad swipes, active only while the pointer is over
+/// the hero so it never steals scrolling from the rest of Home.
+private struct MacHeroControls: View {
+    @Binding var hovering: Bool
+    let step: (Int) -> Void
+    @State private var monitor: Any?
+    @State private var accumulated: CGFloat = 0
+    @State private var fired = false
+    @State private var lastWheelStep = Date.distantPast
+
+    var body: some View {
+        HStack {
+            arrow("chevron.left") { step(-1) }
+            Spacer()
+            arrow("chevron.right") { step(1) }
+        }
+        .padding(.horizontal, 18)
+        .opacity(hovering ? 1 : 0)
+        .animation(Theme.Motion.focus, value: hovering)
+        .onChange(of: hovering) { _, isHovering in isHovering ? install() : remove() }
+        .onDisappear { remove() }
+    }
+
+    private func arrow(_ symbol: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 20, weight: .bold))
+                .frame(width: 44, height: 44)
+                .background(.ultraThinMaterial, in: Circle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func install() {
+        guard monitor == nil else { return }
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
+            // Only clearly horizontal gestures page the hero; vertical scrolling passes through to Home.
+            guard abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY) else { return event }
+            // Trackpad inertia after the fingers lift is ignored, so one swipe is exactly one step.
+            guard event.momentumPhase == [] else { return nil }
+            if event.phase == [] {
+                // A horizontal mouse wheel has no gesture phases: one notch is one step, debounced.
+                if Date().timeIntervalSince(lastWheelStep) > 0.35 {
+                    lastWheelStep = Date()
+                    step(event.scrollingDeltaX > 0 ? -1 : 1)
+                }
+                return nil
+            }
+            if event.phase == .began { accumulated = 0; fired = false }
+            accumulated += event.scrollingDeltaX
+            if !fired, abs(accumulated) > 50 {
+                fired = true
+                step(accumulated > 0 ? -1 : 1)   // natural scrolling: fingers moving left shows the next title
+            }
+            if event.phase == .ended || event.phase == .cancelled { accumulated = 0; fired = false }
+            return nil
+        }
+    }
+
+    private func remove() {
+        if let monitor { NSEvent.removeMonitor(monitor) }
+        monitor = nil
+    }
+}
+#endif

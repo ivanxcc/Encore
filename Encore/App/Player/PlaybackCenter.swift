@@ -23,7 +23,9 @@ struct PlaybackRequest: Identifiable {
 final class PlaybackCenter: ObservableObject {
     @Published var request: PlaybackRequest?
 
-    func play(meta: MetaPreview, video: Video?, app: AppModel, explicit: RankedStream? = nil) {
+    /// - Parameter afterDismissal: true when called from a sheet that is closing. iOS and tvOS refuse to
+    ///   present the full-screen player while a sheet is still on screen, so the request waits for it.
+    func play(meta: MetaPreview, video: Video?, app: AppModel, explicit: RankedStream? = nil, afterDismissal: Bool = false) {
         let item = app.libraryItem(meta.id)
         // Resume where the viewer left off when they re-open the same video.
         let resume: TimeInterval
@@ -32,7 +34,12 @@ final class PlaybackCenter: ObservableObject {
         } else {
             resume = 0
         }
-        request = PlaybackRequest(meta: meta, video: video, resumeAt: resume, explicit: explicit)
+        let next = PlaybackRequest(meta: meta, video: video, resumeAt: resume, explicit: explicit)
+        guard afterDismissal else { request = next; return }
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(650))
+            request = next
+        }
     }
 
     func resume(_ item: StremioLibraryItem, app: AppModel) {

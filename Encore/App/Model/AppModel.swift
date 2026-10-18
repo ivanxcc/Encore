@@ -104,10 +104,46 @@ final class AppModel: ObservableObject {
         libraryRevision += 1
     }
 
-    func signIn(email: String, password: String) async throws {
-        try await session.signIn(email: email, password: password)
+    enum SignInOutcome: Equatable {
+        /// Signed in to the household that was open.
+        case signedInHere
+        /// The account already had a household on this device (or this one belongs to someone else), so
+        /// Encore opened that account's own household instead of mixing two people's data.
+        case switchedTo(Household)
+    }
+
+    /// Sign in, keeping every Stremio account in its own household:
+    ///  - an account that already owns a household on this device opens it;
+    ///  - this household, if unclaimed or already that account's, takes the session;
+    ///  - otherwise a new household is created for the account and opened.
+    @discardableResult
+    func signIn(email: String, password: String) async throws -> SignInOutcome {
+        let stremio = try await session.api.login(email: email, password: password)
+        let owner = directory.household(boundTo: stremio.user.id)
+        if owner == nil || owner?.id == household.id, session.accepts(stremio) {
+            try await session.adopt(stremio)
+            settings = session.settings
+            libraryRevision += 1
+            return .signedInHere
+        }
+        let target = owner ?? directory.add(name: Self.householdName(for: stremio.user.email), symbol: "person.2.fill")
+        let targetSession = HouseholdSession(scope: directory.scope(for: target))
+        try await targetSession.adopt(stremio)
+        switchHousehold(to: target)
+        return .switchedTo(target)
+    }
+
+    /// "sarah.chen@x.com" -> "Sarah".
+    static func householdName(for email: String) -> String {
+        let local = email.split(separator: "@").first.map(String.init) ?? email
+        let first = local.split(whereSeparator: { ".-_+".contains($0) }).first.map(String.init) ?? local
+        return first.prefix(1).uppercased() + first.dropFirst()
+    }
+
+    /// Settings > "Release from Account": lets a different account claim a signed-out household.
+    func releaseHouseholdFromAccount() {
+        session.forgetAccountBinding()
         settings = session.settings
-        libraryRevision += 1
     }
 
     func signOut() async {

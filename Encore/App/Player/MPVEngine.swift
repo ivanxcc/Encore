@@ -277,6 +277,16 @@ final class MPVEngine: ObservableObject, PlayerEngine {
         return value
     }
 
+    /// Chapter titles and start times embedded in the file (used for skip markers when no database has them).
+    func chapters() -> [(title: String, start: TimeInterval)] {
+        let count = Int(double("chapter-list/count"))
+        guard count > 0 else { return [] }
+        return (0..<count).compactMap { index in
+            guard let title = string("chapter-list/\(index)/title") else { return nil }
+            return (title, double("chapter-list/\(index)/time"))
+        }
+    }
+
     private var appliedRange: ContentDynamicRange?
 
     /// Output the content's real dynamic range instead of a tone-mapped SDR picture:

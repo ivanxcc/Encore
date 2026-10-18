@@ -48,7 +48,8 @@ extension View {
 
 /// The white capsule "Play" button and its translucent secondary siblings, as on Apple TV detail pages.
 struct PillButtonStyle: ButtonStyle {
-    enum Kind { case primary, secondary }
+    /// `icon` is a translucent circle for a lone SF Symbol (+, checkmark, list), Apple TV style.
+    enum Kind { case primary, secondary, icon }
     var kind: Kind = .primary
 
     func makeBody(configuration: Configuration) -> some View {
@@ -65,8 +66,11 @@ struct PillButtonStyle: ButtonStyle {
             let active = focused || hovering
             configuration.label
                 .font(labelFont)
-                .padding(.horizontal, horizontalPadding)
-                .padding(.vertical, verticalPadding)
+                .lineLimit(1)
+                .fixedSize()                       // a title never wraps into a two-line, oddly shaped pill
+                .padding(.horizontal, kind == .icon ? 0 : horizontalPadding)
+                .padding(.vertical, kind == .icon ? 0 : verticalPadding)
+                .frame(width: kind == .icon ? iconDiameter : nil, height: kind == .icon ? iconDiameter : nil)
                 .foregroundStyle(foreground(active))
                 .background(background(active), in: Capsule())
                 .scaleEffect(configuration.isPressed ? 0.95 : (active ? scaleUp : 1))
@@ -81,14 +85,14 @@ struct PillButtonStyle: ButtonStyle {
         private func foreground(_ active: Bool) -> Color {
             switch kind {
             case .primary: .black
-            case .secondary: active ? .black : .white
+            case .secondary, .icon: active ? .black : .white
             }
         }
 
         private func background(_ active: Bool) -> AnyShapeStyle {
             switch kind {
             case .primary: AnyShapeStyle(Color.white.opacity(active ? 1 : 0.92))
-            case .secondary: active ? AnyShapeStyle(Color.white) : AnyShapeStyle(.ultraThinMaterial)
+            case .secondary, .icon: active ? AnyShapeStyle(Color.white) : AnyShapeStyle(.ultraThinMaterial)
             }
         }
 
@@ -97,7 +101,9 @@ struct PillButtonStyle: ButtonStyle {
         private let horizontalPadding: CGFloat = 40
         private let verticalPadding: CGFloat = 18
         private let scaleUp: CGFloat = 1.08
+        private let iconDiameter: CGFloat = 66
         #else
+        private let iconDiameter: CGFloat = 44
         private let labelFont = Font.system(.headline)
         private let horizontalPadding: CGFloat = 22
         private let verticalPadding: CGFloat = 11

@@ -28,6 +28,12 @@ struct RootView: View {
         .animation(Theme.Motion.content, value: app.activeProfile?.id)
         .encoreCanvas()
         .playerPresentation(playback)
+        #if os(macOS)
+        // While a video plays the window is all picture: no tab bar / toolbar, no traffic lights, in a window
+        // or in full screen.
+        .toolbar(playback.request == nil ? .automatic : .hidden, for: .windowToolbar)
+        .background(WindowChromeController(hidden: playback.request != nil))
+        #endif
     }
 
     private var tabs: some View {
@@ -59,3 +65,24 @@ extension View {
         }
     }
 }
+
+#if os(macOS)
+import AppKit
+
+/// Hides the window's title-bar buttons while playing and restores them afterwards.
+private struct WindowChromeController: NSViewRepresentable {
+    let hidden: Bool
+
+    func makeNSView(context: Context) -> NSView { NSView() }
+
+    func updateNSView(_ view: NSView, context: Context) {
+        DispatchQueue.main.async {
+            guard let window = view.window else { return }
+            for kind in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
+                window.standardWindowButton(kind)?.isHidden = hidden
+            }
+            window.titlebarAppearsTransparent = true
+        }
+    }
+}
+#endif

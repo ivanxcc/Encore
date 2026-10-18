@@ -30,6 +30,7 @@ struct DetailView: View {
     @EnvironmentObject private var playback: PlaybackCenter
     @StateObject private var model = DetailModel()
     @State private var showSources = false
+    @State private var selectedEpisode: Video?
 
     var body: some View {
         let _ = app.libraryRevision
@@ -39,7 +40,7 @@ struct DetailView: View {
                 header(libraryItem)
                 if let meta = model.meta, meta.type == "series" || !meta.seasons.isEmpty {
                     EpisodesSection(meta: meta, season: $model.season, libraryItem: libraryItem) { video in
-                        playback.play(meta: meta.preview, video: video, app: app)
+                        selectedEpisode = video
                     }
                 }
                 if let meta = model.meta { AboutSection(meta: meta) }
@@ -57,6 +58,9 @@ struct DetailView: View {
         }
         .encoreCanvas()
         .task(id: preview.id) { await model.load(preview, app: app) }
+        .sheet(item: $selectedEpisode) { video in
+            if let meta = model.meta { EpisodeDetailView(meta: meta, video: video) }
+        }
         .sheet(isPresented: $showSources) {
             SourcesView(meta: model.meta?.preview ?? preview, video: currentVideo(libraryItem))
         }
@@ -146,13 +150,13 @@ struct DetailView: View {
             } label: {
                 Image(systemName: libraryItem?.isInLibrary == true ? "checkmark" : "plus")
             }
-            .pillButtonStyle(.secondary)
+            .pillButtonStyle(.icon)
             .accessibilityLabel(libraryItem?.isInLibrary == true ? "Remove from My List" : "Add to My List")
 
             Button { showSources = true } label: {
                 Image(systemName: "list.bullet")
             }
-            .pillButtonStyle(.secondary)
+            .pillButtonStyle(.icon)
             .accessibilityLabel("Choose Source")
         }
         .tvFocusSection()

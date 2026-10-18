@@ -4,6 +4,8 @@ name: Encore Release
 #   - Encore-iOS-<version>.ipa    iPhone + iPad, unsigned (sideload re-signs it)
 #   - Encore-tvOS-<version>.ipa   Apple TV, unsigned (sideload re-signs it)
 #   - Encore-macOS-<version>.dmg  universal (Apple silicon + Intel), ad-hoc signed
+#   - Encore-macOS-<version>.zip  the same Mac app, for the in-app updater
+#   - encore-update.json          version, build, URL, and SHA-256 the Mac app checks on launch
 #   - altstore-source.json        AltStore / SideStore source that always points at this release
 # and publishes them as a GitHub Release with notes generated from the commits since the last one.
 #
@@ -121,6 +123,8 @@ jobs:
               codesign --verify --deep --strict "$APP"
               rm -rf dmg && mkdir dmg && cp -R "$APP" dmg/ && ln -s /Applications dmg/Applications
               hdiutil create -volname Encore -srcfolder dmg -format UDZO "out/Encore-macOS-${VERSION}.dmg"
+              # The in-place updater downloads this zip (smaller and simpler to unpack than a DMG).
+              ditto -c -k --keepParent "$APP" "out/Encore-macOS-${VERSION}.zip"
               ;;
           esac
           ls -la out
@@ -169,6 +173,18 @@ jobs:
               news: []
             }' > dist/altstore-source.json
           cat dist/altstore-source.json
+      - name: Write Mac update manifest
+        run: |
+          set -euo pipefail
+          ZIP="Encore-macOS-${VERSION}.zip"
+          SHA=$(sha256sum "dist/${ZIP}" | cut -d' ' -f1)
+          NOTES=$(git log -1 --pretty=%B "$GITHUB_SHA" | head -40)
+          jq -n --arg version "$VERSION" --argjson build "$BUILD" \
+            --arg url "https://github.com/${REPO}/releases/download/${TAG}/${ZIP}" --arg sha "$SHA" \
+            --arg notes "$NOTES" --arg page "https://github.com/${REPO}/releases/tag/${TAG}" \
+            '{version: $version, build: $build, url: $url, sha256: $sha, notes: $notes, releasePage: $page, minimumSystemVersion: "15.0"}' \
+            > dist/encore-update.json
+          cat dist/encore-update.json
       - name: Publish release
         run: |
           set -euo pipefail

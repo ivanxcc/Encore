@@ -119,6 +119,8 @@ final class NativeEngine: PlayerEngine {
 #if os(macOS)
 struct NativePlayerView: NSViewRepresentable {
     let player: AVPlayer
+    var action: PlayerAction? = nil
+    var perform: () -> Void = {}
 
     func makeNSView(context: Context) -> AVPlayerView {
         let view = AVPlayerView()
@@ -136,6 +138,8 @@ struct NativePlayerView: NSViewRepresentable {
 #else
 struct NativePlayerView: UIViewControllerRepresentable {
     let player: AVPlayer
+    var action: PlayerAction? = nil
+    var perform: () -> Void = {}
 
     func makeUIViewController(context: Context) -> AVPlayerViewController {
         let controller = AVPlayerViewController()
@@ -154,6 +158,12 @@ struct NativePlayerView: UIViewControllerRepresentable {
 
     func updateUIViewController(_ controller: AVPlayerViewController, context: Context) {
         if controller.player !== player { controller.player = player }
+        #if os(tvOS)
+        let perform = self.perform
+        controller.contextualActions = action.map { action in
+            [UIAction(title: action.title, image: UIImage(systemName: action.systemImage)) { _ in perform() }]
+        } ?? []
+        #endif
     }
 }
 #endif
