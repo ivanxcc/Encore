@@ -253,7 +253,7 @@ final class HouseholdTests: XCTestCase {
 
     func testPinHash() {
         var p = Profile(name: "P")
-        p.pinHash = Profile.hashPin("1234", profileID: p.id)
+        p.pinHash = Profile.hashPin("1234")
         XCTAssertTrue(p.pinMatches("1234"))
         XCTAssertFalse(p.pinMatches("4321"))
         XCTAssertEqual(SHA256Digest.hex(of: "abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
@@ -436,5 +436,31 @@ final class SkipAndBindingTests: XCTestCase {
         XCTAssertFalse(manifest.isNewer(thanBuild: 7))
         XCTAssertEqual(UpdateManifest.latestURL(repository: "o/r")?.absoluteString,
                        "https://github.com/o/r/releases/latest/download/encore-update.json")
+    }
+}
+
+final class RatingsTests: XCTestCase {
+    func testLiftsRatingsOutOfSynopsis() {
+        let text = "🍅 Rotten Tomatoes: 93% | 🍿 Audience: 88% | IMDb 7.8/10\nA young chef returns home to run the family restaurant."
+        let result = RatingsExtractor.extract(from: text)
+        XCTAssertEqual(result.ratings.map(\.source), [.rottenTomatoes, .rottenTomatoesAudience, .imdb])
+        XCTAssertEqual(result.ratings.first?.value, "93%")
+        XCTAssertTrue(result.ratings.first?.isFresh == true)
+        XCTAssertEqual(result.description, "A young chef returns home to run the family restaurant.")
+    }
+
+    func testInlineRatingsAndRottenScores() {
+        let result = RatingsExtractor.extract(from: "A heist goes wrong. Rotten Tomatoes 42%, Metacritic 55.", imdbRating: "6.1")
+        XCTAssertEqual(result.ratings.map(\.source), [.rottenTomatoes, .imdb, .metacritic])
+        XCTAssertFalse(result.ratings[0].isFresh)
+        XCTAssertEqual(result.ratings[1].value, "6.1")
+        XCTAssertEqual(result.description, "A heist goes wrong.")
+    }
+
+    func testPlainSynopsisIsUntouched() {
+        let plain = "Rt. Hon. Smith returns, 100 years later."
+        XCTAssertEqual(RatingsExtractor.extract(from: plain).description, plain)
+        XCTAssertTrue(RatingsExtractor.extract(from: plain).ratings.isEmpty)
+        XCTAssertNil(RatingsExtractor.extract(from: nil).description)
     }
 }

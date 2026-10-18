@@ -66,20 +66,43 @@ public final class HouseholdSession: @unchecked Sendable {
 
     public func updateSettings(_ change: (inout HouseholdSettings) -> Void) {
         lock.lock()
+        let before = _settings
         change(&_settings)
         let snapshot = _settings
         lock.unlock()
         try? settingsFile.save(snapshot)
+        if before.streamingServer != snapshot.streamingServer || before.preferences != snapshot.preferences {
+            updateCloudState { $0.settingsUpdatedAt = Date() }
+        }
     }
 
     public var isSignedIn: Bool { authKey != nil }
     var authKey: String? { scope.secrets.string(Self.authKeyName) }
 
     public func profiles() -> [Profile] { roster.load() }
-    public func saveProfiles(_ profiles: [Profile]) {
+
+    /// Save the roster, stamping edited profiles and remembering deleted ones so Encore Cloud carries
+    /// both changes to the household's other devices.
+    public func saveProfiles(_ profiles: [Profile], now: Date = Date()) {
         // The owner can be renamed but never removed.
         guard profiles.contains(where: \.isOwner) else { return }
-        roster.save(profiles)
+        let before = Dictionary(roster.load().map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        var stamped = profiles
+        for index in stamped.indices {
+            if let old = before[stamped[index].id], old.sameContent(as: stamped[index]) {
+                stamped[index].updatedAt = old.updatedAt
+            } else {
+                stamped[index].updatedAt = now
+            }
+        }
+        roster.save(stamped)
+        let removed = Set(before.keys).subtracting(stamped.map(\.id))
+        guard !removed.isEmpty else { return }
+        updateCloudState { state in
+            for id in removed { state.deletedProfiles[id.uuidString] = now }
+        }
+        lock.withLock { for id in removed { libraries[id] = nil } }
+        for id in removed { scope.file("library-\(id.uuidString).json", as: [StremioLibraryItem].self).remove() }
     }
 
     // MARK: Account
@@ -271,6 +294,89 @@ public final class HouseholdSession: @unchecked Sendable {
         let snapshot = Array(items.values)
         lock.unlock()
         try? libraryFile(profile).save(snapshot)
+    }
+
+    // MARK: Encore Cloud
+
+    /// What this device knows about the household's copy in Encore Cloud.
+    public struct CloudState: Codable, Equatable, Sendable {
+        /// The cloud version this device last merged with (0: never synced).
+        public var version: Int = 0
+        public var lastSynced: Date?
+        public var deletedProfiles: [String: Date] = [:]
+        public var settingsUpdatedAt: Date = .distantPast
+        public var nameUpdatedAt: Date = .distantPast
+        public init() {}
+    }
+
+    private var cloudFile: JSONFile<CloudState> { scope.file("cloud.json") }
+
+    public var cloudState: CloudState { lock.withLock { cloudFile.load() ?? CloudState() } }
+
+    public func updateCloudState(_ change: (inout CloudState) -> Void) {
+        lock.withLock {
+            var state = cloudFile.load() ?? CloudState()
+            change(&state)
+            try? cloudFile.save(state)
+        }
+    }
+
+    /// The account key Encore Cloud authenticates with (the household's Stremio session).
+    public var cloudAuthKey: String? { authKey }
+
+    /// This device's view of the household, as a cloud document.
+    public func cloudDocument(name: String, symbol: String) -> HouseholdDocument {
+        let state = cloudState
+        let s = settings
+        let roster = profiles()
+        var libraries: [String: [StremioLibraryItem]] = [:]
+        for profile in roster where !profile.isOwner {
+            libraries[profile.id.uuidString] = library(for: profile).sorted { $0.id < $1.id }
+        }
+        return HouseholdDocument(
+            name: name, symbol: symbol, nameUpdatedAt: state.nameUpdatedAt, profiles: roster,
+            deletedProfiles: state.deletedProfiles, libraries: libraries,
+            settings: .init(streamingServer: s.streamingServer, preferences: s.preferences, updatedAt: state.settingsUpdatedAt))
+    }
+
+    /// Make this device match a merged cloud document. The local owner keeps its id (its library is the
+    /// Stremio account's); everything else is taken from the document.
+    public func apply(_ document: HouseholdDocument, version: Int) {
+        let localOwner = roster.load().first(where: \.isOwner)
+        let profiles = document.profiles.map { profile -> Profile in
+            guard profile.isOwner, let localOwner else { return profile }
+            var owner = profile
+            owner.id = localOwner.id
+            return owner
+        }
+        if profiles.contains(where: \.isOwner) { roster.save(profiles) }
+
+        let previous = Set(lock.withLock { Array(libraries.keys) })
+        for profile in profiles where !profile.isOwner {
+            let items = document.libraries[profile.id.uuidString] ?? []
+            lock.withLock { libraries[profile.id] = Dictionary(items.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a }) }
+            try? libraryFile(profile).save(items)
+        }
+        let living = Set(profiles.map(\.id))
+        for id in previous.subtracting(living) where id != localOwner?.id {
+            lock.withLock { libraries[id] = nil }
+            scope.file("library-\(id.uuidString).json", as: [StremioLibraryItem].self).remove()
+        }
+
+        lock.lock()
+        _settings.streamingServer = document.settings.streamingServer
+        _settings.preferences = document.settings.preferences
+        let snapshot = _settings
+        lock.unlock()
+        try? settingsFile.save(snapshot)
+
+        updateCloudState { state in
+            state.version = version
+            state.lastSynced = Date()
+            state.deletedProfiles = document.deletedProfiles
+            state.settingsUpdatedAt = document.settings.updatedAt
+            state.nameUpdatedAt = document.nameUpdatedAt
+        }
     }
 
     // MARK: Streams

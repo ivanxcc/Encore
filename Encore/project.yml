@@ -24,7 +24,11 @@ packages:
 
 settings:
   base:
-    MARKETING_VERSION: "0.1.0"
+    MARKETING_VERSION: "0.2.0"
+    # GitHub repository the Mac updater reads releases from; CI passes the real one (github.repository).
+    ENCORE_REPOSITORY: ivanxcc/Encore
+    # Encore Cloud (account sync) endpoint; CI passes the deployed Worker URL. Empty = sync off.
+    ENCORE_CLOUD_URL: ""
     CURRENT_PROJECT_VERSION: "1"
     SWIFT_VERSION: "5.0"
     GENERATE_INFOPLIST_FILE: YES

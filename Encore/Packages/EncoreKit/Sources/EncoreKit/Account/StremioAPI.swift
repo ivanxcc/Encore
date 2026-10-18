@@ -42,6 +42,12 @@ public struct StremioAPI: Sendable {
         _ = try? await call("logout", Body(authKey: authKey), as: Ignored.self)
     }
 
+    /// Who a session belongs to. Used to confirm a session handed over by another device.
+    public func user(authKey: String) async throws -> User {
+        struct Body: Encodable { let type = "GetUser"; let authKey: String }
+        return try await call("getUser", Body(authKey: authKey), as: User.self)
+    }
+
     // MARK: Add-ons
 
     public func addonCollection(authKey: String) async throws -> [Addon] {

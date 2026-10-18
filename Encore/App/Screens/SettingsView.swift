@@ -54,6 +54,8 @@ struct SettingsView: View {
                 Text("A household belongs to the first Stremio account that signs in to it. Signing in with another account opens that account's own household, so two people's libraries and history never mix.")
             }
 
+            CloudSection()
+
             Section {
                 NavigationLink { AddonsView() } label: {
                     LabeledContent {
@@ -145,6 +147,15 @@ struct SignInView: View {
 
     var body: some View {
         Form {
+            #if os(tvOS)
+            if app.cloud != nil {
+                Section {
+                    TVPairingPanel { dismiss() }
+                } footer: {
+                    Text("Or sign in with your Stremio email and password below.")
+                }
+            }
+            #endif
             Section {
                 TextField("Email", text: $email)
                     .textContentType(.username)

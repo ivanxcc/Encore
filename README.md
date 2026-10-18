@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="../../releases/latest"><img src="https://img.shields.io/github/v/release/ivanxcc/VortX?label=latest&color=4c5bd4" alt="Latest release"></a>
+  <a href="../../releases/latest"><img src="https://img.shields.io/github/v/release/ivanxcc/Encore?label=latest&color=4c5bd4" alt="Latest release"></a>
   <img src="https://img.shields.io/badge/platforms-tvOS%20%C2%B7%20iOS%20%C2%B7%20iPadOS%20%C2%B7%20macOS-4c5bd4" alt="Platforms">
   <img src="https://img.shields.io/badge/license-GPL--3.0-4c5bd4" alt="License">
 </p>
@@ -58,19 +58,29 @@ Or with Xcode: **Window › Devices and Simulators**, pair the Apple TV, and dra
 Add this source in AltStore or SideStore, then install Encore from it. New releases show up as updates:
 
 ```
-https://github.com/ivanxcc/VortX/releases/latest/download/altstore-source.json
+https://github.com/ivanxcc/Encore/releases/latest/download/altstore-source.json
 ```
 
 Sideloadly works too: drag in `Encore-iOS-x.y.z.ipa`.
 
 ### Mac
 
-Open the DMG and drag Encore to Applications. The app is signed ad hoc rather than with a Developer ID,
-so clear the download quarantine once:
+The easiest way is one line in Terminal. It downloads the latest build, checks its SHA-256, installs it
+to Applications, and opens it, with no "unidentified developer" prompt:
 
 ```sh
-xattr -cr /Applications/Encore.app
+curl -fsSL https://github.com/ivanxcc/Encore/releases/latest/download/install-mac.sh | sh
 ```
+
+Or open the DMG and drag Encore to Applications. Because the app is signed ad hoc rather than with an
+Apple Developer ID, macOS blocks a browser-downloaded copy the first time: either run
+`xattr -cr /Applications/Encore.app`, or open it once and approve it in **System Settings › Privacy &
+Security › Open Anyway**.
+
+**Updates install themselves.** On launch Encore checks for a newer release and offers **Update Now**.
+It downloads the update itself (not through a browser, so macOS does not quarantine it), verifies its
+checksum, swaps the app, and reopens. Gatekeeper never asks again after the first install. Removing the
+first-install prompt too requires a $99/year Apple Developer ID to sign and notarize the app.
 
 ## First run
 
@@ -91,6 +101,54 @@ other, so a sibling or roommate gets their own household instead of merging into
 
 **Profiles** live inside a household. The main profile uses the Stremio account's library; other profiles
 keep their own Continue Watching and list. Profiles can have a PIN and a Kids flag.
+
+A household belongs to the Stremio account that signs in to it. Signing in with a different account
+opens (or creates) that account's own household, so nothing ever mixes.
+
+### With Encore Cloud (optional)
+
+Turn on [Encore Cloud](#turn-on-encore-cloud) and households follow their Stremio account everywhere:
+
+- **Every device matches.** Sign in to the household's Stremio account on any iPhone, iPad, Mac, or Apple
+  TV and all of its profiles, their PINs, their Continue Watching and My List, and its playback settings
+  appear. Edits on one device show up on the others.
+- **Apple TV sign-in without a remote keyboard.** The TV shows a code; on your phone go to
+  Settings › Encore Cloud › Sign In an Apple TV and type it.
+- **Managing someone else's household.** Your sister signs in to her own Stremio account in Encore and
+  taps Settings › Encore Cloud › Share This Household. You enter the code under Settings › Households ›
+  Add a Shared Household. Her household (and its profiles) is now on your device too, and anything you
+  change syncs back to hers. Your household is untouched.
+
+A typical setup: one household for you and your partner (profiles Ivan, Will, TV), signed in to your
+Stremio account; one household for your sister, signed in to hers and shared with you.
+
+## Turn on Encore Cloud
+
+Encore Cloud is a small Cloudflare Worker with a D1 database
+([`Encore/Cloud`](Encore/Cloud)). Cloudflare's free plan is plenty. It stores each household's profiles
+and history keyed to its Stremio account, and checks every request against Stremio, so there are no
+separate passwords. One-time setup, about five minutes:
+
+1. **Cloudflare account ID.** Sign in at [dash.cloudflare.com](https://dash.cloudflare.com). Open
+   **Workers & Pages**. If asked, pick a `workers.dev` subdomain (any name). Copy the **Account ID** shown
+   on the right side of that page.
+2. **API token.** Click your profile icon › **My Profile › API Tokens › Create Token**. Choose the
+   **Edit Cloudflare Workers** template, then **+ Add more** and add **Account › D1 › Edit**. Under
+   Account Resources pick your account. Click **Continue to summary › Create Token** and copy the token.
+3. **GitHub secrets.** In this repository go to **Settings › Secrets and variables › Actions › New
+   repository secret** and add:
+   - `CLOUDFLARE_API_TOKEN`: the token from step 2
+   - `CLOUDFLARE_ACCOUNT_ID`: the ID from step 1
+4. **Deploy.** Go to **Actions › Encore Cloud › Run workflow**. It creates the database, deploys the
+   Worker, and shows the Worker's address in the run summary, for example
+   `https://encore-cloud.<your-subdomain>.workers.dev`.
+5. **Point the apps at it.** **Settings › Secrets and variables › Actions › Variables › New repository
+   variable**: name `ENCORE_CLOUD_URL`, value the address from step 4.
+6. **Release.** Run **Actions › Encore Release › Run workflow** (or push any change). Every app built from
+   then on has Encore Cloud. Install the new build on each device; the Mac updates itself.
+
+Afterwards the Worker redeploys itself whenever `Encore/Cloud` changes. Without the variable, builds
+simply have no cloud features, and everything else works the same.
 
 ## Picture and sound
 
@@ -119,8 +177,8 @@ for the architecture.
 
 [`.github/workflows/encore-release.yml`](.github/workflows/encore-release.yml) runs on every push to `main`
 that touches `Encore/`, and on any `v*` tag. It builds the three apps, verifies the Mac app is universal,
-writes the AltStore / SideStore source, and publishes a GitHub Release with notes generated from the
-commits. To cut a named version, bump `MARKETING_VERSION` in `Encore/project.yml` or push a tag such as
+writes the AltStore / SideStore source, the Mac update manifest, and the Mac installer, and publishes a
+GitHub Release with notes generated from the commits. To cut a named version, bump `MARKETING_VERSION` in `Encore/project.yml` or push a tag such as
 `v0.2.0`. [`.github/workflows/encore-ci.yml`](.github/workflows/encore-ci.yml) builds and tests every push.
 
 ## Repository layout
@@ -129,6 +187,7 @@ commits. To cut a named version, bump `MARKETING_VERSION` in `Encore/project.yml
 Encore/                 the app (this is what ships)
   Packages/EncoreKit/   Stremio add-on protocol, account and library, ranking, households
   App/                  SwiftUI app for tvOS, iOS/iPadOS, and macOS
+  Cloud/                Encore Cloud, the optional sync service (Cloudflare Worker + D1)
 app/, android/, ...     the original VortX sources this fork started from (not built or shipped)
 ```
 

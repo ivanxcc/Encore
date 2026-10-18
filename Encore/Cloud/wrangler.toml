@@ -1,0 +1,12 @@
+# Encore Cloud: account sync for Encore households. Deployed by .github/workflows/encore-cloud.yml,
+# which creates the D1 database on first run and fills in database_id below.
+name = "encore-cloud"
+main = "src/index.js"
+compatibility_date = "2025-09-01"
+workers_dev = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "encore"
+database_id = "__D1_DATABASE_ID__"
+migrations_dir = "migrations"

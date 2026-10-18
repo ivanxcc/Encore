@@ -10,6 +10,11 @@
 		<key>NSAllowsArbitraryLoadsForMedia</key>
 		<true/>
 	</dict>
+	<!-- Injected at build time by the release workflow (see project.yml). -->
+	<key>EncoreRepository</key>
+	<string>$(ENCORE_REPOSITORY)</string>
+	<key>EncoreCloudURL</key>
+	<string>$(ENCORE_CLOUD_URL)</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Encore connects to a streaming server on your network to play torrent sources.</string>
 	<key>LSApplicationCategoryType</key>
