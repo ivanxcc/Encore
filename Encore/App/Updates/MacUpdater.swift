@@ -120,27 +120,70 @@ final class MacUpdater: ObservableObject {
         return app
     }
 
+    /// Install the new app over this one, then relaunch it.
+    ///
+    /// The swap replaces the bundle's *contents* (Encore.app/Contents), so it only needs write access to
+    /// Encore.app itself, which the person who dragged it into Applications owns; /Applications being
+    /// root-owned doesn't matter. If even that isn't writable (installed by another user, or by sudo),
+    /// macOS asks for an administrator password once and the bundle is handed back to this user so
+    /// later updates are silent again.
     private func relaunch(replacingWith newApp: URL) throws {
-        let current = Bundle.main.bundleURL
-        guard FileManager.default.isWritableFile(atPath: current.deletingLastPathComponent().path) else {
-            throw UpdateError(message: "Encore can't replace itself where it is. Move it to the Applications folder, then update again.")
-        }
-        let backup = current.deletingLastPathComponent().appendingPathComponent(".Encore-previous.app")
+        let target = Self.installedLocation()
         let script = """
-        while kill -0 \(ProcessInfo.processInfo.processIdentifier) 2>/dev/null; do sleep 0.2; done
-        rm -rf "\(backup.path)"
-        if mv "\(current.path)" "\(backup.path)" && /usr/bin/ditto "\(newApp.path)" "\(current.path)"; then
-          rm -rf "\(backup.path)"
+        set -e
+        target=\(Self.quoted(target.path))
+        new=\(Self.quoted(newApp.path))
+        rm -rf "$target/.Contents-new" "$target/.Contents-old"
+        /usr/bin/ditto "$new/Contents" "$target/.Contents-new"
+        mv "$target/Contents" "$target/.Contents-old"
+        if mv "$target/.Contents-new" "$target/Contents"; then
+          rm -rf "$target/.Contents-old"
         else
-          rm -rf "\(current.path)"; mv "\(backup.path)" "\(current.path)"
+          mv "$target/.Contents-old" "$target/Contents"; exit 1
         fi
-        /usr/bin/open "\(current.path)"
+        /usr/bin/xattr -cr "$target" 2>/dev/null || true
+        /usr/bin/touch "$target"
         """
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/sh")
-        process.arguments = ["-c", script]
-        try process.run()
+        let writable = FileManager.default.isWritableFile(atPath: target.path)
+            && FileManager.default.isWritableFile(atPath: target.appendingPathComponent("Contents").path)
+        if !(writable && (try? run("/bin/sh", ["-c", script])) != nil) {
+            let owner = "\(getuid()):\(getgid())"
+            let privileged = script + "\nchown -R \(owner) \"$target\"\n"
+            let source = "do shell script \(Self.appleScriptString(privileged)) with administrator privileges"
+            var error: NSDictionary?
+            guard NSAppleScript(source: source)?.executeAndReturnError(&error) != nil else {
+                let detail = error?[NSAppleScript.errorMessage] as? String ?? ""
+                throw UpdateError(message: "Encore couldn't replace \(target.path). If macOS asked whether Encore may modify apps, allow it in System Settings › Privacy & Security › App Management, then try again. \(detail)")
+            }
+        }
+        // Reopen once this process has exited (the old binary keeps running until then).
+        let relaunch = Process()
+        relaunch.executableURL = URL(fileURLWithPath: "/bin/sh")
+        relaunch.arguments = ["-c", "while kill -0 \(ProcessInfo.processInfo.processIdentifier) 2>/dev/null; do sleep 0.2; done; /usr/bin/open \(Self.quoted(target.path))"]
+        try relaunch.run()
         NSApp.terminate(nil)
+    }
+
+    /// Where Encore is really installed. An app opened with "Open Anyway" after a browser download can
+    /// run from a read-only randomized copy (App Translocation); this resolves it back to the original.
+    static func installedLocation() -> URL {
+        let running = Bundle.main.bundleURL
+        guard running.path.contains("/AppTranslocation/") else { return running }
+        typealias Original = @convention(c) (CFURL, UnsafeMutablePointer<Unmanaged<CFError>?>?) -> Unmanaged<CFURL>?
+        if let security = dlopen("/System/Library/Frameworks/Security.framework/Security", RTLD_NOW),
+           let symbol = dlsym(security, "SecTranslocateCreateOriginalPathForURL") {
+            let original = unsafeBitCast(symbol, to: Original.self)
+            if let url = original(running as CFURL, nil)?.takeRetainedValue() as URL? { return url }
+        }
+        return URL(fileURLWithPath: "/Applications/Encore.app")
+    }
+
+    private static func quoted(_ path: String) -> String {
+        "'" + path.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
+    private static func appleScriptString(_ text: String) -> String {
+        "\"" + text.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
     }
 
     @discardableResult
