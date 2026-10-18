@@ -223,8 +223,8 @@ struct HeroInfo: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             TitleLogo(logo: item.logoURL, title: item.name, maxWidth: logoWidth)
-            MetaLine(parts: metaParts)
-            if let description = item.description {
+            MetaInfoLine(parts: metaParts, ratings: item.ratingsAndSynopsis.ratings)
+            if let description = item.ratingsAndSynopsis.description {
                 Text(description)
                     .font(Theme.Fonts.body)
                     .foregroundStyle(Theme.Colors.secondary)
@@ -253,9 +253,8 @@ struct HeroInfo: View {
     }
 
     private var metaParts: [String?] {
-        let rating: String? = item.imdbRating.map { "★ " + $0 }
         let genres: String? = item.genres.map { $0.prefix(2).joined(separator: ", ") }
-        return [item.releaseInfo, rating, genres]
+        return [item.releaseInfo, genres]
     }
 
     private var logoWidth: CGFloat {

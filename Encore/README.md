@@ -62,3 +62,16 @@ address in Settings → Streaming Server. Debrid and direct sources never need i
   same approach Infuse uses on Apple TV. Dolby Digital Plus with Atmos in MP4/HLS is passed through.
 - **Next**: on-the-fly MKV → HLS remux into the native player, for true Dolby Vision signalling and DD+
   Atmos passthrough from MKV files.
+
+## Encore Cloud
+
+`Cloud/` is a Cloudflare Worker (plain JavaScript, no build step) with a D1 database. Requests carry the
+household's Stremio session (`Authorization: Stremio <authKey>`); the Worker confirms it with
+api.strem.io and caches the result for six hours under a SHA-256 of the key. Each Stremio account owns one
+versioned JSON document (`HouseholdDocument`): writes send the version they started from and get a 409
+with the newer copy if someone else wrote first. The client (`Sync/CloudSync.swift`) merges per field and
+per library item, newest edit wins, with tombstones for deleted profiles, then retries. Share codes and
+TV pairing codes are one-time and expire after 15 minutes.
+
+Tests: `cd Cloud && node --test` (Node 22, uses `node:sqlite` in place of D1) and
+`CloudSyncTests` in EncoreKit.

@@ -17,6 +17,13 @@ final class AppModel: ObservableObject {
     /// Bumped whenever library or progress changes, so screens that read it refresh.
     @Published private(set) var libraryRevision = 0
     @Published var syncError: String?
+    /// Encore Cloud, when this build was released with ENCORE_CLOUD_URL set.
+    let cloud = CloudClient.configured()
+    @Published private(set) var cloudStatus: CloudStatus = .off
+
+    enum CloudStatus: Equatable {
+        case off, syncing, synced(Date), failed(String)
+    }
 
     init() {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -62,7 +69,13 @@ final class AppModel: ObservableObject {
     func renameHousehold(_ target: Household, name: String, symbol: String) {
         directory.rename(target.id, to: name, symbol: symbol)
         households = directory.registry().households
-        if target.id == household.id, let updated = households.first(where: { $0.id == target.id }) { household = updated }
+        if target.id == household.id, let updated = households.first(where: { $0.id == target.id }) {
+            household = updated
+            session.updateCloudState { $0.nameUpdatedAt = Date() }
+            syncSoon()
+        } else {
+            HouseholdSession(scope: directory.scope(for: target)).updateCloudState { $0.nameUpdatedAt = Date() }
+        }
     }
 
     func deleteHousehold(_ target: Household) {
@@ -82,6 +95,7 @@ final class AppModel: ObservableObject {
         if let index = all.firstIndex(where: { $0.id == profile.id }) { all[index] = profile } else { all.append(profile) }
         session.saveProfiles(all)
         reloadProfiles()
+        syncSoon()
     }
 
     func deleteProfile(_ profile: Profile) {
@@ -89,6 +103,7 @@ final class AppModel: ObservableObject {
         session.saveProfiles(session.profiles().filter { $0.id != profile.id })
         if activeProfile?.id == profile.id { activeProfile = nil }
         reloadProfiles()
+        syncSoon()
     }
 
     // MARK: Account and settings
@@ -102,6 +117,7 @@ final class AppModel: ObservableObject {
         }
         settings = session.settings
         libraryRevision += 1
+        await syncCloud()
     }
 
     enum SignInOutcome: Equatable {
@@ -118,19 +134,122 @@ final class AppModel: ObservableObject {
     ///  - otherwise a new household is created for the account and opened.
     @discardableResult
     func signIn(email: String, password: String) async throws -> SignInOutcome {
-        let stremio = try await session.api.login(email: email, password: password)
+        try await signIn(with: try await session.api.login(email: email, password: password))
+    }
+
+    /// Sign in with a session from somewhere else (a phone approving this TV, a shared household).
+    @discardableResult
+    func signIn(with stremio: StremioAPI.Session, name: String? = nil) async throws -> SignInOutcome {
+        var stremio = stremio
+        if stremio.user.id.isEmpty {
+            // Confirm the handed-over session and learn whose it is.
+            stremio.user = try await session.api.user(authKey: stremio.authKey)
+        }
         let owner = directory.household(boundTo: stremio.user.id)
         if owner == nil || owner?.id == household.id, session.accepts(stremio) {
             try await session.adopt(stremio)
             settings = session.settings
             libraryRevision += 1
+            await syncCloud()
             return .signedInHere
         }
-        let target = owner ?? directory.add(name: Self.householdName(for: stremio.user.email), symbol: "person.2.fill")
+        let target = owner ?? directory.add(name: name ?? Self.householdName(for: stremio.user.email), symbol: "person.2.fill")
         let targetSession = HouseholdSession(scope: directory.scope(for: target))
         try await targetSession.adopt(stremio)
         switchHousehold(to: target)
         return .switchedTo(target)
+    }
+
+    // MARK: Encore Cloud
+
+    private var syncTask: Task<Void, Never>?
+
+    /// Merge this household with its cloud copy. Quiet: failures only show in Settings.
+    func syncCloud() async {
+        guard let cloud, session.isSignedIn else { cloudStatus = .off; return }
+        let session = self.session
+        cloudStatus = .syncing
+        do {
+            guard let outcome = try await CloudSync(client: cloud).sync(session, name: household.name, symbol: household.symbol) else {
+                cloudStatus = .off
+                return
+            }
+            guard session === self.session else { return }   // the household was switched meanwhile
+            if outcome.name != household.name || outcome.symbol != household.symbol {
+                directory.rename(household.id, to: outcome.name, symbol: outcome.symbol)
+                households = directory.registry().households
+                if let updated = households.first(where: { $0.id == household.id }) { household = updated }
+            }
+            reloadProfiles()
+            settings = session.settings
+            libraryRevision += 1
+            cloudStatus = .synced(Date())
+        } catch CloudClient.CloudError.signedOut {
+            cloudStatus = .failed("Sign in to Stremio again to keep this household in sync.")
+        } catch {
+            cloudStatus = .failed("Couldn't reach Encore Cloud. Changes are saved here and will sync later.")
+        }
+    }
+
+    /// Coalesce: a burst of edits becomes one sync a couple of seconds later.
+    func syncSoon() {
+        guard cloud != nil else { return }
+        syncTask?.cancel()
+        syncTask = Task {
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled else { return }
+            await syncCloud()
+        }
+    }
+
+    enum CloudActionError: LocalizedError {
+        case unavailable, signInFirst
+        var errorDescription: String? {
+            switch self {
+            case .unavailable: "Encore Cloud isn't set up for this build."
+            case .signInFirst: "Sign in to your Stremio account in this household first."
+            }
+        }
+    }
+
+    /// The household's owner creates a code; whoever enters it can manage this household too.
+    func createShareCode() async throws -> CloudClient.Code {
+        guard let cloud else { throw CloudActionError.unavailable }
+        guard let key = session.cloudAuthKey else { throw CloudActionError.signInFirst }
+        await syncCloud()
+        return try await cloud.createShareCode(name: household.name, authKey: key)
+    }
+
+    /// Enter someone's share code: their household appears on this device, signed in as them, with
+    /// their profiles. Your own household stays exactly as it was.
+    func addSharedHousehold(code: String) async throws -> Household {
+        guard let cloud else { throw CloudActionError.unavailable }
+        guard let key = signedInKey() else { throw CloudActionError.signInFirst }
+        let handoff = try await cloud.redeemShareCode(code, authKey: key)
+        let target = directory.household(boundTo: handoff.ownerId)
+            ?? directory.add(name: handoff.name ?? Self.householdName(for: handoff.email ?? "Shared"), symbol: "person.2.fill")
+        let targetSession = HouseholdSession(scope: directory.scope(for: target))
+        targetSession.forgetAccountBinding()
+        try await targetSession.adopt(handoff.session)
+        switchHousehold(to: target)
+        return target
+    }
+
+    /// A phone or Mac approves the code an Apple TV is showing; the TV signs in as this household.
+    func approveTV(code: String) async throws {
+        guard let cloud else { throw CloudActionError.unavailable }
+        guard let key = session.cloudAuthKey else { throw CloudActionError.signInFirst }
+        await syncCloud()   // so the TV finds the household's latest profiles waiting
+        try await cloud.approvePairing(code: code, authKey: key)
+    }
+
+    /// Any signed-in household's session, to authenticate requests that aren't about a household.
+    private func signedInKey() -> String? {
+        if let key = session.cloudAuthKey { return key }
+        for other in households where other.id != household.id {
+            if let key = HouseholdSession(scope: directory.scope(for: other)).cloudAuthKey { return key }
+        }
+        return nil
     }
 
     /// "sarah.chen@x.com" -> "Sarah".
@@ -155,6 +274,7 @@ final class AppModel: ObservableObject {
     func updateSettings(_ change: (inout HouseholdSettings) -> Void) {
         session.updateSettings(change)
         settings = session.settings
+        syncSoon()
     }
 
     func installAddon(_ raw: String) async throws {
@@ -220,10 +340,12 @@ final class AppModel: ObservableObject {
             guard !Task.isCancelled else { return }
             await session.pushPendingLibraryChanges()
         }
+        if activeProfile?.isOwner == false { syncSoon() }
     }
 
     func pushNow() {
         let session = self.session
         Task { await session.pushPendingLibraryChanges() }
+        if cloud != nil, session.isSignedIn { Task { await syncCloud() } }
     }
 }

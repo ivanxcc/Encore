@@ -100,6 +100,7 @@ jobs:
             -skipPackagePluginValidation -skipMacroValidation \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
             MARKETING_VERSION="$VERSION" CURRENT_PROJECT_VERSION="$BUILD" "${EXTRA[@]}" \
+            ENCORE_REPOSITORY="${{ github.repository }}" ENCORE_CLOUD_URL="${{ vars.ENCORE_CLOUD_URL }}" \
             -quiet build 2>&1 | tee build.log || { grep -E "error:" build.log | sort -u | head -80; exit 1; }
       - name: Package
         working-directory: Encore
@@ -184,6 +185,10 @@ jobs:
             '{version: $version, build: $build, url: $url, sha256: $sha, notes: $notes, releasePage: $page, minimumSystemVersion: "15.0"}' \
             > dist/encore-update.json
           cat dist/encore-update.json
+      - name: Mac one-line installer
+        run: |
+          sed "s#__REPOSITORY__#${REPO}#" Encore/Scripts/install-mac.sh > dist/install-mac.sh
+          chmod +x dist/install-mac.sh
       - name: Publish release
         run: |
           set -euo pipefail

@@ -45,6 +45,15 @@ struct HouseholdsView: View {
             }
             Section {
                 Button { creating = true } label: { Label("Add Household", systemImage: "plus") }
+                if app.cloud != nil {
+                    NavigationLink { RedeemShareView() } label: {
+                        Label("Add a Shared Household", systemImage: "person.2.badge.key.fill")
+                    }
+                }
+            } footer: {
+                if app.cloud != nil {
+                    Text("Managing someone else's household? Ask them to tap Share This Household in Settings, then enter their code here.")
+                }
             }
         }
         .navigationTitle("Households")
@@ -200,7 +209,7 @@ private struct ProfileEditor: View {
     }
 
     private func save() {
-        if pin.count == 4 { profile.pinHash = Profile.hashPin(pin, profileID: profile.id) }
+        if pin.count == 4 { profile.pinHash = Profile.hashPin(pin) }
         profile.name = profile.name.trimmingCharacters(in: .whitespaces)
         app.saveProfile(profile)
         dismiss()

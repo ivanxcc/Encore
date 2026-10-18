@@ -13,22 +13,45 @@ public struct Profile: Codable, Hashable, Identifiable, Sendable {
     public var isKids: Bool
     /// Salted SHA-256 of a 4-digit PIN; a parental gate, not a security boundary.
     public var pinHash: String?
+    /// When this profile was last edited, so Encore Cloud can keep the newest copy.
+    public var updatedAt: Date
 
     public init(id: UUID = UUID(), name: String, avatar: String = "person.fill", colorIndex: Int = 0,
-                isOwner: Bool = false, isKids: Bool = false, pinHash: String? = nil) {
+                isOwner: Bool = false, isKids: Bool = false, pinHash: String? = nil, updatedAt: Date = Date()) {
         self.id = id; self.name = name; self.avatar = avatar; self.colorIndex = colorIndex
-        self.isOwner = isOwner; self.isKids = isKids; self.pinHash = pinHash
+        self.isOwner = isOwner; self.isKids = isKids; self.pinHash = pinHash; self.updatedAt = updatedAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        avatar = (try? c.decode(String.self, forKey: .avatar)) ?? "person.fill"
+        colorIndex = (try? c.decode(Int.self, forKey: .colorIndex)) ?? 0
+        isOwner = (try? c.decode(Bool.self, forKey: .isOwner)) ?? false
+        isKids = (try? c.decode(Bool.self, forKey: .isKids)) ?? false
+        pinHash = try? c.decodeIfPresent(String.self, forKey: .pinHash)
+        updatedAt = (try? c.decode(Date.self, forKey: .updatedAt)) ?? .distantPast
     }
 
     public var hasPin: Bool { pinHash != nil }
 
-    public static func hashPin(_ pin: String, profileID: UUID) -> String {
-        SHA256Digest.hex(of: profileID.uuidString + ":" + pin)
+    /// Not tied to the profile's id, so a PIN keeps working on every device the profile syncs to.
+    public static func hashPin(_ pin: String) -> String {
+        SHA256Digest.hex(of: "encore.pin:" + pin)
     }
 
     public func pinMatches(_ pin: String) -> Bool {
         guard let pinHash else { return true }
-        return pinHash == Self.hashPin(pin, profileID: id)
+        // Accept PINs set by builds that salted with the profile id.
+        return pinHash == Self.hashPin(pin) || pinHash == SHA256Digest.hex(of: id.uuidString + ":" + pin)
+    }
+
+    /// The same profile with everything but the edit time compared.
+    func sameContent(as other: Profile) -> Bool {
+        var a = self, b = other
+        a.updatedAt = .distantPast; b.updatedAt = .distantPast
+        return a == b
     }
 }
 
@@ -45,7 +68,7 @@ public final class ProfileRoster: @unchecked Sendable {
     public func load() -> [Profile] {
         lock.lock(); defer { lock.unlock() }
         if let profiles = file.load(), profiles.contains(where: \.isOwner) { return profiles }
-        let owner = Profile(name: "Me", avatar: "person.fill", colorIndex: 0, isOwner: true)
+        let owner = Profile(name: "Me", avatar: "person.fill", colorIndex: 0, isOwner: true, updatedAt: .distantPast)
         try? file.save([owner])
         return [owner]
     }

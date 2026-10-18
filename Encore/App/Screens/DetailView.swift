@@ -86,8 +86,8 @@ struct DetailView: View {
         VStack(alignment: .leading, spacing: 20) {
             Spacer(minLength: 0)
             TitleLogo(logo: meta?.logoURL ?? preview.logoURL, title: meta?.name ?? preview.name, maxWidth: logoWidth)
-            MetaLine(parts: metaParts)
-            if let description = meta?.description ?? preview.description {
+            MetaInfoLine(parts: metaParts, ratings: ratingsAndSynopsis.ratings)
+            if let description = ratingsAndSynopsis.description {
                 Text(description)
                     .font(Theme.Fonts.body)
                     .foregroundStyle(Theme.Colors.secondary)
@@ -107,10 +107,14 @@ struct DetailView: View {
     private var metaParts: [String?] {
         let meta = model.meta
         let year: String? = meta?.releaseInfo ?? preview.releaseInfo
-        let rating: String? = (meta?.imdbRating ?? preview.imdbRating).map { "★ " + $0 }
         let genres: [String]? = meta?.genres ?? preview.genres
         let genreText: String? = genres.map { $0.prefix(3).joined(separator: ", ") }
-        return [year, rating, meta?.runtime, genreText]
+        return [year, meta?.runtime, genreText]
+    }
+
+    /// Ratings lifted out of the add-on's synopsis text, and the synopsis without them.
+    private var ratingsAndSynopsis: RatingsExtractor.Result {
+        model.meta?.ratingsAndSynopsis ?? preview.ratingsAndSynopsis
     }
 
     private var logoWidth: CGFloat {

@@ -4,9 +4,13 @@ import CryptoKit
 import SwiftUI
 import EncoreKit
 
-/// Where releases are published. GitHub keeps redirecting if the repository is renamed later.
+/// Where releases are published: the repository CI built this app from (Info.plist `EncoreRepository`),
+/// so renaming the GitHub repository needs no code change.
 enum EncoreRelease {
-    static let repository = "ivanxcc/VortX"
+    static var repository: String {
+        let injected = Bundle.main.object(forInfoDictionaryKey: "EncoreRepository") as? String ?? ""
+        return injected.isEmpty || injected.hasPrefix("$(") ? "ivanxcc/Encore" : injected
+    }
 }
 
 /// In-place updates for the Mac app, no Sparkle and no Developer ID needed:

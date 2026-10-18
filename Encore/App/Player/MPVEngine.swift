@@ -34,6 +34,14 @@ final class MPVEngine: ObservableObject, PlayerEngine {
     init() {
         metalLayer.device = MTLCreateSystemDefaultDevice()
         metalLayer.framebufferOnly = true
+        // Fixed-size swapchain. MPVKit's moltenvk render context never notices a layer resize, so a
+        // drawable that followed the window (window -> full screen, rotation, the window settling after
+        // the first frame) left mpv drawing at the old size: the "video stays small" glitch. Instead the
+        // drawable is the display's own resolution from the start, set before the first file loads, and
+        // Core Animation scales it into whatever frame the view has, keeping the aspect ratio.
+        metalLayer.drawableSize = Self.displayPixelSize
+        metalLayer.contentsGravity = .resizeAspect
+        metalLayer.needsDisplayOnBoundsChange = false
         create()
     }
 
@@ -105,6 +113,22 @@ final class MPVEngine: ObservableObject, PlayerEngine {
             guard let context else { return }
             Unmanaged<MPVEngine>.fromOpaque(context).takeUnretainedValue().wakeUp()
         }, retained.toOpaque())
+    }
+
+    /// The largest display's pixel size in landscape, capped at 4K so Intel and older Macs with 5K/6K
+    /// panels do not render more pixels than the content has.
+    static var displayPixelSize: CGSize {
+        #if os(macOS)
+        let sizes = NSScreen.screens.map { CGSize(width: $0.frame.width * $0.backingScaleFactor,
+                                                  height: $0.frame.height * $0.backingScaleFactor) }
+        let largest = sizes.max { $0.width * $0.height < $1.width * $1.height } ?? CGSize(width: 2880, height: 1800)
+        #else
+        let native = (UIApplication.shared.connectedScenes.compactMap { ($0 as? UIWindowScene)?.screen }.first
+                      ?? UIScreen.main).nativeBounds.size
+        let largest = CGSize(width: max(native.width, native.height), height: min(native.width, native.height))
+        #endif
+        let scale = min(1, 3840 / max(largest.width, 1), 2160 / max(largest.height, 1))
+        return CGSize(width: (largest.width * scale).rounded(), height: (largest.height * scale).rounded())
     }
 
     private static var audioOutputDriver: String {
@@ -398,12 +422,11 @@ final class MPVHostView: NSView {
 
     override func layout() {
         super.layout()
-        let scale = window?.backingScaleFactor ?? 2
+        // Only the frame follows the view; the drawable keeps its fixed size (see MPVEngine.init).
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         metalLayer.frame = bounds
-        metalLayer.contentsScale = scale
-        metalLayer.drawableSize = CGSize(width: bounds.width * scale, height: bounds.height * scale)
+        metalLayer.contentsScale = window?.backingScaleFactor ?? 2
         CATransaction.commit()
     }
 }
@@ -428,12 +451,11 @@ final class MPVHostView: UIView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        let scale = window?.screen.scale ?? traitCollection.displayScale
+        // Only the frame follows the view; the drawable keeps its fixed size (see MPVEngine.init).
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         metalLayer.frame = bounds
-        metalLayer.contentsScale = scale
-        metalLayer.drawableSize = CGSize(width: bounds.width * scale, height: bounds.height * scale)
+        metalLayer.contentsScale = window?.screen.scale ?? traitCollection.displayScale
         CATransaction.commit()
     }
 }
