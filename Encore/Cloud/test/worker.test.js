@@ -3,7 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import { handle, normalizeCode } from "../src/index.js";
+import worker, { handle, normalizeCode } from "../src/index.js";
 
 function fakeD1() {
   const db = new DatabaseSync(":memory:");
@@ -143,4 +143,21 @@ test("pairing codes expire", async () => {
 test("codes are read forgivingly", () => {
   assert.equal(normalizeCode(" abcd-efgh "), "ABCDEFGH");
   assert.equal(normalizeCode(null), "");
+});
+
+test("the deployed entry point calls fetch the way the Workers runtime requires", async () => {
+  const real = globalThis.fetch;
+  // Like workerd: fetch refuses to run as a method of some other object.
+  globalThis.fetch = function (url, init) {
+    if (this !== undefined && this !== globalThis) throw new TypeError("Illegal invocation");
+    return Promise.resolve(new Response(JSON.stringify({ result: USERS["key-ivan"] })));
+  };
+  try {
+    const env = { DB: fakeD1() };
+    const request = new Request("https://cloud.test/v1/household", { headers: { authorization: "Stremio key-ivan" } });
+    const response = await worker.fetch(request, env, {});
+    assert.equal(response.status, 404);   // authenticated; no household stored yet
+  } finally {
+    globalThis.fetch = real;
+  }
 });
