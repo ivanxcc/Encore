@@ -2,6 +2,9 @@ import AVFoundation
 import AVKit
 import SwiftUI
 import EncoreKit
+#if canImport(UIKit)
+import UIKit
+#endif
 
 /// AVFoundation engine for what Apple's stack opens natively (MP4/MOV/HLS). Its reward is the real
 /// system player: the Apple TV info panel and transport bar, Picture in Picture, AirPlay, and HDR /
@@ -16,6 +19,8 @@ final class NativeEngine: PlayerEngine {
     private var timeObserver: Any?
     private var notificationTokens: [NSObjectProtocol] = []
     private var started = false
+    /// Shown by the system's Now Playing for this item.
+    var artworkURL: URL?
 
     var isPaused: Bool { player.timeControlStatus == .paused }
     var audioTracks: [MediaTrack] { [] }      // the system player UI owns track selection
@@ -40,6 +45,19 @@ final class NativeEngine: PlayerEngine {
         title.value = source.title as NSString
         title.extendedLanguageTag = "und"
         item.externalMetadata = [title]
+        // Artwork for the Lock Screen, Control Center, and the Apple TV info panel.
+        if let artworkURL {
+            Task { [weak item] in
+                guard let image = await ImagePipeline.shared.image(artworkURL, maxPixel: 1200),
+                      let data = UIImage(cgImage: image).jpegData(compressionQuality: 0.85), let item else { return }
+                let artwork = AVMutableMetadataItem()
+                artwork.identifier = .commonIdentifierArtwork
+                artwork.value = data as NSData
+                artwork.dataType = kCMMetadataBaseDataType_JPEG as String
+                artwork.extendedLanguageTag = "und"
+                item.externalMetadata.append(artwork)
+            }
+        }
         #endif
 
         statusObservation = item.observe(\.status, options: [.new]) { [weak self] item, _ in
