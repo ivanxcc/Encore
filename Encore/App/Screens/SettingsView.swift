@@ -141,6 +141,7 @@ private struct MacUpdateRow: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
+    }
 }
 #endif
 
