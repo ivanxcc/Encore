@@ -15,6 +15,8 @@ public struct Profile: Codable, Hashable, Identifiable, Sendable {
     public var pinHash: String?
     /// When this profile was last edited, so Encore Cloud can keep the newest copy.
     public var updatedAt: Date
+    /// How this profile arranges Home (Continue Watching always comes first). nil: add-on order.
+    public var homeLayout: HomeLayout?
 
     public init(id: UUID = UUID(), name: String, avatar: String = "person.fill", colorIndex: Int = 0,
                 isOwner: Bool = false, isKids: Bool = false, pinHash: String? = nil, updatedAt: Date = Date()) {
@@ -32,6 +34,7 @@ public struct Profile: Codable, Hashable, Identifiable, Sendable {
         isKids = (try? c.decode(Bool.self, forKey: .isKids)) ?? false
         pinHash = try? c.decodeIfPresent(String.self, forKey: .pinHash)
         updatedAt = (try? c.decode(Date.self, forKey: .updatedAt)) ?? .distantPast
+        homeLayout = try? c.decodeIfPresent(HomeLayout.self, forKey: .homeLayout)
     }
 
     public var hasPin: Bool { pinHash != nil }
@@ -76,5 +79,34 @@ public final class ProfileRoster: @unchecked Sendable {
     public func save(_ profiles: [Profile]) {
         lock.lock(); defer { lock.unlock() }
         try? file.save(profiles)
+    }
+}
+
+/// A profile's Home arrangement: the catalog rows in the order chosen, and the ones hidden.
+/// Rows are named by `CatalogRef.id`; catalogs added later appear after the arranged ones.
+public struct HomeLayout: Codable, Hashable, Sendable {
+    public var order: [String]
+    public var hidden: [String]
+
+    public init(order: [String] = [], hidden: [String] = []) {
+        self.order = order; self.hidden = hidden
+    }
+
+    /// The rows to show, in order.
+    public func arrange(_ refs: [CatalogRef]) -> [CatalogRef] {
+        let rank = Dictionary(order.enumerated().map { ($1, $0) }, uniquingKeysWith: { a, _ in a })
+        let hiddenSet = Set(hidden)
+        return refs.enumerated()
+            .filter { !hiddenSet.contains($0.element.id) }
+            .sorted { (rank[$0.element.id] ?? order.count + $0.offset, $0.offset) < (rank[$1.element.id] ?? order.count + $1.offset, $1.offset) }
+            .map(\.element)
+    }
+
+    /// Every row, arranged rows first, with whether each is shown (for the editor).
+    public func rows(_ refs: [CatalogRef]) -> [(ref: CatalogRef, shown: Bool)] {
+        let rank = Dictionary(order.enumerated().map { ($1, $0) }, uniquingKeysWith: { a, _ in a })
+        return refs.enumerated()
+            .sorted { (rank[$0.element.id] ?? order.count + $0.offset, $0.offset) < (rank[$1.element.id] ?? order.count + $1.offset, $1.offset) }
+            .map { ($0.element, !hidden.contains($0.element.id)) }
     }
 }

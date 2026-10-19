@@ -23,6 +23,9 @@ struct SettingsView: View {
                         Label("Profiles", systemImage: "person.2.fill")
                     }
                 }
+                NavigationLink { HomeLayoutView() } label: {
+                    Label("Home Screen", systemImage: "rectangle.grid.1x2")
+                }
                 Button {
                     app.activeProfile = nil
                 } label: {

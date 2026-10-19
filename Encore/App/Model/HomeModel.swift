@@ -19,7 +19,9 @@ final class HomeModel: ObservableObject {
     private var tasks: [Task<Void, Never>] = []
 
     func load(using app: AppModel) {
-        let refs = AddonService.homeCatalogs(from: app.settings.addons)
+        // The profile's own arrangement (Continue Watching is separate and always first).
+        let available = AddonService.homeCatalogs(from: app.settings.addons)
+        let refs = app.activeProfile?.homeLayout.map { $0.arrange(available) } ?? available
         let signature = refs.map(\.id) + [app.household.id.uuidString]
         guard signature != loadedFor else { return }
         loadedFor = signature

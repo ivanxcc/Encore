@@ -115,6 +115,11 @@ struct MPVControls: View {
             .contentShape(Rectangle())
             .onTapGesture(count: 2) { togglePause() }
             .onTapGesture { toggleVisibility() }
+            // Pinch out to fill the screen, pinch in to see the whole picture, as in the system player.
+            .gesture(MagnifyGesture().onEnded { value in
+                if value.magnification > 1.1, !engine.fillsScreen { engine.toggleFill() }
+                if value.magnification < 0.9, engine.fillsScreen { engine.toggleFill() }
+            })
         #endif
     }
 
@@ -168,6 +173,14 @@ struct MPVControls: View {
 
     private var trackMenus: some View {
         HStack(spacing: 14) {
+            #if os(iOS)
+            // Fill the screen (cropping the edges) or fit the whole picture with black bars.
+            Button { engine.toggleFill(); reveal() } label: {
+                Image(systemName: engine.fillsScreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
+                    .frame(width: 44, height: 44)
+            }
+            .accessibilityLabel(engine.fillsScreen ? "Fit to Screen" : "Fill Screen")
+            #endif
             if session.canPlayNext {
                 Button { session.playNext() } label: {
                     Image(systemName: "forward.end.fill").frame(width: 44, height: 44)

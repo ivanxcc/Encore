@@ -89,6 +89,18 @@ jobs:
           url="$(grep -oE 'https://[a-zA-Z0-9.-]+\.workers\.dev' deploy.log | head -1 || true)"
           if [ -n "$url" ]; then
             curl -fsS "$url/v1/health" && echo
+            # TMDB: confirm cast and artwork really come back (a missing key shows here, not as an empty app).
+            if [ -n "$TMDB_API_KEY" ]; then
+              body="$(curl -sS "$url/v1/title?imdb=tt1442437&type=series" || true)"
+              cast=$(echo "$body" | jq '.cast | length' 2>/dev/null || echo 0)
+              if [ "${cast:-0}" -gt 0 ]; then
+                echo "::notice::TMDB is working: $cast cast members, trailer $(echo "$body" | jq -r '.trailer.key // "none"')"
+              else
+                echo "::warning::TMDB key is set but /v1/title returned no cast: $(echo "$body" | head -c 300)"
+              fi
+            else
+              echo "::notice::No TMDB_API_KEY secret: cast photos, 4K artwork, trailers, and trending are off."
+            fi
             {
               echo "### Encore Cloud is live"
               echo ""

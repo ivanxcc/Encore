@@ -202,6 +202,12 @@ function tmdbWorld() {
                                     { name: "Sofía Vergara", roles: [{ character: "Gloria" }], profile_path: null }] },
         images: { backdrops: [img("/text.jpg", "en", 9), img("/clean.jpg", null, 7)], logos: [img("/logo.svg", "en", 9), img("/logo.png", "en", 8)] },
         content_ratings: { results: [{ iso_3166_1: "US", rating: "TV-PG" }] },
+        videos: { results: [
+          { site: "YouTube", key: "teaser1", type: "Teaser", official: true, iso_639_1: "en", size: 2160 },
+          { site: "YouTube", key: "fan", type: "Trailer", official: false, iso_639_1: "en", size: 2160 },
+          { site: "YouTube", key: "official", type: "Trailer", official: true, iso_639_1: "en", size: 1080, name: "Official Trailer" },
+          { site: "Vimeo", key: "v", type: "Trailer", official: true, iso_639_1: "en", size: 2160 },
+        ] },
       },
       "/3/trending/all/week": { results: [{ id: 1, media_type: "movie" }, { id: 2, media_type: "person" }, { id: 3, media_type: "tv" }] },
       "/3/movie/1": { imdb_id: "tt100", title: "Dune", release_date: "2024-03-01", genres: [{ name: "Sci-Fi" }], vote_average: 8.24,
@@ -230,6 +236,7 @@ test("title extras: cast with photos, textless original backdrop, English PNG lo
   assert.equal(res.body.logo, "https://image.tmdb.org/t/p/original/logo.png");
   assert.deepEqual(res.body.crew, [{ name: "Steven Levitan", job: "Creator" }]);
   assert.equal(res.body.certification, "TV-PG");
+  assert.deepEqual(res.body.trailer, { site: "YouTube", key: "official", name: "Official Trailer", size: 1080 });
   // Cached: a second request makes no TMDB calls.
   const calls = w.tmdbCalls.length;
   assert.equal((await w.call("GET", "/v1/title?imdb=tt1442437&type=series")).status, 200);

@@ -148,6 +148,7 @@ final class PlayerSession: ObservableObject {
             NowPlayingController.shared.end()   // the system player publishes its own
             let engine = native ?? NativeEngine()
             engine.artworkURL = meta.backdropURL ?? meta.posterURL
+            engine.subtitle = episodeTitle != nil ? meta.name : nil
             native = engine
             engineKind = .native
             return engine

@@ -209,6 +209,16 @@ final class MPVEngine: ObservableObject, PlayerEngine {
         setPaused(false)
     }
 
+    /// Zoomed to fill the screen (cropping) rather than fitting the whole picture with black bars.
+    @Published private(set) var fillsScreen = false
+
+    func toggleFill() {
+        guard let mpv = handle else { return }
+        fillsScreen.toggle()
+        // panscan 1 crops the picture to fill the output exactly; 0 fits it inside.
+        mpv_set_property_string(mpv, "panscan", fillsScreen ? "1.0" : "0.0")
+    }
+
     func play() { setPaused(false) }
     func pause() { setPaused(true) }
 
