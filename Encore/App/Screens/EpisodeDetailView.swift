@@ -1,90 +1,106 @@
 import SwiftUI
 import EncoreKit
 
-/// One episode, Apple TV style: its still full width, the synopsis, and the two choices that matter,
-/// Play (or Resume) and Choose Source.
+/// One episode, as a page of its own in the Apple TV style: the episode's still fills the screen, and
+/// its details and the choices that matter (Play or Resume, Play from Beginning, Choose Source) sit low
+/// on the left, all on one screen, so there is nothing to scroll past to reach Play.
 struct EpisodeDetailView: View {
     let meta: MetaDetail
     let video: Video
     @EnvironmentObject private var app: AppModel
     @EnvironmentObject private var playback: PlaybackCenter
-    @Environment(\.dismiss) private var dismiss
     @State private var showSources = false
+    @FocusState private var focus: Focus?
+
+    enum Focus: Hashable { case play }
 
     var body: some View {
         let _ = app.libraryRevision
         let item = app.libraryItem(meta.id)
         let progress = item.flatMap { $0.state.videoID == video.id && $0.isInProgress ? $0.progress : nil }
-        ScrollView {
-            VStack(alignment: .leading, spacing: 22) {
-                Artwork(url: video.thumbnail ?? meta.backdropURL, maxPixel: 1920)
-                    .aspectRatio(16 / 9, contentMode: .fit)
-                    .frame(maxWidth: .infinity)
-                    .overlay(alignment: .bottom) {
-                        if let progress {
-                            ProgressBar(value: progress).padding(16)
+        GeometryReader { screen in
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 22) {
+                    Spacer(minLength: 0)
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text(meta.name.uppercased())
+                            .font(Theme.Fonts.meta.weight(.semibold))
+                            .foregroundStyle(Theme.Colors.secondary)
+                        Text(video.title.isEmpty ? (video.episodeLabel ?? meta.name) : video.title)
+                            .font(Theme.Fonts.heroTitle)
+                            .foregroundStyle(.white)
+                            .lineLimit(2)
+                            .minimumScaleFactor(0.6)
+                            .shadow(color: .black.opacity(0.4), radius: 12)
+                        MetaLine(parts: [seasonEpisodeText, releaseText])
+                    }
+                    if let overview = video.overview, !overview.isEmpty {
+                        Text(overview)
+                            .font(Theme.Fonts.body)
+                            .foregroundStyle(Theme.Colors.secondary)
+                            .lineLimit(5)
+                            .frame(maxWidth: Theme.Metrics.landscapeWidth * 2.6, alignment: .leading)
+                    }
+                    if let progress {
+                        ProgressBar(value: progress).frame(width: 220)
+                    }
+                    HStack(spacing: 18) {
+                        Button {
+                            playback.play(meta: meta.preview, video: video, app: app)
+                        } label: {
+                            Label(progress == nil ? "Play" : "Resume", systemImage: "play.fill")
                         }
-                    }
-                    .clipShape(RoundedRectangle(cornerRadius: Theme.Metrics.cornerRadius * 1.5, style: .continuous))
+                        .pillButtonStyle(.primary)
+                        .focused($focus, equals: .play)
 
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(meta.name.uppercased())
-                        .font(Theme.Fonts.meta)
-                        .foregroundStyle(Theme.Colors.tertiary)
-                    Text(video.title.isEmpty ? (video.episodeLabel ?? meta.name) : video.title)
-                        .font(Theme.Fonts.heroTitle.weight(.bold))
-                        .lineLimit(2)
-                        .minimumScaleFactor(0.6)
-                    MetaLine(parts: [video.episodeLabel, releaseText])
-                }
+                        if progress != nil {
+                            Button {
+                                playback.play(meta: meta.preview, video: video, app: app, fromBeginning: true)
+                            } label: {
+                                Label("Play from Beginning", systemImage: "arrow.counterclockwise")
+                            }
+                            .pillButtonStyle(.secondary)
+                        }
 
-                HStack(spacing: 16) {
-                    Button {
-                        dismiss()
-                        playback.play(meta: meta.preview, video: video, app: app, afterDismissal: true)
-                    } label: {
-                        Label(progress == nil ? "Play" : "Resume", systemImage: "play.fill")
+                        Button { showSources = true } label: {
+                            Label("Choose Source", systemImage: "list.bullet")
+                        }
+                        .pillButtonStyle(.secondary)
                     }
-                    .pillButtonStyle(.primary)
                     .disabled(isUpcoming)
-
-                    Button { showSources = true } label: {
-                        Label("Choose Source", systemImage: "list.bullet")
-                    }
-                    .pillButtonStyle(.secondary)
-                    .disabled(isUpcoming)
+                    .tvFocusSection()
                 }
-                .tvFocusSection()
-
-                if let overview = video.overview, !overview.isEmpty {
-                    Text(overview)
-                        .font(Theme.Fonts.body)
-                        .foregroundStyle(Theme.Colors.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+                .padding(.horizontal, Theme.Metrics.edge)
+                .padding(.bottom, bottomPadding)
+                .frame(minHeight: screen.size.height, alignment: .bottomLeading)
             }
-            .padding(Theme.Metrics.edge)
-            .frame(maxWidth: maxWidth)
-            .frame(maxWidth: .infinity)
+            .scrollClipDisabled()
+            .background {
+                // The still, softened behind the text; the show's own artwork when there is no still.
+                DetailBackdrop(url: video.thumbnail ?? meta.backdropURL, soften: video.thumbnail == nil ? 0 : 0.25)
+            }
         }
+        #if os(tvOS)
+        .ignoresSafeArea()
+        #else
+        .ignoresSafeArea(edges: .top)
+        #endif
         .encoreCanvas()
+        .defaultFocus($focus, .play)
         .sheet(isPresented: $showSources) {
             SourcesView(meta: meta.preview, video: video) { ranked in
                 showSources = false
-                dismiss()
                 playback.play(meta: meta.preview, video: video, app: app, explicit: ranked, afterDismissal: true)
             }
         }
-        #if os(macOS)
-        .frame(minWidth: 640, minHeight: 620)
-        .overlay(alignment: .topTrailing) { CloseButton { dismiss() }.padding(16) }
-        #endif
-        #if os(iOS)
-        .presentationDragIndicator(.visible)
-        #endif
     }
 
     private var isUpcoming: Bool { (video.released ?? .distantPast) > Date() }
+
+    private var seasonEpisodeText: String? {
+        guard let season = video.season, let episode = video.episode else { return nil }
+        return season == 0 ? "Special \(episode)" : "Season \(season) · Episode \(episode)"
+    }
 
     private var releaseText: String? {
         guard let released = video.released else { return nil }
@@ -92,11 +108,11 @@ struct EpisodeDetailView: View {
         return isUpcoming ? "Coming \(date)" : date
     }
 
-    private var maxWidth: CGFloat {
+    private var bottomPadding: CGFloat {
         #if os(tvOS)
-        return 1300
+        return 90
         #else
-        return 760
+        return 40
         #endif
     }
 }

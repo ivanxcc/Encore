@@ -53,7 +53,8 @@ enum Theme {
         /// The focus/hover lift: quick to respond, settles without bounce, like tvOS focus.
         static let focus = Animation.spring(response: 0.3, dampingFraction: 0.82)
         static let content = Animation.smooth(duration: 0.35)
-        static let hero = Animation.easeInOut(duration: 0.8)
+        /// Hero titles dissolve slowly into each other, like the Apple TV app's top shelf.
+        static let hero = Animation.easeInOut(duration: 1.2)
     }
 
     enum Fonts {
@@ -83,12 +84,15 @@ enum Theme {
 }
 
 extension View {
-    /// Black canvas, dark appearance, white tint: the base of every screen.
+    /// Black canvas, dark appearance, white tint: the base of every screen. The tint is the asset
+    /// AccentColor, which is white in dark appearance and black in light. A focused tvOS row draws a white
+    /// platter and switches its content to light appearance, so its text turns black instead of
+    /// vanishing white-on-white (a fixed `.white` tint did exactly that in Settings).
     func encoreCanvas() -> some View {
         self
             .background(Theme.Colors.canvas.ignoresSafeArea())
             .preferredColorScheme(.dark)
-            .tint(.white)
+            .tint(Color.accentColor)
     }
 
     /// Bottom scrim that keeps white text legible on any artwork.

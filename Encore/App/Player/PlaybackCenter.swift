@@ -25,11 +25,14 @@ final class PlaybackCenter: ObservableObject {
 
     /// - Parameter afterDismissal: true when called from a sheet that is closing. iOS and tvOS refuse to
     ///   present the full-screen player while a sheet is still on screen, so the request waits for it.
-    func play(meta: MetaPreview, video: Video?, app: AppModel, explicit: RankedStream? = nil, afterDismissal: Bool = false) {
+    /// - Parameter fromBeginning: start at 0:00 even when the viewer has progress in this video.
+    func play(meta: MetaPreview, video: Video?, app: AppModel, explicit: RankedStream? = nil,
+              afterDismissal: Bool = false, fromBeginning: Bool = false) {
         let item = app.libraryItem(meta.id)
         // Resume where the viewer left off when they re-open the same video.
         let resume: TimeInterval
-        if let item, item.isInProgress, item.state.videoID == (video?.id ?? meta.id) || (video == nil && item.state.videoID == nil) {
+        if !fromBeginning, let item, item.isInProgress,
+           item.state.videoID == (video?.id ?? meta.id) || (video == nil && item.state.videoID == nil) {
             resume = TimeInterval(item.state.timeOffset) / 1000
         } else {
             resume = 0

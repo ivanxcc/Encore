@@ -4,6 +4,7 @@ import EncoreKit
 /// Where a shelf or search result leads.
 enum Route: Hashable {
     case title(MetaPreview)
+    case episode(MetaDetail, Video)
 }
 
 /// The app's frame: the Apple TV sidebar on tvOS, iPad, and Mac (it collapses into a tab bar on
@@ -61,6 +62,7 @@ extension View {
         navigationDestination(for: Route.self) { route in
             switch route {
             case .title(let meta): DetailView(preview: meta)
+            case let .episode(meta, video): EpisodeDetailView(meta: meta, video: video)
             }
         }
     }

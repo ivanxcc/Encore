@@ -11,7 +11,7 @@ struct SearchView: View {
     var body: some View {
         ScrollView(.vertical, showsIndicators: false) {
             LazyVStack(alignment: .leading, spacing: Theme.Metrics.shelfSpacing) {
-                if results.isEmpty && !searching {
+                if results.isEmpty && !searching && showsEmptyState {
                     ContentUnavailableView(query.isEmpty ? "Search" : "No Results",
                                            systemImage: "magnifyingglass",
                                            description: Text(query.isEmpty ? "Find movies and shows across your add-ons." : "Try a different title."))
@@ -40,6 +40,18 @@ struct SearchView: View {
             withAnimation(Theme.Motion.content) { results = found }
             searching = false
         }
+        #if !os(tvOS)
+        // tvOS draws its own search field and keyboard at the top; a title there sits under the letters.
         .navigationTitle("Search")
+        #endif
+    }
+
+    /// On tvOS the keyboard is the empty state; only "No Results" is worth saying there.
+    private var showsEmptyState: Bool {
+        #if os(tvOS)
+        return query.trimmingCharacters(in: .whitespaces).count >= 2
+        #else
+        return true
+        #endif
     }
 }

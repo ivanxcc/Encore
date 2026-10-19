@@ -318,6 +318,20 @@ final class AppModel: ObservableObject {
         settings = session.settings
     }
 
+    // MARK: Title extras (cast photos, original artwork)
+
+    private var extrasCache: [String: TitleExtras] = [:]
+
+    /// Cast with photos, the original-resolution backdrop and logo, the tagline, and the age rating, from
+    /// Encore Cloud (TMDB). nil when the cloud has no TMDB key or the title is not an IMDb title.
+    func extras(for meta: MetaPreview) async -> TitleExtras? {
+        let imdb = meta.id.split(separator: ":").first.map(String.init) ?? meta.id
+        if let hit = extrasCache[imdb] { return hit }
+        guard let cloud, let extras = await cloud.titleExtras(imdbID: imdb, type: meta.type) else { return nil }
+        extrasCache[imdb] = extras
+        return extras
+    }
+
     // MARK: Library
 
     func continueWatching() -> [ContinueItem] {

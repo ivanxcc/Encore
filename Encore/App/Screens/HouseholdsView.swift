@@ -32,7 +32,7 @@ struct HouseholdsView: View {
                             }
                             Spacer()
                             if household.id == app.household.id {
-                                Image(systemName: "checkmark").foregroundStyle(.tint)
+                                Image(systemName: "checkmark").foregroundStyle(.primary)
                             }
                         }
                     }

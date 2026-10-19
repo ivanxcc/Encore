@@ -56,6 +56,26 @@ public struct CloudClient: Sendable {
         }
     }
 
+    // MARK: Title extras and trending (TMDB, when the cloud has a key)
+
+    /// Cast with photos and original artwork; nil when the cloud has no TMDB key or does not know the title.
+    public func titleExtras(imdbID: String, type: String) async -> TitleExtras? {
+        guard imdbID.hasPrefix("tt") else { return nil }
+        var components = URLComponents(url: base.appendingPathComponent("v1/title"), resolvingAgainstBaseURL: false)!
+        components.queryItems = [URLQueryItem(name: "imdb", value: imdbID), URLQueryItem(name: "type", value: type)]
+        guard let url = components.url, let (data, status) = try? await send("GET", url, authKey: nil, body: nil),
+              status == 200 else { return nil }
+        return try? JSONDecoder().decode(TitleExtras.self, from: data)
+    }
+
+    /// This week's trending titles with their best artwork; empty when unavailable.
+    public func trending() async -> [TrendingTitle] {
+        struct Response: Decodable { let items: [Lossy<TrendingTitle>] }
+        guard let (data, status) = try? await send("GET", base.appendingPathComponent("v1/trending"), authKey: nil, body: nil),
+              status == 200, let response = try? JSONDecoder().decode(Response.self, from: data) else { return [] }
+        return response.items.compactMap(\.value)
+    }
+
     // MARK: Directory (the other households an account manages)
 
     public struct StoredDirectory: Sendable, Equatable {
