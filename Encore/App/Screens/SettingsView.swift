@@ -133,6 +133,14 @@ private struct MacUpdateRow: View {
             Spacer()
             if updater.state == .upToDate { Text("Encore is up to date").foregroundStyle(.secondary) }
         }
+        Toggle(isOn: Binding(get: { updater.channel == .beta },
+                             set: { updater.channel = $0 ? .beta : .stable; Task { await updater.check(userInitiated: true) } })) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Beta Updates")
+                Text("Get new builds to test before they are released to everyone.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
     }
 }
 #endif

@@ -7,6 +7,11 @@ import EncoreKit
 /// Where releases are published: the repository CI built this app from (Info.plist `EncoreRepository`),
 /// so renaming the GitHub repository needs no code change.
 enum EncoreRelease {
+    /// The channel this build was released on (Info.plist `EncoreChannel`).
+    static var builtChannel: UpdateManifest.Channel {
+        UpdateManifest.Channel(rawValue: Bundle.main.object(forInfoDictionaryKey: "EncoreChannel") as? String ?? "") ?? .stable
+    }
+
     static var repository: String {
         let injected = Bundle.main.object(forInfoDictionaryKey: "EncoreRepository") as? String ?? ""
         return injected.isEmpty || injected.hasPrefix("$(") ? "ivanxcc/Encore" : injected
@@ -41,6 +46,22 @@ final class MacUpdater: ObservableObject {
     /// The outcome of the update that ran while Encore was closed, shown once after relaunch.
     @Published var previousResult: String?
 
+    /// The channel this install follows: what the person chose in Settings, or else the channel the
+    /// build was released on (a beta build keeps getting betas).
+    var channel: UpdateManifest.Channel {
+        get {
+            if let raw = UserDefaults.standard.string(forKey: Self.channelKey), let chosen = UpdateManifest.Channel(rawValue: raw) {
+                return chosen
+            }
+            return EncoreRelease.builtChannel
+        }
+        set {
+            objectWillChange.send()
+            UserDefaults.standard.set(newValue.rawValue, forKey: Self.channelKey)
+        }
+    }
+    private static let channelKey = "updates.channel"
+
     var installedBuild: Int { Int(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "") ?? 0 }
     var installedVersion: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "" }
 
@@ -53,7 +74,7 @@ final class MacUpdater: ObservableObject {
     /// - Parameter userInitiated: from Settings; reports "up to date" instead of staying silent.
     func check(userInitiated: Bool = false) async {
         if !userInitiated { readPreviousResult() }
-        guard let manifest = await UpdateManifest.fetchLatest(repository: EncoreRelease.repository) else {
+        guard let manifest = await UpdateManifest.fetchLatest(repository: EncoreRelease.repository, channel: channel) else {
             if userInitiated { state = .upToDate }
             return
         }
@@ -353,7 +374,10 @@ struct UpdatePromptView: View {
         }
     }
 
-    private var title: String { "Encore \(manifest?.version ?? "") (build \(manifest?.build ?? 0)) is available" }
+    private var title: String {
+        let beta = manifest?.releasePage?.absoluteString.contains("-beta.") == true ? " beta" : ""
+        return "Encore \(manifest?.version ?? "")\(beta) (build \(manifest?.build ?? 0)) is available"
+    }
 
     private var isBusy: Bool {
         switch updater.state {

@@ -9,7 +9,7 @@ name: Encore Cloud
 
 on:
   push:
-    branches: [main]
+    branches: [main, beta]
     paths: ["Encore/Cloud/**", ".github/workflows/encore-cloud.yml"]
   pull_request:
     paths: ["Encore/Cloud/**", ".github/workflows/encore-cloud.yml"]

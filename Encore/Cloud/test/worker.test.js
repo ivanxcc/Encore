@@ -7,7 +7,9 @@ import worker, { handle, normalizeCode } from "../src/index.js";
 
 function fakeD1() {
   const db = new DatabaseSync(":memory:");
-  db.exec(readFileSync(new URL("../migrations/0001_init.sql", import.meta.url), "utf8"));
+  for (const file of ["0001_init.sql", "0002_directory.sql"]) {
+    db.exec(readFileSync(new URL(`../migrations/${file}`, import.meta.url), "utf8"));
+  }
   return {
     prepare(sql) {
       let params = [];
@@ -160,4 +162,17 @@ test("the deployed entry point calls fetch the way the Workers runtime requires"
   } finally {
     globalThis.fetch = real;
   }
+});
+
+test("each account keeps its own versioned directory of households, separate from its household", async () => {
+  const w = makeWorld();
+  assert.equal((await w.call("GET", "/v1/directory", { key: "key-ivan" })).status, 404);
+  const doc = { households: [{ key: "account:u-sis", name: "Sis" }] };
+  assert.deepEqual((await w.call("PUT", "/v1/directory", { key: "key-ivan", body: { baseVersion: 0, doc } })).body, { version: 1 });
+  assert.equal((await w.call("PUT", "/v1/directory", { key: "key-ivan", body: { baseVersion: 0, doc: {} } })).status, 409);
+  assert.deepEqual((await w.call("GET", "/v1/directory", { key: "key-ivan" })).body.doc, doc);
+  assert.equal((await w.call("GET", "/v1/household", { key: "key-ivan" })).status, 404);
+  assert.equal((await w.call("GET", "/v1/directory", { key: "key-sis" })).status, 404);
+  await w.call("DELETE", "/v1/household", { key: "key-ivan" });
+  assert.equal((await w.call("GET", "/v1/directory", { key: "key-ivan" })).status, 404);
 });

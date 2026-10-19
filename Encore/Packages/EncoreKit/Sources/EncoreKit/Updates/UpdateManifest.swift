@@ -20,13 +20,31 @@ public struct UpdateManifest: Codable, Hashable, Sendable {
     /// Releases are numbered by build; a higher build is newer regardless of the marketing version.
     public func isNewer(thanBuild installed: Int) -> Bool { build > installed }
 
-    /// The stable URL of the newest manifest for a GitHub repository ("owner/name").
-    public static func latestURL(repository: String) -> URL? {
-        URL(string: "https://github.com/\(repository)/releases/latest/download/encore-update.json")
+    /// Which builds an install is offered. Stable: the latest release. Beta: also builds published for
+    /// testing before they are promoted to everyone.
+    public enum Channel: String, Codable, Sendable, CaseIterable {
+        case stable, beta
     }
 
-    public static func fetchLatest(repository: String, http: HTTPClient = HTTPClient()) async -> UpdateManifest? {
-        guard let url = latestURL(repository: repository) else { return nil }
-        return try? await http.get(url, as: UpdateManifest.self, timeout: 10)
+    /// The URL of the newest manifest on a channel for a GitHub repository ("owner/name").
+    public static func latestURL(repository: String, channel: Channel = .stable) -> URL? {
+        switch channel {
+        case .stable: URL(string: "https://github.com/\(repository)/releases/latest/download/encore-update.json")
+        case .beta: URL(string: "https://github.com/\(repository)/releases/download/beta-channel/encore-update.json")
+        }
+    }
+
+    /// The newest build on the channel. Beta also looks at stable, so a beta install is never offered
+    /// less than everyone else.
+    public static func fetchLatest(repository: String, channel: Channel = .stable,
+                                   http: HTTPClient = HTTPClient()) async -> UpdateManifest? {
+        func fetch(_ channel: Channel) async -> UpdateManifest? {
+            guard let url = latestURL(repository: repository, channel: channel) else { return nil }
+            return try? await http.get(url, as: UpdateManifest.self, timeout: 10)
+        }
+        guard channel == .beta else { return await fetch(.stable) }
+        async let beta = fetch(.beta)
+        async let stable = fetch(.stable)
+        return [await beta, await stable].compactMap { $0 }.max { $0.build < $1.build }
     }
 }

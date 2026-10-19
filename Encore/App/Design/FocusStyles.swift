@@ -72,7 +72,7 @@ struct PillButtonStyle: ButtonStyle {
                 .padding(.vertical, kind == .icon ? 0 : verticalPadding)
                 .frame(width: kind == .icon ? iconDiameter : nil, height: kind == .icon ? iconDiameter : nil)
                 .foregroundStyle(foreground(active))
-                .background(background(active), in: Capsule())
+                .modifier(PillBackground(kind: kind, active: active))
                 .scaleEffect(configuration.isPressed ? 0.95 : (active ? scaleUp : 1))
                 .shadow(color: .black.opacity(active ? 0.35 : 0), radius: 16, y: 8)
                 .animation(Theme.Motion.focus, value: active)
@@ -89,12 +89,6 @@ struct PillButtonStyle: ButtonStyle {
             }
         }
 
-        private func background(_ active: Bool) -> AnyShapeStyle {
-            switch kind {
-            case .primary: AnyShapeStyle(Color.white.opacity(active ? 1 : 0.92))
-            case .secondary, .icon: active ? AnyShapeStyle(Color.white) : AnyShapeStyle(.ultraThinMaterial)
-            }
-        }
 
         #if os(tvOS)
         private let labelFont = Font.system(size: 28, weight: .semibold)
@@ -109,6 +103,26 @@ struct PillButtonStyle: ButtonStyle {
         private let verticalPadding: CGFloat = 11
         private let scaleUp: CGFloat = 1.03
         #endif
+    }
+}
+
+/// Primary pills are solid white; the others are Liquid Glass until focused, when they turn white like
+/// Apple TV buttons do.
+private struct PillBackground: ViewModifier {
+    let kind: PillButtonStyle.Kind
+    let active: Bool
+
+    func body(content: Content) -> some View {
+        switch kind {
+        case .primary:
+            content.background(Color.white.opacity(active ? 1 : 0.92), in: Capsule())
+        case .secondary, .icon:
+            if active {
+                content.background(Color.white, in: Capsule())
+            } else {
+                content.liquidGlass(in: Capsule())
+            }
+        }
     }
 }
 

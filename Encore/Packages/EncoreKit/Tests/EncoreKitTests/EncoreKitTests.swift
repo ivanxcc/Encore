@@ -436,6 +436,28 @@ final class SkipAndBindingTests: XCTestCase {
         XCTAssertFalse(manifest.isNewer(thanBuild: 7))
         XCTAssertEqual(UpdateManifest.latestURL(repository: "o/r")?.absoluteString,
                        "https://github.com/o/r/releases/latest/download/encore-update.json")
+        XCTAssertEqual(UpdateManifest.latestURL(repository: "o/r", channel: .beta)?.absoluteString,
+                       "https://github.com/o/r/releases/download/beta-channel/encore-update.json")
+    }
+
+    func testBetaChannelOffersTheNewerOfBetaAndStable() async {
+        func manifest(_ build: Int) -> String {
+            #"{"version":"0.3.0","build":\#(build),"url":"https://x/a.zip","sha256":"ab"}"#
+        }
+        let mock = MockTransport()
+        mock.on("/beta-channel/", manifest(15))
+        mock.on("/latest/", manifest(14))
+        let http = HTTPClient(transport: mock)
+        let beta = await UpdateManifest.fetchLatest(repository: "o/r", channel: .beta, http: http)
+        XCTAssertEqual(beta?.build, 15)
+        let stable = await UpdateManifest.fetchLatest(repository: "o/r", channel: .stable, http: http)
+        XCTAssertEqual(stable?.build, 14)
+
+        let promotedLater = MockTransport()
+        promotedLater.on("/beta-channel/", manifest(15))
+        promotedLater.on("/latest/", manifest(16))
+        let newer = await UpdateManifest.fetchLatest(repository: "o/r", channel: .beta, http: HTTPClient(transport: promotedLater))
+        XCTAssertEqual(newer?.build, 16)
     }
 }
 
@@ -462,5 +484,41 @@ final class RatingsTests: XCTestCase {
         XCTAssertEqual(RatingsExtractor.extract(from: plain).description, plain)
         XCTAssertTrue(RatingsExtractor.extract(from: plain).ratings.isEmpty)
         XCTAssertNil(RatingsExtractor.extract(from: nil).description)
+    }
+}
+
+final class UpNextPolicyTests: XCTestCase {
+    private let t0 = Date(timeIntervalSince1970: 1_000)
+
+    func testGrowingStreamNeverStartsUpNextEarly() {
+        var policy = UpNextPolicy()
+        // A streaming-server stream: the duration stays ~10 s ahead of the playhead.
+        for second in stride(from: 0, through: 1200, by: 1) {
+            let position = TimeInterval(second)
+            XCTAssertFalse(policy.shouldStart(position: position, duration: position + 10, credits: [],
+                                              now: t0.addingTimeInterval(position)), "started at \(second)s")
+        }
+    }
+
+    func testStartsInTheLastSecondsOnceTheDurationIsSettled() {
+        var policy = UpNextPolicy()
+        XCTAssertFalse(policy.shouldStart(position: 5, duration: 2600, credits: [], now: t0))
+        XCTAssertFalse(policy.shouldStart(position: 2580, duration: 2600, credits: [], now: t0.addingTimeInterval(5)))
+        XCTAssertTrue(policy.shouldStart(position: 2581, duration: 2600, credits: [], now: t0.addingTimeInterval(20)))
+    }
+
+    func testOpeningCreditsDoNotStartUpNext() {
+        var policy = UpNextPolicy()
+        let opening = SkipSegment(kind: .credits, start: 0, end: 90)
+        let closing = SkipSegment(kind: .credits, start: 2450, end: 2600)
+        XCTAssertFalse(policy.shouldStart(position: 0, duration: 2600, credits: [opening], now: t0))
+        XCTAssertFalse(policy.shouldStart(position: 30, duration: 2600, credits: [opening, closing], now: t0.addingTimeInterval(30)))
+        XCTAssertTrue(policy.shouldStart(position: 2460, duration: 2600, credits: [opening, closing], now: t0.addingTimeInterval(60)))
+    }
+
+    func testShortClipsNeverStartUpNext() {
+        var policy = UpNextPolicy()
+        XCTAssertFalse(policy.shouldStart(position: 100, duration: 110, credits: [], now: t0))
+        XCTAssertFalse(policy.shouldStart(position: 100, duration: 110, credits: [], now: t0.addingTimeInterval(60)))
     }
 }

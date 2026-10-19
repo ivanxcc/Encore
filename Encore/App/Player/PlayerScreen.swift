@@ -24,7 +24,8 @@ struct PlayerScreen: View {
                 if let native = session.native {
                     // tvOS: Skip Intro / Next Episode ride the system player's own contextual action button,
                     // which is the only control the remote can reach while AVPlayerViewController has focus.
-                    NativePlayerView(player: native.player, action: session.action) { session.performAction() }
+                    NativePlayerView(player: native.player, action: session.action,
+                                     dismiss: { session.cancelUpNext() }) { session.performAction() }
                         .ignoresSafeArea()
                 }
             case .mpv:

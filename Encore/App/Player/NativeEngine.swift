@@ -120,6 +120,8 @@ final class NativeEngine: PlayerEngine {
 struct NativePlayerView: NSViewRepresentable {
     let player: AVPlayer
     var action: PlayerAction? = nil
+    /// Unused on the Mac: its countdown button is drawn over the player, with its own cancel.
+    var dismiss: (() -> Void)? = nil
     var perform: () -> Void = {}
 
     func makeNSView(context: Context) -> AVPlayerView {
@@ -139,6 +141,8 @@ struct NativePlayerView: NSViewRepresentable {
 struct NativePlayerView: UIViewControllerRepresentable {
     let player: AVPlayer
     var action: PlayerAction? = nil
+    /// Cancels a Next Episode countdown ("Watch Credits").
+    var dismiss: (() -> Void)? = nil
     var perform: () -> Void = {}
 
     func makeUIViewController(context: Context) -> AVPlayerViewController {
@@ -160,9 +164,15 @@ struct NativePlayerView: UIViewControllerRepresentable {
         if controller.player !== player { controller.player = player }
         #if os(tvOS)
         let perform = self.perform
-        controller.contextualActions = action.map { action in
-            [UIAction(title: action.title, image: UIImage(systemName: action.systemImage)) { _ in perform() }]
-        } ?? []
+        var actions: [UIAction] = []
+        if let action {
+            actions.append(UIAction(title: action.title, image: UIImage(systemName: action.systemImage)) { _ in perform() })
+            // A countdown must always be cancellable from the remote, not only by waiting it out.
+            if action.isCountdown, let dismiss {
+                actions.insert(UIAction(title: "Watch Credits", image: UIImage(systemName: "xmark")) { _ in dismiss() }, at: 0)
+            }
+        }
+        controller.contextualActions = actions
         #endif
     }
 }

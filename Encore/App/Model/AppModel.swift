@@ -64,6 +64,7 @@ final class AppModel: ObservableObject {
     func addHousehold(name: String, symbol: String) {
         directory.add(name: name.isEmpty ? "Household" : name, symbol: symbol)
         households = directory.registry().households
+        syncSoon()
     }
 
     func renameHousehold(_ target: Household, name: String, symbol: String) {
@@ -75,12 +76,14 @@ final class AppModel: ObservableObject {
             syncSoon()
         } else {
             HouseholdSession(scope: directory.scope(for: target)).updateCloudState { $0.nameUpdatedAt = Date() }
+            syncSoon()
         }
     }
 
     func deleteHousehold(_ target: Household) {
         directory.delete(target.id)
         households = directory.registry().households
+        syncSoon()
     }
 
     // MARK: Profiles
@@ -166,24 +169,30 @@ final class AppModel: ObservableObject {
 
     /// Merge this household with its cloud copy. Quiet: failures only show in Settings.
     func syncCloud() async {
-        guard let cloud, session.isSignedIn else { cloudStatus = .off; return }
+        guard let cloud else { cloudStatus = .off; return }
         let session = self.session
         cloudStatus = .syncing
         do {
-            guard let outcome = try await CloudSync(client: cloud).sync(session, name: household.name, symbol: household.symbol) else {
-                cloudStatus = .off
-                return
+            // 1. The open household: its profiles, their history, its settings.
+            if session.isSignedIn,
+               let outcome = try await CloudSync(client: cloud).sync(session, name: household.name, symbol: household.symbol),
+               session === self.session {
+                if outcome.name != household.name || outcome.symbol != household.symbol {
+                    directory.rename(household.id, to: outcome.name, symbol: outcome.symbol)
+                    households = directory.registry().households
+                    if let updated = households.first(where: { $0.id == household.id }) { household = updated }
+                }
+                reloadProfiles()
+                settings = session.settings
+                libraryRevision += 1
             }
-            guard session === self.session else { return }   // the household was switched meanwhile
-            if outcome.name != household.name || outcome.symbol != household.symbol {
-                directory.rename(household.id, to: outcome.name, symbol: outcome.symbol)
-                households = directory.registry().households
-                if let updated = households.first(where: { $0.id == household.id }) { household = updated }
+            // 2. The list of households: the ones your home account manages appear on every device.
+            let directoryOutcome = try await DirectorySync(client: cloud).sync(directory, activeID: household.id)
+            households = directory.registry().households
+            if session === self.session, !session.isSignedIn {
+                reloadProfiles()   // a household without an account may have just received its profiles
             }
-            reloadProfiles()
-            settings = session.settings
-            libraryRevision += 1
-            cloudStatus = .synced(Date())
+            cloudStatus = session.isSignedIn || directoryOutcome != nil ? .synced(Date()) : .off
         } catch CloudClient.CloudError.signedOut {
             cloudStatus = .failed("Sign in to Stremio again to keep this household in sync.")
         } catch let CloudClient.CloudError.server(status) {
@@ -193,6 +202,18 @@ final class AppModel: ObservableObject {
         } catch {
             cloudStatus = .failed("Encore Cloud sync failed: \(error.localizedDescription)")
         }
+    }
+
+    /// The household whose account holds this device's list of households.
+    var homeHousehold: Household? { DirectorySync.home(in: directory) }
+
+    func isSharedWithMe(_ target: Household) -> Bool { directory.settings(for: target)?.isSharedWithMe == true }
+
+    /// Settings › Households › "Make Home": the household whose account keeps the list of households.
+    func makeHome(_ target: Household) {
+        directory.updateSyncState { $0.homeID = target.id }
+        objectWillChange.send()
+        syncSoon()
     }
 
     /// Coalesce: a burst of edits becomes one sync a couple of seconds later.
@@ -234,7 +255,8 @@ final class AppModel: ObservableObject {
             ?? directory.add(name: handoff.name ?? Self.householdName(for: handoff.email ?? "Shared"), symbol: "person.2.fill")
         let targetSession = HouseholdSession(scope: directory.scope(for: target))
         targetSession.forgetAccountBinding()
-        try await targetSession.adopt(handoff.session)
+        try targetSession.store(handoff.session, sharedWithMe: true)
+        try? await targetSession.refreshFromAccount()
         switchHousehold(to: target)
         return target
     }

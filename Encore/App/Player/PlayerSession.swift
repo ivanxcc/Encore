@@ -40,6 +40,7 @@ final class PlayerSession: ObservableObject {
     private var lastRecorded: TimeInterval = 0
     private var episodes: [Video] = []
     private var countdownTask: Task<Void, Never>?
+    private var upNextPolicy = UpNextPolicy()
     private var segmentsTask: Task<Void, Never>?
     /// Segments the viewer already skipped or watched through, so the button does not come back.
     private var dismissedSegments: Set<SkipSegment> = []
@@ -173,9 +174,10 @@ final class PlayerSession: ObservableObject {
                 self.duration = duration
             }
             recordProgress(force: false)
-            // Up Next starts when the credits begin (when the databases know them), else in the last 25s.
-            let inCredits = skipSegments.contains { $0.kind == .credits && $0.isActive(at: position) && $0.end >= duration - 60 }
-            if nextEpisode != nil, duration > 0, inCredits || duration - position < 25, upNextCountdown == nil, phase == .playing {
+            // Up Next starts when the closing credits begin, else in the last 25 s, and only once the
+            // duration has settled (see UpNextPolicy).
+            if nextEpisode != nil, upNextCountdown == nil, phase == .playing,
+               upNextPolicy.shouldStart(position: position, duration: self.duration, credits: skipSegments.filter { !dismissedSegments.contains($0) }) {
                 startUpNextCountdown()
             }
             updateAction()
@@ -212,7 +214,9 @@ final class PlayerSession: ObservableObject {
         if let countdown = upNextCountdown, nextEpisode != nil {
             next = .nextEpisode(countdown: countdown)
         } else if let segment = skipSegments.first(where: { $0.isActive(at: position) && !dismissedSegments.contains($0) }) {
-            next = segment.kind == .credits && nextEpisode != nil ? .nextEpisode(countdown: nil) : .skip(segment)
+            // Closing credits offer the next episode; anything else (opening credits too) offers a skip.
+            let closing = segment.kind == .credits && duration > 0 && segment.start >= duration * 0.6
+            next = closing && nextEpisode != nil ? .nextEpisode(countdown: nil) : .skip(segment)
         } else {
             next = nil
         }
@@ -290,6 +294,7 @@ final class PlayerSession: ObservableObject {
         countdownTask?.cancel()
         segmentsTask?.cancel()
         upNextCountdown = nil
+        upNextPolicy.reset()
         skipSegments = []
         dismissedSegments = []
         action = nil

@@ -41,7 +41,13 @@ struct HomeView: View {
             }
             .padding(.bottom, 60)
         }
+        #if os(tvOS)
+        // Edge to edge, like the Apple TV app: the hero runs under the tab bar and past the TV's safe
+        // area; shelves keep their own inset.
+        .ignoresSafeArea()
+        #else
         .ignoresSafeArea(edges: .top)
+        #endif
         .scrollClipDisabled()
         .task(id: app.household.id) { model.load(using: app) }
         .onChange(of: app.settings.addons) { _, _ in model.load(using: app) }
@@ -128,8 +134,12 @@ private struct ContinueCard: View {
     }
 }
 
-/// Featured titles, full bleed. On tvOS the hero is focusable and pages with the remote; on touch it
-/// swipes; everywhere it advances on its own until the viewer interacts.
+/// Featured titles, full bleed, in the style of the Apple TV app's top shelf: the artwork fills the
+/// screen edge to edge and drifts slowly (a gentle Ken Burns move in place of a trailer), titles cross-
+/// fade, and the logo, details, and Liquid Glass buttons sit over a soft scrim at the bottom left.
+/// On tvOS the hero is focusable and the remote pages through it (left/right at the edge of the
+/// buttons); on touch it swipes; on the Mac it swipes with the trackpad. It advances on its own
+/// until the viewer interacts.
 struct HeroCarousel: View {
     let items: [MetaPreview]
     @State private var index = 0
@@ -142,31 +152,36 @@ struct HeroCarousel: View {
     #endif
 
     var body: some View {
+        let item = items[min(index, items.count - 1)]
         GeometryReader { proxy in
-            let item = items[min(index, items.count - 1)]
             ZStack(alignment: .bottomLeading) {
-                Artwork(url: item.backdropURL, maxPixel: 2400)
-                    .frame(width: proxy.size.width, height: proxy.size.height)
-                    .clipped()
-                    .id(item.id)
-                    .transition(.opacity)
-                LinearGradient(stops: [.init(color: .clear, location: 0.35), .init(color: .black, location: 1)],
-                               startPoint: .top, endPoint: .bottom)
-                LinearGradient(stops: [.init(color: .black.opacity(0.65), location: 0), .init(color: .clear, location: 0.6)],
-                               startPoint: .leading, endPoint: .trailing)
+                ZStack {
+                    HeroBackdrop(url: item.backdropURL, size: proxy.size)
+                        .id(item.id)
+                        .transition(.opacity)
+                }
+                .frame(width: proxy.size.width, height: proxy.size.height)
+                .clipped()
+                HeroScrim()
                 HeroInfo(item: item, count: items.count, index: index, focus: $focus)
                     .padding(.horizontal, Theme.Metrics.edge)
-                    .padding(.bottom, 36)
+                    .padding(.bottom, bottomInset)
             }
             .animation(Theme.Motion.hero, value: index)
-            #if os(iOS)
+            #if os(tvOS)
+            .onMoveCommand { direction in
+                // Left from the first button or right from the last pages the hero, like the Apple TV app.
+                if direction == .left, focus == .watch { interacted = true; step(-1) }
+                if direction == .right, focus == .list { interacted = true; step(1) }
+            }
+            #elseif os(iOS)
             .gesture(DragGesture(minimumDistance: 30).onEnded { value in
                 interacted = true
                 step(value.translation.width < 0 ? 1 : -1)
             })
             #elseif os(macOS)
             // Mac: two-finger trackpad swipes (and horizontal mouse wheels), click-drag, and arrows that
-            // appear on hover. A mouse drag alone was the only input before, which is why swiping did nothing.
+            // appear on hover.
             .overlay { MacHeroControls(hovering: $hovering) { delta in interacted = true; step(delta) } }
             .gesture(DragGesture(minimumDistance: 30).onEnded { value in
                 interacted = true
@@ -175,11 +190,12 @@ struct HeroCarousel: View {
             .onHover { hovering = $0 }
             #endif
         }
-        .frame(height: heroHeight)
+        .containerRelativeFrame(.horizontal)
+        .containerRelativeFrame(.vertical) { height, _ in max(height * Theme.Metrics.heroHeightRatio, minimumHeight) }
         .task(id: interacted || focus != nil || isHovering) {
             guard !interacted, focus == nil, !isHovering else { return }
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(8))
+                try? await Task.sleep(for: .seconds(9))
                 guard !Task.isCancelled else { return }
                 step(1)
             }
@@ -195,19 +211,64 @@ struct HeroCarousel: View {
         #endif
     }
 
-    private var heroHeight: CGFloat {
+    private var minimumHeight: CGFloat {
         #if os(tvOS)
-        return 820
+        return 760
         #elseif os(macOS)
-        return 520
+        return 460
         #else
-        return 560
+        return 520
+        #endif
+    }
+
+    private var bottomInset: CGFloat {
+        #if os(tvOS)
+        return 70
+        #else
+        return 36
         #endif
     }
 
     private func step(_ delta: Int) {
         guard !items.isEmpty else { return }
         index = (index + delta + items.count) % items.count
+    }
+}
+
+/// The hero artwork with a slow push-in, restarted for every title.
+private struct HeroBackdrop: View {
+    let url: URL?
+    let size: CGSize
+    @State private var drift = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        Artwork(url: url, maxPixel: 3840)
+            .frame(width: size.width, height: size.height)
+            .scaleEffect(drift ? 1.08 : 1.0, anchor: .center)
+            .offset(x: drift ? -size.width * 0.015 : 0)
+            .onAppear {
+                guard !reduceMotion else { return }
+                withAnimation(.linear(duration: 18)) { drift = true }
+            }
+    }
+}
+
+/// Darkens only where type sits: bottom (into the page), left (behind the text), and a little at the
+/// top so the tab bar stays legible over bright artwork.
+private struct HeroScrim: View {
+    var body: some View {
+        ZStack {
+            LinearGradient(stops: [.init(color: .clear, location: 0.45),
+                                   .init(color: Theme.Colors.canvas.opacity(0.75), location: 0.8),
+                                   .init(color: Theme.Colors.canvas, location: 1)],
+                           startPoint: .top, endPoint: .bottom)
+            LinearGradient(stops: [.init(color: .black.opacity(0.6), location: 0), .init(color: .clear, location: 0.55)],
+                           startPoint: .leading, endPoint: .trailing)
+            LinearGradient(stops: [.init(color: .black.opacity(0.35), location: 0), .init(color: .clear, location: 0.18)],
+                           startPoint: .top, endPoint: .bottom)
+        }
+        .allowsHitTesting(false)
     }
 }
 
@@ -266,19 +327,31 @@ struct HeroInfo: View {
     }
 }
 
+/// Page indicator on a small Liquid Glass capsule, like the Apple TV app's.
 struct PageDots: View {
     let count: Int
     let index: Int
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: dot) {
             ForEach(0..<count, id: \.self) { i in
                 Capsule()
-                    .fill(i == index ? Color.white : Color.white.opacity(0.35))
-                    .frame(width: i == index ? 22 : 8, height: 8)
+                    .fill(i == index ? Color.white : Color.white.opacity(0.4))
+                    .frame(width: i == index ? dot * 2.8 : dot, height: dot)
             }
         }
+        .padding(.horizontal, dot * 1.6)
+        .padding(.vertical, dot * 1.1)
+        .liquidGlass(in: Capsule())
         .animation(Theme.Motion.focus, value: index)
+    }
+
+    private var dot: CGFloat {
+        #if os(tvOS)
+        return 10
+        #else
+        return 7
+        #endif
     }
 }
 

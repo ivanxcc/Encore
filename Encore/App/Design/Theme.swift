@@ -11,7 +11,7 @@ enum Theme {
         static let itemSpacing: CGFloat = 40
         static let posterWidth: CGFloat = 230
         static let landscapeWidth: CGFloat = 410
-        static let heroHeightRatio: CGFloat = 0.82
+        static let heroHeightRatio: CGFloat = 0.88
         static let cornerRadius: CGFloat = 12
         #elseif os(macOS)
         static let edge: CGFloat = 40

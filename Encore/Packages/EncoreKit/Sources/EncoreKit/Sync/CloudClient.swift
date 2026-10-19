@@ -44,24 +44,77 @@ public struct CloudClient: Sendable {
     // MARK: Household
 
     public func fetch(authKey: String) async throws -> Stored? {
-        let (data, status) = try await send("GET", "v1/household", authKey: authKey)
-        if status == 404 { return nil }
-        try check(status)
-        return try Self.stored(from: data)
+        guard let (version, data) = try await fetchDocument("v1/household", authKey: authKey) else { return nil }
+        return Stored(version: version, document: try HouseholdDocument.decode(data))
     }
 
     public func put(_ document: HouseholdDocument, baseVersion: Int, authKey: String) async throws -> PutResult {
+        switch try await putDocument("v1/household", try document.encoded(), baseVersion: baseVersion, authKey: authKey) {
+        case let .saved(version): return .saved(version: version)
+        case let .conflict(version, data):
+            return .conflict(data.flatMap { try? HouseholdDocument.decode($0) }.map { Stored(version: version, document: $0) })
+        }
+    }
+
+    // MARK: Directory (the other households an account manages)
+
+    public struct StoredDirectory: Sendable, Equatable {
+        public var version: Int
+        public var document: HouseholdDirectoryDocument
+    }
+
+    public func fetchDirectory(authKey: String) async throws -> StoredDirectory? {
+        guard let (version, data) = try await fetchDocument("v1/directory", authKey: authKey) else { return nil }
+        return StoredDirectory(version: version, document: try HouseholdDirectoryDocument.decode(data))
+    }
+
+    public enum DirectoryPutResult: Sendable, Equatable {
+        case saved(version: Int)
+        case conflict(StoredDirectory?)
+    }
+
+    public func putDirectory(_ document: HouseholdDirectoryDocument, baseVersion: Int, authKey: String) async throws -> DirectoryPutResult {
+        switch try await putDocument("v1/directory", try document.encoded(), baseVersion: baseVersion, authKey: authKey) {
+        case let .saved(version): return .saved(version: version)
+        case let .conflict(version, data):
+            return .conflict(data.flatMap { try? HouseholdDirectoryDocument.decode($0) }.map { StoredDirectory(version: version, document: $0) })
+        }
+    }
+
+    // MARK: Versioned documents
+
+    private enum RawPut { case saved(Int), conflict(Int, Data?) }
+
+    /// The stored version and the document's JSON, or nil if there is none yet.
+    private func fetchDocument(_ path: String, authKey: String) async throws -> (Int, Data)? {
+        let (data, status) = try await send("GET", path, authKey: authKey)
+        if status == 404 { return nil }
+        try check(status)
+        return try Self.unwrap(data)
+    }
+
+    private func putDocument(_ path: String, _ document: Data, baseVersion: Int, authKey: String) async throws -> RawPut {
         let body = try JSONSerialization.data(withJSONObject: [
             "baseVersion": baseVersion,
-            "doc": try JSONSerialization.jsonObject(with: document.encoded()),
+            "doc": try JSONSerialization.jsonObject(with: document),
         ])
-        let (data, status) = try await send("PUT", "v1/household", authKey: authKey, body: body)
+        let (data, status) = try await send("PUT", path, authKey: authKey, body: body)
         if status == 409 {
-            return .conflict(try? Self.stored(from: data))
+            let unwrapped = try? Self.unwrap(data)
+            let version = unwrapped?.0 ?? ((try? JSONSerialization.jsonObject(with: data)) as? [String: Any])?["version"] as? Int ?? 0
+            return .conflict(version, unwrapped?.1)
         }
         try check(status)
         struct Saved: Decodable { let version: Int }
-        return .saved(version: try JSONDecoder().decode(Saved.self, from: data).version)
+        return .saved(try JSONDecoder().decode(Saved.self, from: data).version)
+    }
+
+    /// `{ version, doc }` -> (version, doc JSON); nil when the doc is missing or null.
+    private static func unwrap(_ data: Data) throws -> (Int, Data)? {
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let version = object["version"] as? Int,
+              let doc = object["doc"], !(doc is NSNull) else { return nil }
+        return (version, try JSONSerialization.data(withJSONObject: doc))
     }
 
     public func deleteHousehold(authKey: String) async throws {
@@ -132,14 +185,6 @@ public struct CloudClient: Sendable {
     }
 
     // MARK: Plumbing
-
-    private static func stored(from data: Data) throws -> Stored? {
-        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let version = object["version"] as? Int else { return nil }
-        guard let doc = object["doc"], !(doc is NSNull) else { return nil }
-        let document = try HouseholdDocument.decode(JSONSerialization.data(withJSONObject: doc))
-        return Stored(version: version, document: document)
-    }
 
     private func check(_ status: Int) throws {
         if status == 401 { throw CloudError.signedOut }

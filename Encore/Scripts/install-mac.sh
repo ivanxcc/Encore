@@ -2,6 +2,7 @@
 # Install or update Encore for Mac without the "unidentified developer" detour.
 #
 #   curl -fsSL https://github.com/ivanxcc/Encore/releases/latest/download/install-mac.sh | bash
+#   curl -fsSL https://github.com/ivanxcc/Encore/releases/latest/download/install-mac.sh | ENCORE_CHANNEL=beta bash
 #
 # Files fetched with curl are not quarantined by macOS, so Gatekeeper does not stop the app on first
 # launch. The download is verified against the SHA-256 published with the release before anything is
@@ -10,12 +11,17 @@ set -euo pipefail
 
 REPO="${ENCORE_REPO:-__REPOSITORY__}"
 DEST="${ENCORE_DEST:-/Applications}"
-manifest_url="https://github.com/${REPO}/releases/latest/download/encore-update.json"
+# stable: the latest release. beta: the newest build waiting for approval (ENCORE_CHANNEL=beta).
+CHANNEL="${ENCORE_CHANNEL:-__CHANNEL__}"
+case "$CHANNEL" in
+  beta) manifest_url="https://github.com/${REPO}/releases/download/beta-channel/encore-update.json" ;;
+  *)    manifest_url="https://github.com/${REPO}/releases/latest/download/encore-update.json" ;;
+esac
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
-echo "Encore: checking the latest release…"
+echo "Encore: checking the latest ${CHANNEL} release…"
 curl -fsSL "$manifest_url" -o "$work/update.json"
 # plutil reads JSON on every supported macOS (python3 would prompt to install developer tools).
 read_json() { /usr/bin/plutil -extract "$1" raw -o - "$work/update.json"; }
