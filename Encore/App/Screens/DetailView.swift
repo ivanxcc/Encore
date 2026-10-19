@@ -305,20 +305,19 @@ private struct EpisodesSection: View {
                     LazyHStack(alignment: .top, spacing: Theme.Metrics.itemSpacing) {
                         ForEach(episodes) { video in
                             EpisodeCard(meta: meta, video: video, progress: progress(video),
-                                        play: { play(video) })
-                                .id(video.id)
-                                .contextMenu {
-                                    Button { play(video) } label: {
-                                        Label(progress(video) != nil ? "Resume" : "Play", systemImage: "play.fill")
-                                    }
-                                    if progress(video) != nil {
-                                        Button { playFromBeginning(video) } label: {
-                                            Label("Play from Beginning", systemImage: "arrow.counterclockwise")
-                                        }
-                                    }
-                                    Button { chooseSource(video) } label: { Label("Choose Source", systemImage: "list.bullet") }
-                                    Button { showDetails(video) } label: { Label("View Details", systemImage: "info.circle") }
+                                        play: { play(video) }) {
+                                Button { play(video) } label: {
+                                    Label(progress(video) != nil ? "Resume" : "Play", systemImage: "play.fill")
                                 }
+                                if progress(video) != nil {
+                                    Button { playFromBeginning(video) } label: {
+                                        Label("Play from Beginning", systemImage: "arrow.counterclockwise")
+                                    }
+                                }
+                                Button { chooseSource(video) } label: { Label("Choose Source", systemImage: "list.bullet") }
+                                Button { showDetails(video) } label: { Label("View Details", systemImage: "info.circle") }
+                            }
+                            .id(video.id)
                         }
                     }
                     .scrollTargetLayout()
@@ -351,11 +350,13 @@ private struct EpisodesSection: View {
 }
 
 /// An episode: its still, then "EPISODE 3", the title, and two lines of synopsis, as on Apple TV.
-private struct EpisodeCard: View {
+/// The hold-down menu sits on the focusable card itself, where tvOS looks for it.
+private struct EpisodeCard<Menu: View>: View {
     let meta: MetaDetail
     let video: Video
     let progress: Double?
     let play: () -> Void
+    @ViewBuilder let menu: () -> Menu
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -377,6 +378,7 @@ private struct EpisodeCard: View {
                     .clipShape(RoundedRectangle(cornerRadius: Theme.Metrics.cornerRadius, style: .continuous))
             }
             .cardButtonStyle()
+            .contextMenu { if !isUpcoming { menu() } }
             .disabled(isUpcoming)
             .accessibilityLabel(video.title)
             VStack(alignment: .leading, spacing: 4) {

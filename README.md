@@ -151,6 +151,14 @@ separate passwords. One-time setup, about five minutes:
 6. **Release.** Run **Actions › Encore Release › Run workflow** (or push any change). Every app built from
    then on has Encore Cloud. Install the new build on each device; the Mac updates itself.
 
+7. **Optional, recommended: cast photos, 4K artwork, and a smarter Home.** Create a free account at
+   [themoviedb.org](https://www.themoviedb.org/signup), open **Settings › API**, request an API key
+   (choose "Developer", any app name and URL), and copy the **API Read Access Token**. Add it as the
+   repository secret `TMDB_API_KEY`, then run **Actions › Encore Cloud › Run workflow** again. Title
+   pages then show the cast with photos, artwork comes in at original resolution (up to 4K), and the
+   Home hero features what is trending this week. Without it, Encore uses Cinemeta's artwork and cast
+   names.
+
 Afterwards the Worker redeploys itself whenever `Encore/Cloud` changes. Without the variable, builds
 simply have no cloud features, and everything else works the same.
 
