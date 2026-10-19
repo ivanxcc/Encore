@@ -1,0 +1,31 @@
+name: Probe
+on:
+  push:
+    branches: [claude/marquee-native-app]
+    paths: [".github/workflows/probe.yml"]
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: |
+          note() { echo "::notice title=$1::$(echo "$2" | tr '\n' ' ' | head -c 3800)"; }
+          for ep in 1 5; do
+            note "introdb S1E$ep" "$(curl -sS -m 20 "https://api.theintrodb.org/v3/media?imdb_id=tt1442437&season=1&episode=$ep")"
+          done
+          note "introdb S1E1 dur" "$(curl -sS -m 20 "https://api.theintrodb.org/v3/media?imdb_id=tt1442437&season=1&episode=1&duration_ms=1300000")"
+          M=$(curl -sS -m 20 https://v3-cinemeta.strem.io/meta/series/tt1442437.json)
+          note "cinemeta keys" "$(echo "$M" | jq -c '.meta | keys')"
+          note "cinemeta app_extras" "$(echo "$M" | jq -c '.meta.app_extras | {keys: keys, cast: (.cast[:2]), directors: (.directors[:1])}')"
+          note "cinemeta art" "$(echo "$M" | jq -c '.meta | {background, logo, poster, links: (.links[:4]), trailers: (.trailers[:1]), trailerStreams: (.trailerStreams[:1])}')"
+          note "cinemeta video" "$(echo "$M" | jq -c '.meta.videos[0]')"
+          T=$(curl -sS -m 20 https://v3-cinemeta.strem.io/catalog/movie/top.json)
+          note "top movie item" "$(echo "$T" | jq -c '.metas[0] | {id, name, background, logo, imdbRating, popularity, popularities, genres, releaseInfo, description: (.description[:80])}')"
+          note "top count" "$(echo "$T" | jq '.metas | length')"
+          for size in small medium large; do
+            note "metahub bg $size" "$(curl -sS -o /tmp/b.jpg -w '%{http_code} %{size_download}' https://images.metahub.space/background/$size/tt1442437/img) $(python3 -c "import struct;d=open('/tmp/b.jpg','rb').read();i=2
+          while i<len(d):
+              m=d[i+1];l=struct.unpack('>H',d[i+2:i+4])[0]
+              if m in(0xC0,0xC2):print(struct.unpack('>HH',d[i+5:i+9]));break
+              i+=2+l" 2>&1)"
+          done
+          note "metahub logo large" "$(curl -sS -o /dev/null -w '%{http_code} %{size_download}' https://images.metahub.space/logo/large/tt1442437/img)"
