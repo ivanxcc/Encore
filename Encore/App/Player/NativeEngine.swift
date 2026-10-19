@@ -120,6 +120,8 @@ final class NativeEngine: PlayerEngine {
 struct NativePlayerView: NSViewRepresentable {
     let player: AVPlayer
     var action: PlayerAction? = nil
+    /// Unused on the Mac: its countdown button is drawn over the player, with its own cancel.
+    var dismiss: (() -> Void)? = nil
     var perform: () -> Void = {}
 
     func makeNSView(context: Context) -> AVPlayerView {
