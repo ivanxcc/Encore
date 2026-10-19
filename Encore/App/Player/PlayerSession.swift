@@ -41,6 +41,8 @@ final class PlayerSession: ObservableObject {
     private var episodes: [Video] = []
     private var countdownTask: Task<Void, Never>?
     private var upNextPolicy = UpNextPolicy()
+    /// The duration the current markers were looked up for.
+    private var segmentsDuration: TimeInterval = 0
     private var segmentsTask: Task<Void, Never>?
     /// Segments the viewer already skipped or watched through, so the button does not come back.
     private var dismissedSegments: Set<SkipSegment> = []
@@ -170,8 +172,10 @@ final class PlayerSession: ObservableObject {
         case let .progress(position, duration):
             self.position = position
             if duration > 0 {
-                if self.duration == 0, skipSegments.isEmpty { self.duration = duration; loadSkipSegments() }
                 self.duration = duration
+                // Markers are matched against the file's length. A stream that is still being prepared
+                // reports only what exists so far, so look again once the length has grown for real.
+                if segmentsDuration == 0 || duration > segmentsDuration * 1.25 + 60 { loadSkipSegments() }
             }
             recordProgress(force: false)
             // Up Next starts when the closing credits begin, else in the last 25 s, and only once the
@@ -195,6 +199,7 @@ final class PlayerSession: ObservableObject {
 
     private func loadSkipSegments() {
         guard meta.type == "series" || meta.type == "anime" || meta.type == "movie", duration > 0 else { return }
+        segmentsDuration = duration
         segmentsTask?.cancel()
         let metaID = meta.id, season = video?.season, episode = video?.episode, length = duration
         let videoID = video?.id
@@ -295,6 +300,7 @@ final class PlayerSession: ObservableObject {
         segmentsTask?.cancel()
         upNextCountdown = nil
         upNextPolicy.reset()
+        segmentsDuration = 0
         skipSegments = []
         dismissedSegments = []
         action = nil

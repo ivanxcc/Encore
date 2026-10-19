@@ -23,20 +23,36 @@ public enum ArtworkURLs {
     public static func poster(for id: String, size: Size = .medium) -> URL? {
         imdbID(id).flatMap { URL(string: "https://images.metahub.space/poster/\(size.rawValue)/\($0)/img") }
     }
+
+    /// Add-ons hand out metahub artwork at modest sizes (Cinemeta's backdrops are "medium"). On a 4K TV
+    /// that is visibly soft, so backdrops and logos are asked for at "large", and posters at least "medium".
+    public static func sharpened(_ url: URL?) -> URL? {
+        guard let url, url.host == "images.metahub.space" else { return url }
+        var parts = url.pathComponents   // ["/", "background", "medium", "tt…", "img"]
+        guard parts.count >= 3 else { return url }
+        switch parts[1] {
+        case "background", "logo": parts[2] = Size.large.rawValue
+        case "poster" where parts[2] == Size.small.rawValue: parts[2] = Size.medium.rawValue
+        default: return url
+        }
+        var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        components?.path = "/" + parts.dropFirst().joined(separator: "/")
+        return components?.url ?? url
+    }
 }
 
 public extension MetaPreview {
-    var backdropURL: URL? { background ?? ArtworkURLs.backdrop(for: id) ?? poster }
-    var logoURL: URL? { logo ?? ArtworkURLs.logo(for: id) }
-    var posterURL: URL? { poster ?? ArtworkURLs.poster(for: id) }
+    var backdropURL: URL? { ArtworkURLs.sharpened(background) ?? ArtworkURLs.backdrop(for: id) ?? poster }
+    var logoURL: URL? { ArtworkURLs.sharpened(logo) ?? ArtworkURLs.logo(for: id, size: .large) }
+    var posterURL: URL? { ArtworkURLs.sharpened(poster) ?? ArtworkURLs.poster(for: id) }
 }
 
 public extension MetaDetail {
-    var backdropURL: URL? { background ?? ArtworkURLs.backdrop(for: id) ?? poster }
-    var logoURL: URL? { logo ?? ArtworkURLs.logo(for: id) }
+    var backdropURL: URL? { ArtworkURLs.sharpened(background) ?? ArtworkURLs.backdrop(for: id) ?? poster }
+    var logoURL: URL? { ArtworkURLs.sharpened(logo) ?? ArtworkURLs.logo(for: id, size: .large) }
 }
 
 public extension StremioLibraryItem {
-    var backdropURL: URL? { ArtworkURLs.backdrop(for: id, size: .medium) ?? poster }
+    var backdropURL: URL? { ArtworkURLs.backdrop(for: id) ?? poster }
     var preview: MetaPreview { MetaPreview(id: id, type: type, name: name, poster: poster) }
 }

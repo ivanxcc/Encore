@@ -243,7 +243,7 @@ private struct HeroBackdrop: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        Artwork(url: url, maxPixel: 3840)
+        Artwork(url: url, maxPixel: HeroArtwork.maxPixel, fade: 1.0)
             .frame(width: size.width, height: size.height)
             .scaleEffect(drift ? 1.08 : 1.0, anchor: .center)
             .offset(x: drift ? -size.width * 0.015 : 0)
@@ -363,15 +363,18 @@ struct TitleLogo: View {
     @State private var failed = false
 
     var body: some View {
-        if let logo, !failed {
-            LogoImage(url: logo, maxWidth: maxWidth) { failed = true }
-        } else {
-            Text(title)
-                .font(Theme.Fonts.heroTitle)
-                .foregroundStyle(.white)
-                .lineLimit(2)
-                .shadow(color: .black.opacity(0.4), radius: 12)
+        Group {
+            if let logo, !failed {
+                LogoImage(url: logo, maxWidth: maxWidth) { failed = true }
+            } else {
+                Text(title)
+                    .font(Theme.Fonts.heroTitle)
+                    .foregroundStyle(.white)
+                    .lineLimit(2)
+                    .shadow(color: .black.opacity(0.4), radius: 12)
+            }
         }
+        .onChange(of: logo) { _, _ in failed = false }   // a new title gets a fresh try at its logo
     }
 }
 
@@ -379,23 +382,30 @@ private struct LogoImage: View {
     let url: URL
     let maxWidth: CGFloat
     let onFailure: () -> Void
-    @State private var image: CGImage?
+    @State private var shown: (url: URL, image: CGImage)?
+
+    init(url: URL, maxWidth: CGFloat, onFailure: @escaping () -> Void) {
+        self.url = url; self.maxWidth = maxWidth; self.onFailure = onFailure
+        _shown = State(initialValue: ImagePipeline.shared.cached(url, maxPixel: HeroArtwork.logoPixel).map { (url, $0) })
+    }
 
     var body: some View {
-        Group {
-            if let image {
-                Image(decorative: image, scale: 1)
+        ZStack(alignment: .bottomLeading) {
+            Color.clear.frame(width: maxWidth, height: maxWidth * 0.2)
+            if let shown {
+                Image(decorative: shown.image, scale: 1)
                     .resizable()
                     .aspectRatio(contentMode: .fit)
-                    .frame(maxWidth: maxWidth, maxHeight: maxWidth * 0.36, alignment: .leading)
+                    .frame(maxWidth: maxWidth, maxHeight: maxWidth * 0.36, alignment: .bottomLeading)
                     .shadow(color: .black.opacity(0.35), radius: 14)
-            } else {
-                Color.clear.frame(width: maxWidth, height: maxWidth * 0.2)
+                    .id(shown.url)
+                    .transition(.opacity)
             }
         }
         .task(id: url) {
-            if let loaded = await ImagePipeline.shared.image(url, maxPixel: Int(maxWidth * 2)) {
-                withAnimation(.easeOut(duration: 0.3)) { image = loaded }
+            guard shown?.url != url else { return }
+            if let loaded = await ImagePipeline.shared.image(url, maxPixel: HeroArtwork.logoPixel) {
+                withAnimation(.easeInOut(duration: 0.6)) { shown = (url, loaded) }
             } else if !Task.isCancelled {
                 onFailure()
             }

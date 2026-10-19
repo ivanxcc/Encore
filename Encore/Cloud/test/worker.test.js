@@ -176,3 +176,73 @@ test("each account keeps its own versioned directory of households, separate fro
   await w.call("DELETE", "/v1/household", { key: "key-ivan" });
   assert.equal((await w.call("GET", "/v1/directory", { key: "key-ivan" })).status, 404);
 });
+
+// MARK: TMDB
+
+function tmdbWorld() {
+  const w = makeWorld();
+  w.env.TMDB_API_KEY = "0123456789abcdef0123456789abcdef";
+  w.tmdbCalls = [];
+  const store = new Map();
+  w.deps.cache = {
+    async match(req) { const hit = store.get(req.url); return hit ? new Response(hit) : undefined; },
+    async put(req, res) { store.set(req.url, await res.text()); },
+  };
+  const img = (path, lang, vote) => ({ file_path: path, iso_639_1: lang, vote_average: vote });
+  w.deps.fetchTMDB = async (url) => {
+    const u = new URL(url);
+    w.tmdbCalls.push(u.pathname);
+    assert.equal(u.searchParams.get("api_key"), w.env.TMDB_API_KEY);
+    const routes = {
+      "/3/find/tt1442437": { tv_results: [{ id: 1421, media_type: "tv" }], movie_results: [] },
+      "/3/tv/1421": {
+        id: 1421, tagline: "One big (straight, gay, multi-cultural, traditional) happy family.",
+        backdrop_path: "/plain.jpg", created_by: [{ name: "Steven Levitan" }],
+        aggregate_credits: { cast: [{ name: "Ed O'Neill", roles: [{ character: "Jay Pritchett" }], profile_path: "/ed.jpg" },
+                                    { name: "Sofía Vergara", roles: [{ character: "Gloria" }], profile_path: null }] },
+        images: { backdrops: [img("/text.jpg", "en", 9), img("/clean.jpg", null, 7)], logos: [img("/logo.svg", "en", 9), img("/logo.png", "en", 8)] },
+        content_ratings: { results: [{ iso_3166_1: "US", rating: "TV-PG" }] },
+      },
+      "/3/trending/all/week": { results: [{ id: 1, media_type: "movie" }, { id: 2, media_type: "person" }, { id: 3, media_type: "tv" }] },
+      "/3/movie/1": { imdb_id: "tt100", title: "Dune", release_date: "2024-03-01", genres: [{ name: "Sci-Fi" }], vote_average: 8.24,
+                      images: { backdrops: [img("/dune.jpg", null, 8)], logos: [] } },
+      "/3/tv/3": { name: "No IMDb", first_air_date: "2024", external_ids: {}, images: { backdrops: [] } },
+    };
+    const body = routes[u.pathname];
+    return new Response(JSON.stringify(body || {}), { status: body ? 200 : 404 });
+  };
+  return w;
+}
+
+test("TMDB routes answer 404 until a key is set", async () => {
+  const w = makeWorld();
+  assert.equal((await w.call("GET", "/v1/title?imdb=tt1442437&type=series")).status, 404);
+  assert.equal((await w.call("GET", "/v1/trending")).status, 404);
+});
+
+test("title extras: cast with photos, textless original backdrop, English PNG logo, creator, rating", async () => {
+  const w = tmdbWorld();
+  const res = await w.call("GET", "/v1/title?imdb=tt1442437&type=series");
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.body.cast[0], { name: "Ed O'Neill", character: "Jay Pritchett", photo: "https://image.tmdb.org/t/p/h632/ed.jpg" });
+  assert.equal(res.body.cast[1].photo, null);
+  assert.equal(res.body.backdrop, "https://image.tmdb.org/t/p/original/clean.jpg");
+  assert.equal(res.body.logo, "https://image.tmdb.org/t/p/original/logo.png");
+  assert.deepEqual(res.body.crew, [{ name: "Steven Levitan", job: "Creator" }]);
+  assert.equal(res.body.certification, "TV-PG");
+  // Cached: a second request makes no TMDB calls.
+  const calls = w.tmdbCalls.length;
+  assert.equal((await w.call("GET", "/v1/title?imdb=tt1442437&type=series")).status, 200);
+  assert.equal(w.tmdbCalls.length, calls);
+  assert.equal((await w.call("GET", "/v1/title?imdb=nope")).status, 400);
+});
+
+test("trending keeps titles with an IMDb id and artwork", async () => {
+  const w = tmdbWorld();
+  const res = await w.call("GET", "/v1/trending");
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.body.items, [{
+    imdbId: "tt100", type: "movie", name: "Dune", backdrop: "https://image.tmdb.org/t/p/original/dune.jpg",
+    logo: null, overview: null, year: "2024", genres: ["Sci-Fi"], rating: 8.2,
+  }]);
+});

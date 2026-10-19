@@ -111,6 +111,14 @@ final class AddonServiceTests: XCTestCase {
         XCTAssertEqual(results[0].1.map(\.id), ["tt1", "tt2"])
         XCTAssertEqual(results[0].1[1].imdbRating, "8.6")
     }
+
+    func testSmartSearchComesFirstAndKeepsItsName() async throws {
+        let smart = try addon("https://smart.test", #"{"id":"org.smart","version":"1.0.0","name":"AI Search","resources":["catalog"],"types":["other"],"catalogs":[{"type":"other","id":"smart","name":"Smart Search","extra":[{"name":"search","isRequired":true}]}]}"#)
+        let mock = MockTransport()
+        mock.on("search=heist", #"{"metas":[{"id":"tt9","type":"movie","name":"Ocean's Eleven"}]}"#)
+        let results = await AddonService(http: HTTPClient(transport: mock)).search("heist", in: DefaultAddons.all + [smart])
+        XCTAssertEqual(results.map(\.0.title), ["Smart Search", "Popular Movies", "Popular Shows"])
+    }
 }
 
 final class RankingTests: XCTestCase {
@@ -520,5 +528,90 @@ final class UpNextPolicyTests: XCTestCase {
         var policy = UpNextPolicy()
         XCTAssertFalse(policy.shouldStart(position: 100, duration: 110, credits: [], now: t0))
         XCTAssertFalse(policy.shouldStart(position: 100, duration: 110, credits: [], now: t0.addingTimeInterval(60)))
+    }
+}
+
+final class SkipMarkerTests: XCTestCase {
+    private func decode(_ json: String, duration: TimeInterval) throws -> [SkipSegment] {
+        let response = try JSONDecoder().decode(SkipSegmentService.IntroDBResponse.self, from: Data(json.utf8))
+        return SkipSegmentService.segments(from: response, duration: duration)
+    }
+
+    /// The Modern Family case: a credits marker without a start used to become "credits from 0:00", so
+    /// the episode opened on Skip Credits and skipping jumped straight to Next Episode.
+    func testCreditsWithoutAStartAreIgnored() throws {
+        let segments = try decode(#"{"intro":[{"start_ms":null,"end_ms":32000}],"credits":[{"start_ms":null,"end_ms":1290000}]}"#, duration: 1300)
+        XCTAssertEqual(segments, [SkipSegment(kind: .intro, start: 0, end: 32)])
+    }
+
+    func testRealMarkersSurvive() throws {
+        let segments = try decode(#"{"intro":[{"start_ms":15000,"end_ms":45000}],"credits":[{"start_ms":1240000}],"recap":[]}"#, duration: 1300)
+        XCTAssertEqual(segments, [SkipSegment(kind: .intro, start: 15, end: 45), SkipSegment(kind: .credits, start: 1240, end: 1300)])
+    }
+
+    func testOpeningCreditsBecomeAnIntroAndAbsurdMarkersAreDropped() throws {
+        let segments = try decode(#"{"credits":[{"start_ms":0,"end_ms":60000},{"start_ms":200000,"end_ms":1300000}],"intro":[{"start_ms":1000000,"end_ms":1030000}]}"#, duration: 1300)
+        XCTAssertEqual(segments, [SkipSegment(kind: .intro, start: 0, end: 60)])
+    }
+
+    func testOtherFieldShapes() throws {
+        let seconds = try decode(#"{"intro":{"start":10,"end":40},"credits":[{"startMs":"1250000"}]}"#, duration: 1300)
+        XCTAssertEqual(seconds, [SkipSegment(kind: .intro, start: 10, end: 40), SkipSegment(kind: .credits, start: 1250, end: 1300)])
+    }
+
+    func testChapterTitles() {
+        let segments = SkipSegmentService.fromChapters(
+            [("Opening Credits", 0), ("Chapter 1", 70), ("End Credits", 1250)], duration: 1300)
+        XCTAssertEqual(segments, [SkipSegment(kind: .intro, start: 0, end: 70), SkipSegment(kind: .credits, start: 1250, end: 1300)])
+    }
+}
+
+final class FeaturedPickerTests: XCTestCase {
+    private func meta(_ n: Int, _ type: String = "movie", logo: Bool = false) -> MetaPreview {
+        MetaPreview(id: "tt\(1_000_000 + n)", type: type, name: "T\(n)",
+                    background: URL(string: "https://img/\(n).jpg"), logo: logo ? URL(string: "https://img/l\(n).png") : nil)
+    }
+
+    func testVariesByDayAndKeepsADayStable() {
+        let movies = (0..<15).map { meta($0) }, shows = (20..<35).map { meta($0, "series") }
+        let today = FeaturedPicker.pick(inProgress: [], trending: [], catalogs: [movies, shows], seed: "100|p")
+        XCTAssertEqual(today, FeaturedPicker.pick(inProgress: [], trending: [], catalogs: [movies, shows], seed: "100|p"))
+        let tomorrow = FeaturedPicker.pick(inProgress: [], trending: [], catalogs: [movies, shows], seed: "101|p")
+        XCTAssertNotEqual(today.map(\.id), tomorrow.map(\.id))
+        XCTAssertNotEqual(today.map(\.id), Array(movies.prefix(8)).map(\.id), "not just the first catalog's first titles")
+        XCTAssertEqual(today.count, 8)
+        XCTAssertEqual(Set(today.map(\.id)).count, 8)
+        XCTAssertEqual(today.prefix(4).map(\.type), ["movie", "series", "movie", "series"])
+    }
+
+    func testPersonalTrendingAndLogosLead() {
+        let watching = [meta(90, "series"), meta(91, "series"), meta(92, "movie")]
+        let trending = [meta(1, logo: true), meta(2, "series", logo: true), meta(3), meta(4, "series", logo: true)]
+        let picked = FeaturedPicker.pick(inProgress: watching, trending: trending, catalogs: [[meta(50)]], seed: "s", count: 6)
+        XCTAssertEqual(picked.first?.id, watching[0].id)
+        XCTAssertTrue(picked.contains { $0.id == watching[1].id })
+        XCTAssertFalse(picked.contains { $0.id == watching[2].id }, "only shows in progress, not movies")
+        XCTAssertEqual(Set(picked.dropFirst().prefix(3).map(\.id)), Set([trending[0], trending[1], trending[3]].map(\.id)),
+                       "titles with logos before titles without")
+    }
+
+    func testSharpensMetahubArtwork() {
+        let medium = URL(string: "https://images.metahub.space/background/medium/tt1442437/img")
+        XCTAssertEqual(ArtworkURLs.sharpened(medium)?.absoluteString, "https://images.metahub.space/background/large/tt1442437/img")
+        XCTAssertEqual(ArtworkURLs.sharpened(URL(string: "https://images.metahub.space/poster/small/tt1/img"))?.absoluteString,
+                       "https://images.metahub.space/poster/medium/tt1/img")
+        XCTAssertEqual(ArtworkURLs.sharpened(URL(string: "https://image.tmdb.org/t/p/original/a.jpg"))?.absoluteString,
+                       "https://image.tmdb.org/t/p/original/a.jpg")
+        let fromCinemeta = MetaPreview(id: "tt1442437", type: "series", name: "MF", background: medium)
+        XCTAssertEqual(fromCinemeta.backdropURL?.absoluteString, "https://images.metahub.space/background/large/tt1442437/img")
+    }
+
+    func testDecodesTitleExtras() throws {
+        let json = #"{"tmdbId":1421,"backdrop":"https://image.tmdb.org/t/p/original/a.jpg","logo":null,"tagline":"Family","cast":[{"name":"Ed O'Neill","character":"Jay","photo":"https://image.tmdb.org/t/p/h632/ed.jpg"},{"bad":1},{"name":"Sofía Vergara","character":null,"photo":null}],"crew":[{"name":"Steven Levitan","job":"Creator"}],"certification":"TV-PG"}"#
+        let extras = try JSONDecoder().decode(TitleExtras.self, from: Data(json.utf8))
+        XCTAssertEqual(extras.cast.map(\.name), ["Ed O'Neill", "Sofía Vergara"])
+        XCTAssertEqual(extras.cast.first?.photo?.lastPathComponent, "ed.jpg")
+        XCTAssertNil(extras.logo)
+        XCTAssertEqual(extras.crew.first?.job, "Creator")
     }
 }

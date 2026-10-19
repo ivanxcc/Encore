@@ -49,7 +49,8 @@ extension View {
 /// The white capsule "Play" button and its translucent secondary siblings, as on Apple TV detail pages.
 struct PillButtonStyle: ButtonStyle {
     /// `icon` is a translucent circle for a lone SF Symbol (+, checkmark, list), Apple TV style.
-    enum Kind { case primary, secondary, icon }
+    /// `tab` is a season (or similar) picker: the chosen one reads as chosen without looking focused.
+    enum Kind: Equatable { case primary, secondary, icon, tab(selected: Bool) }
     var kind: Kind = .primary
 
     func makeBody(configuration: Configuration) -> some View {
@@ -83,9 +84,11 @@ struct PillButtonStyle: ButtonStyle {
         }
 
         private func foreground(_ active: Bool) -> Color {
+            if active { return .black }
             switch kind {
-            case .primary: .black
-            case .secondary, .icon: active ? .black : .white
+            case .primary: return PillBackground.primaryIsSolid ? .black : .white
+            case .secondary, .icon: return .white
+            case let .tab(selected): return selected ? .white : .white.opacity(0.6)
             }
         }
 
@@ -106,21 +109,34 @@ struct PillButtonStyle: ButtonStyle {
     }
 }
 
-/// Primary pills are solid white; the others are Liquid Glass until focused, when they turn white like
-/// Apple TV buttons do.
+/// Only the focused button is white, as on Apple TV, so it is always obvious where focus is. Unfocused,
+/// every pill is Liquid Glass: the primary one a brighter glass, a selected tab a quiet glass, an
+/// unselected tab just its label. Without focus (iPhone, iPad, Mac) the primary pill stays solid white.
 private struct PillBackground: ViewModifier {
     let kind: PillButtonStyle.Kind
     let active: Bool
 
+    #if os(tvOS)
+    static let primaryIsSolid = false
+    #else
+    static let primaryIsSolid = true
+    #endif
+
     func body(content: Content) -> some View {
-        switch kind {
-        case .primary:
-            content.background(Color.white.opacity(active ? 1 : 0.92), in: Capsule())
-        case .secondary, .icon:
-            if active {
-                content.background(Color.white, in: Capsule())
-            } else {
+        if active {
+            content.background(Color.white, in: Capsule())
+        } else {
+            switch kind {
+            case .primary:
+                if Self.primaryIsSolid {
+                    content.background(Color.white.opacity(0.92), in: Capsule())
+                } else {
+                    content.liquidGlass(in: Capsule(), tint: .white.opacity(0.28))
+                }
+            case .secondary, .icon:
                 content.liquidGlass(in: Capsule())
+            case let .tab(selected):
+                if selected { content.liquidGlass(in: Capsule()) } else { content }
             }
         }
     }

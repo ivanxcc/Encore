@@ -56,22 +56,53 @@ actor ImagePipeline {
     }
 }
 
-/// An image that fades in once decoded, over a quiet placeholder. Never shows a spinner: empty space
-/// that fills in reads as fast; spinners read as slow.
+/// Decode sizes shared by every full-screen use of a title's artwork (the Home hero, the title page), so
+/// moving from one to the other reuses the decoded image instead of fetching and fading it in again.
+enum HeroArtwork {
+    #if os(tvOS)
+    static let maxPixel = 3840   // Apple TV 4K
+    static let logoPixel = 1400
+    #elseif os(macOS)
+    static let maxPixel = 3200
+    static let logoPixel = 900
+    #else
+    static let maxPixel = 2800
+    static let logoPixel = 900
+    #endif
+}
+
+/// An image that dissolves in once decoded, over a quiet placeholder. An image already in memory is on
+/// screen from the first frame (no flash of placeholder), and when the URL changes the old picture
+/// cross-dissolves into the new one instead of blinking out. Never shows a spinner: empty space that
+/// fills in reads as fast; spinners read as slow.
 struct Artwork: View {
     let url: URL?
     var maxPixel: Int = 600
     var contentMode: ContentMode = .fill
+    var fade: Double = 0.4
 
-    @State private var image: CGImage?
+    private struct Shown: Equatable {
+        let url: URL
+        let image: CGImage
+        static func == (a: Shown, b: Shown) -> Bool { a.url == b.url }
+    }
+
+    @State private var shown: Shown?
+
+    init(url: URL?, maxPixel: Int = 600, contentMode: ContentMode = .fill, fade: Double = 0.4) {
+        self.url = url; self.maxPixel = maxPixel; self.contentMode = contentMode; self.fade = fade
+        let cached = url.flatMap { u in ImagePipeline.shared.cached(u, maxPixel: maxPixel).map { Shown(url: u, image: $0) } }
+        _shown = State(initialValue: cached)
+    }
 
     var body: some View {
         ZStack {
-            Theme.Colors.placeholder
-            if let image {
-                Image(decorative: image, scale: 1)
+            Theme.Colors.placeholder.opacity(shown == nil ? 1 : 0)
+            if let shown {
+                Image(decorative: shown.image, scale: 1)
                     .resizable()
                     .aspectRatio(contentMode: contentMode)
+                    .id(shown.url)
                     .transition(.opacity)
             }
         }
@@ -79,10 +110,13 @@ struct Artwork: View {
     }
 
     private func load() async {
-        guard let url else { image = nil; return }
-        if let hit = ImagePipeline.shared.cached(url, maxPixel: maxPixel) { image = hit; return }
-        let loaded = await ImagePipeline.shared.image(url, maxPixel: maxPixel)
-        guard !Task.isCancelled else { return }
-        withAnimation(.easeOut(duration: 0.25)) { image = loaded }
+        guard let url else { shown = nil; return }
+        if shown?.url == url { return }
+        if let hit = ImagePipeline.shared.cached(url, maxPixel: maxPixel) {
+            withAnimation(.easeInOut(duration: fade)) { shown = Shown(url: url, image: hit) }
+            return
+        }
+        guard let loaded = await ImagePipeline.shared.image(url, maxPixel: maxPixel), !Task.isCancelled else { return }
+        withAnimation(.easeInOut(duration: fade)) { shown = Shown(url: url, image: loaded) }
     }
 }

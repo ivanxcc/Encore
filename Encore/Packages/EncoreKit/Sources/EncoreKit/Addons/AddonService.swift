@@ -72,7 +72,10 @@ public struct AddonService: Sendable {
             }
             var results: [(Int, CatalogRef, [MetaPreview])] = []
             for await result in group where !result.2.isEmpty { results.append(result) }
-            return results.sorted { $0.0 < $1.0 }.map { ($0.1, Self.dedupe($0.2)) }
+            // Smart search first, then add-on order.
+            return results
+                .sorted { ($0.1.isSmartSearch ? 0 : 1, $0.0) < ($1.1.isSmartSearch ? 0 : 1, $1.0) }
+                .map { ($0.1, Self.dedupe($0.2)) }
         }
     }
 

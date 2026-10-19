@@ -56,12 +56,54 @@ public struct SkipSegmentService: Sendable {
 
     // MARK: TheIntroDB
 
+    /// One marker from TheIntroDB, read leniently: millisecond or second fields under any of the names
+    /// the API has used, and a missing start or end kept as missing (not zero), because a credits marker
+    /// without a start must never be read as "credits from 0:00".
+    struct IntroDBSpan: Decodable {
+        let start: TimeInterval?
+        let end: TimeInterval?
+
+        private struct Key: CodingKey {
+            var stringValue: String; var intValue: Int? { nil }
+            init(_ s: String) { stringValue = s }
+            init?(stringValue: String) { self.stringValue = stringValue }
+            init?(intValue: Int) { nil }
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: Key.self)
+            func number(_ names: [String]) -> Double? {
+                for name in names {
+                    if let v = try? c.decodeIfPresent(Double.self, forKey: Key(name)) { return v }
+                    if let s = try? c.decodeIfPresent(String.self, forKey: Key(name)), let v = Double(s) { return v }
+                }
+                return nil
+            }
+            start = number(["start_ms", "startMs", "start_time_ms"]).map { $0 / 1000 } ?? number(["start", "start_sec", "startTime"])
+            end = number(["end_ms", "endMs", "end_time_ms"]).map { $0 / 1000 } ?? number(["end", "end_sec", "endTime"])
+        }
+
+        init(start: TimeInterval?, end: TimeInterval?) { self.start = start; self.end = end }
+    }
+
     struct IntroDBResponse: Decodable {
-        struct Span: Decodable { let start_ms: Int?; let end_ms: Int? }
-        let intro: [Span]?
-        let recap: [Span]?
-        let credits: [Span]?
-        let preview: [Span]?
+        let intro: [IntroDBSpan]
+        let recap: [IntroDBSpan]
+        let credits: [IntroDBSpan]
+        let preview: [IntroDBSpan]
+
+        private enum CodingKeys: String, CodingKey { case intro, recap, credits, preview }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            // Each kind may be a list of markers or a single marker.
+            func spans(_ key: CodingKeys) -> [IntroDBSpan] {
+                if let list = try? c.decodeIfPresent([IntroDBSpan].self, forKey: key) { return list }
+                if let one = try? c.decodeIfPresent(IntroDBSpan.self, forKey: key) { return [one] }
+                return []
+            }
+            intro = spans(.intro); recap = spans(.recap); credits = spans(.credits); preview = spans(.preview)
+        }
     }
 
     func theIntroDB(imdbID: String, season: Int?, episode: Int?, duration: TimeInterval) async -> [SkipSegment] {
@@ -74,15 +116,52 @@ public struct SkipSegmentService: Sendable {
         components.queryItems = items
         guard let url = components.url,
               let response = try? await http.get(url, as: IntroDBResponse.self, timeout: 6) else { return [] }
-        func spans(_ list: [IntroDBResponse.Span]?, _ kind: SkipSegment.Kind) -> [SkipSegment] {
-            (list ?? []).compactMap { span in
-                let start = Double(span.start_ms ?? 0) / 1000
-                let end = span.end_ms.map { Double($0) / 1000 } ?? duration
-                return end > start + 2 ? SkipSegment(kind: kind, start: start, end: end) : nil
+        return Self.segments(from: response, duration: duration)
+    }
+
+    static func segments(from response: IntroDBResponse, duration: TimeInterval) -> [SkipSegment] {
+        func make(_ spans: [IntroDBSpan], _ kind: SkipSegment.Kind) -> [SkipSegment] {
+            spans.compactMap { span in
+                switch kind {
+                case .intro, .recap:
+                    // An intro or recap may start at the very beginning (no start), but must say where it ends.
+                    guard let end = span.end else { return nil }
+                    return SkipSegment(kind: kind, start: span.start ?? 0, end: end)
+                case .credits, .preview:
+                    // Credits and previews may run to the end (no end), but must say where they start.
+                    guard let start = span.start else { return nil }
+                    return SkipSegment(kind: kind, start: start, end: span.end ?? duration)
+                }
             }
         }
-        return Self.normalized(spans(response.intro, .intro) + spans(response.recap, .recap)
-                               + spans(response.credits, .credits) + spans(response.preview, .preview))
+        return sanitized(make(response.intro, .intro) + make(response.recap, .recap)
+                         + make(response.credits, .credits) + make(response.preview, .preview), duration: duration)
+    }
+
+    /// Markers that cannot be right for this file are dropped, so a bad entry never puts "Skip Credits"
+    /// on the first minute: intros and recaps are short and early; credits and previews are late.
+    static func sanitized(_ segments: [SkipSegment], duration: TimeInterval) -> [SkipSegment] {
+        normalized(segments.compactMap { segment in
+            var segment = segment
+            if duration > 0 {
+                segment.end = min(segment.end, duration)
+            }
+            let length = segment.end - segment.start
+            guard length > 2 else { return nil }
+            switch segment.kind {
+            case .intro, .recap:
+                guard length <= 300 else { return nil }
+                if duration > 0, segment.start > duration * 0.5 { return nil }
+            case .credits, .preview:
+                guard length <= 900 else { return nil }
+                if duration > 0, segment.start < duration * 0.5 {
+                    // "Credits" near the start are opening credits: offer them as an intro.
+                    guard segment.kind == .credits, length <= 300 else { return nil }
+                    segment = SkipSegment(kind: .intro, start: segment.start, end: segment.end)
+                }
+            }
+            return segment
+        })
     }
 
     // MARK: AniSkip
@@ -106,7 +185,7 @@ public struct SkipSegmentService: Sendable {
         guard let url = components.url,
               let response = try? await http.get(url, as: AniSkipResponse.self, timeout: 6),
               response.found == true else { return [] }
-        return Self.normalized((response.results ?? []).compactMap { result in
+        return Self.sanitized((response.results ?? []).compactMap { result in
             let kind: SkipSegment.Kind
             switch result.skipType {
             case "op": kind = .intro
@@ -115,7 +194,7 @@ public struct SkipSegmentService: Sendable {
             default: return nil
             }
             return SkipSegment(kind: kind, start: result.interval.startTime, end: result.interval.endTime)
-        })
+        }, duration: duration)
     }
 
     private func malID(for metaID: String) async -> Int? {
@@ -155,7 +234,7 @@ public struct SkipSegmentService: Sendable {
             let end = index + 1 < sorted.count ? sorted[index + 1].start : duration
             if end > chapter.start + 2 { segments.append(SkipSegment(kind: kind, start: chapter.start, end: end)) }
         }
-        return normalized(segments)
+        return sanitized(segments, duration: duration)
     }
 
     /// Sorted, deduplicated (one segment per kind and start), and never longer than the file.

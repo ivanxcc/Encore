@@ -16,6 +16,10 @@
 //   POST   /v1/pair/start                     -> { code, pollToken, expiresAt }     (a TV, no auth)
 //   POST   /v1/pair/approve { code }          -> { ok }        (a signed-in phone approves the TV)
 //   GET    /v1/pair/poll?token=…              -> 202 waiting | 200 { authKey, email } (once)
+//   GET    /v1/title?imdb=…&type=…            -> cast, original artwork (TMDB; see tmdb.js)
+//   GET    /v1/trending                       -> this week's trending titles (TMDB)
+
+import { tmdbRoute } from "./tmdb.js";
 
 const STREMIO_API = "https://api.strem.io/api/";
 const SESSION_TTL = 6 * 60 * 60;         // seconds a verified Stremio session is trusted without re-checking
@@ -29,6 +33,8 @@ export default {
     // another object (deps.fetchStremio(...)), which made every signed-in request fail with a 500.
     return handle(request, env, {
       fetchStremio: (url, init) => fetch(url, init),
+      fetchTMDB: (url, init) => fetch(url, init),
+      cache: typeof caches === "undefined" ? null : caches.default,
       now: () => Math.floor(Date.now() / 1000),
     });
   },
@@ -48,6 +54,12 @@ export async function handle(request, env, deps) {
         return pairStart(env, deps);
       case "GET /v1/pair/poll":
         return pairPoll(env, deps, url.searchParams.get("token"));
+      case "GET /v1/title":
+      case "GET /v1/trending": {
+        const result = await tmdbRoute(route, url, env, deps);
+        if (!result) return json({ error: "TMDB is not set up" }, 404);
+        return json(result.body, result.status, result.status === 200 ? 3600 : 0);
+      }
     }
     const user = await authenticate(request, env, deps);
     if (!user) return json({ error: "Sign in to Stremio again." }, 401);
@@ -199,8 +211,9 @@ async function pairPoll(env, deps, token) {
 
 // MARK: Helpers
 
-function json(body, status = 200) {
-  return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
+function json(body, status = 200, maxAge = 0) {
+  const cache = maxAge > 0 ? `public, max-age=${maxAge}` : "no-store";
+  return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", "cache-control": cache } });
 }
 
 async function readJSON(request) {

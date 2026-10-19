@@ -24,10 +24,31 @@ final class HomeModel: ObservableObject {
         guard signature != loadedFor else { return }
         loadedFor = signature
         tasks.forEach { $0.cancel() }
+        tasks = []
         shelves = refs.map { ShelfState(ref: $0) }
         featured = []
+        trending = nil
+        inProgress = app.continueWatching().map { $0.item.preview }
+        seed = FeaturedPicker.dailySeed(profile: app.activeProfile?.id)
+        if let cloud = app.cloud {
+            tasks.append(Task { [weak self] in
+                let titles = await cloud.trending()
+                guard !Task.isCancelled, let self else { return }
+                self.trending = titles.map(\.preview)
+                self.pickFeaturedIfNeeded()
+            })
+            // Trending is a nice-to-have: after a moment the hero goes ahead with the catalogs alone.
+            tasks.append(Task { [weak self] in
+                try? await Task.sleep(for: .seconds(3))
+                guard !Task.isCancelled, let self, self.trending == nil else { return }
+                self.trending = []
+                self.pickFeaturedIfNeeded()
+            })
+        } else {
+            trending = []
+        }
         let service = app.session.addonService
-        tasks = refs.enumerated().map { index, ref in
+        tasks += refs.enumerated().map { index, ref in
             Task { [weak self] in
                 let items = try? await service.catalog(ref)
                 guard !Task.isCancelled, let self, index < self.shelves.count, self.shelves[index].ref.id == ref.id else { return }
@@ -45,11 +66,27 @@ final class HomeModel: ObservableObject {
         load(using: app)
     }
 
-    /// The hero rotates through the first loaded catalog's titles that have a backdrop.
+    private var trending: [MetaPreview]?
+    private var inProgress: [MetaPreview] = []
+    private var seed = ""
+
+    /// The hero is curated (see FeaturedPicker): shows in progress, what is trending this week (from
+    /// Encore Cloud) or else the top of the catalogs, alternating movies and shows, reshuffled daily.
+    /// It is chosen once trending has answered (or timed out) and the first two catalogs have loaded.
     private func pickFeaturedIfNeeded() {
-        guard featured.isEmpty,
-              let first = shelves.first(where: { !($0.items ?? []).isEmpty })?.items else { return }
-        let withArt = first.filter { $0.background != nil }
-        withAnimation(Theme.Motion.content) { featured = Array((withArt.isEmpty ? first : withArt).prefix(6)) }
+        guard featured.isEmpty, let trending else { return }
+        let loaded = shelves.prefix(2).allSatisfy { $0.items != nil }
+        let pool = shelves.compactMap(\.items).filter { !$0.isEmpty }
+        guard loaded || !trending.isEmpty, !(pool.isEmpty && trending.isEmpty) else { return }
+        let picked = FeaturedPicker.pick(inProgress: inProgress, trending: trending, catalogs: pool, seed: seed)
+        guard !picked.isEmpty else { return }
+        withAnimation(Theme.Motion.content) { featured = picked }
+        // Warm the hero's artwork so every crossfade lands on a decoded image.
+        Task.detached(priority: .utility) {
+            for item in picked {
+                if let url = item.backdropURL { _ = await ImagePipeline.shared.image(url, maxPixel: HeroArtwork.maxPixel) }
+                if let url = item.logoURL { _ = await ImagePipeline.shared.image(url, maxPixel: HeroArtwork.logoPixel) }
+            }
+        }
     }
 }

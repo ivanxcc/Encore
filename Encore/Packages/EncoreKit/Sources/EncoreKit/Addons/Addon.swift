@@ -60,9 +60,23 @@ public struct CatalogRef: Hashable, Identifiable, Sendable {
     public var catalog: AddonManifest.Catalog
 
     public var id: String { addon.id + "|" + catalog.type + "|" + catalog.id }
+    /// "Popular Movies", "Top Shows"; a catalog of any other type ("other", "channel", …) keeps just its
+    /// own name, so "Smart Search" never becomes "Smart Search Other".
     public var title: String {
         let name = catalog.name ?? catalog.id.capitalized
-        return "\(name) \(catalog.type == "series" ? "Shows" : catalog.type == "movie" ? "Movies" : catalog.type.capitalized)"
+        switch catalog.type {
+        case "movie": return name.localizedCaseInsensitiveContains("movie") ? name : "\(name) Movies"
+        case "series": return name.localizedCaseInsensitiveContains("show") || name.localizedCaseInsensitiveContains("series") ? name : "\(name) Shows"
+        default: return name
+        }
+    }
+
+    /// Search shows "smart" (natural-language / AI) catalogs first: they answer descriptions ("the one
+    /// where they rob a casino") that title search cannot.
+    public var isSmartSearch: Bool {
+        let text = [catalog.name ?? "", catalog.id, addon.manifest.name].joined(separator: " ").lowercased()
+        let words = Set(text.split(whereSeparator: { !$0.isLetter }).map(String.init))
+        return text.contains("smart") || words.contains("ai") || text.contains("natural language")
     }
 }
 
