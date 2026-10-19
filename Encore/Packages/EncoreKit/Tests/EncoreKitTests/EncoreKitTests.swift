@@ -436,6 +436,28 @@ final class SkipAndBindingTests: XCTestCase {
         XCTAssertFalse(manifest.isNewer(thanBuild: 7))
         XCTAssertEqual(UpdateManifest.latestURL(repository: "o/r")?.absoluteString,
                        "https://github.com/o/r/releases/latest/download/encore-update.json")
+        XCTAssertEqual(UpdateManifest.latestURL(repository: "o/r", channel: .beta)?.absoluteString,
+                       "https://github.com/o/r/releases/download/beta-channel/encore-update.json")
+    }
+
+    func testBetaChannelOffersTheNewerOfBetaAndStable() async {
+        func manifest(_ build: Int) -> String {
+            #"{"version":"0.3.0","build":\#(build),"url":"https://x/a.zip","sha256":"ab"}"#
+        }
+        let mock = MockTransport()
+        mock.on("/beta-channel/", manifest(15))
+        mock.on("/latest/", manifest(14))
+        let http = HTTPClient(transport: mock)
+        let beta = await UpdateManifest.fetchLatest(repository: "o/r", channel: .beta, http: http)
+        XCTAssertEqual(beta?.build, 15)
+        let stable = await UpdateManifest.fetchLatest(repository: "o/r", channel: .stable, http: http)
+        XCTAssertEqual(stable?.build, 14)
+
+        let promotedLater = MockTransport()
+        promotedLater.on("/beta-channel/", manifest(15))
+        promotedLater.on("/latest/", manifest(16))
+        let newer = await UpdateManifest.fetchLatest(repository: "o/r", channel: .beta, http: HTTPClient(transport: promotedLater))
+        XCTAssertEqual(newer?.build, 16)
     }
 }
 

@@ -1,0 +1,33 @@
+name: Promote to Stable
+
+# One click to ship a beta you have tested to everyone: Actions › Promote to Stable › Run workflow
+# (also from the GitHub app on your phone). It republishes the beta's exact files as the latest
+# release, so stable Macs are offered the update and the AltStore source moves to it, and fast-forwards
+# main to the commit the beta was built from.
+
+on:
+  workflow_dispatch:
+    inputs:
+      beta:
+        description: "Beta release tag to promote (leave empty for the newest beta)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: encore-release
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Promote
+        run: .github/scripts/promote.sh "${{ inputs.beta }}"

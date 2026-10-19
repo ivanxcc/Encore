@@ -29,6 +29,8 @@ settings:
     ENCORE_REPOSITORY: ivanxcc/Encore
     # Encore Cloud (account sync) endpoint; CI passes the deployed Worker URL. Empty = sync off.
     ENCORE_CLOUD_URL: ""
+    # stable or beta; the release workflow sets it. Beta Mac builds follow the beta update channel.
+    ENCORE_CHANNEL: stable
     CURRENT_PROJECT_VERSION: "1"
     SWIFT_VERSION: "5.0"
     GENERATE_INFOPLIST_FILE: YES

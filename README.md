@@ -114,6 +114,10 @@ Turn on [Encore Cloud](#turn-on-encore-cloud) and households follow their Stremi
   appear. Edits on one device show up on the others.
 - **Apple TV sign-in without a remote keyboard.** The TV shows a code; on your phone go to
   Settings › Encore Cloud › Sign In an Apple TV and type it.
+- **Your households follow you.** The households you add (a sibling's shared household, or one with
+  no Stremio account) appear on every device signed in to your *home* household's account, the first
+  one you signed in to on that device (Settings › Households shows which). Removing one removes it
+  everywhere.
 - **Managing someone else's household.** Your sister signs in to her own Stremio account in Encore and
   taps Settings › Encore Cloud › Share This Household. You enter the code under Settings › Households ›
   Add a Shared Household. Her household (and its profiles) is now on your device too, and anything you
@@ -173,13 +177,29 @@ Pick `Encore-tvOS`, `Encore-iOS`, or `Encore-macOS`, set your signing team, and 
 anywhere Swift runs: `cd Encore/Packages/EncoreKit && swift test`. See [Encore/README.md](Encore/README.md)
 for the architecture.
 
-## Releases are automatic
+## Releases: beta first, then everyone
 
-[`.github/workflows/encore-release.yml`](.github/workflows/encore-release.yml) runs on every push to `main`
-that touches `Encore/`, and on any `v*` tag. It builds the three apps, verifies the Mac app is universal,
-writes the AltStore / SideStore source, the Mac update manifest, and the Mac installer, and publishes a
-GitHub Release with notes generated from the commits. To cut a named version, bump `MARKETING_VERSION` in `Encore/project.yml` or push a tag such as
-`v0.2.0`. [`.github/workflows/encore-ci.yml`](.github/workflows/encore-ci.yml) builds and tests every push.
+Changes land on the **`beta`** branch. Every push there builds the three apps and publishes them as a
+GitHub **pre-release** (`v0.2.0-beta.N`). Pre-releases are never the "latest" release, so nobody on the
+stable channel is offered them; only beta installs are.
+
+1. **Test the beta.** Beta Mac builds update themselves to each new beta. On a stable Mac, turn on
+   Settings › About › **Beta Updates**, or install the newest beta with
+   `curl -fsSL https://github.com/ivanxcc/Encore/releases/download/beta-channel/install-mac.sh | ENCORE_CHANNEL=beta bash`.
+   iPhone, iPad, and Apple TV builds are on the beta release's page.
+2. **Approve it.** **Actions › Promote to Stable › Run workflow** (works from the GitHub app on your
+   phone too). It republishes the beta's exact files as the latest release, so stable Macs are offered
+   the update and the AltStore source moves to it, and it moves `main` to the commit you tested.
+
+Prefer an **Approve** button? Create an environment named `stable` (Settings › Environments) with
+yourself as a required reviewer, and set the repository variable `ENCORE_RELEASE_APPROVAL` to `true`.
+Every beta then waits for your approval (by email, in the GitHub app, or on the run page) and promotes
+itself when you approve.
+
+[`.github/workflows/encore-release.yml`](.github/workflows/encore-release.yml) does the building and
+publishing; [`encore-promote.yml`](.github/workflows/encore-promote.yml) the promotion. To cut a named
+version, bump `MARKETING_VERSION` in `Encore/project.yml`. [`encore-ci.yml`](.github/workflows/encore-ci.yml)
+builds and tests every push, including an end-to-end run of the Mac updater's installer.
 
 ## Repository layout
 

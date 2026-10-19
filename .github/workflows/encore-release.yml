@@ -1,24 +1,32 @@
 name: Encore Release
 
-# Fully automated releases. Every push to main that touches Encore (or any v* tag) builds:
-#   - Encore-iOS-<version>.ipa    iPhone + iPad, unsigned (sideload re-signs it)
-#   - Encore-tvOS-<version>.ipa   Apple TV, unsigned (sideload re-signs it)
-#   - Encore-macOS-<version>.dmg  universal (Apple silicon + Intel), ad-hoc signed
-#   - Encore-macOS-<version>.zip  the same Mac app, for the in-app updater
-#   - encore-update.json          version, build, URL, and SHA-256 the Mac app checks on launch
-#   - altstore-source.json        AltStore / SideStore source that always points at this release
-# and publishes them as a GitHub Release with notes generated from the commits since the last one.
+# Two channels, so nobody else is offered an update before you have tried it:
 #
-# Versioning: MARKETING_VERSION comes from Encore/project.yml; the build number is the workflow run
-# number. A pushed tag (v1.2.3) sets the version explicitly; a main push is tagged v<version>-build.<n>.
-# No secrets are needed: everything builds from public sources.
+#   beta    every push to the `beta` branch (or "Run workflow" with channel beta) builds the apps and
+#           publishes them as a GitHub *pre-release* tagged v<version>-beta.<build>. Pre-releases never
+#           become "latest", so stable installs are not offered them. The rolling `beta-channel`
+#           pre-release holds the beta update manifest that beta builds of the Mac app follow.
+#   stable  "Promote to Stable" (encore-promote.yml) republishes a tested beta as the latest release,
+#           byte for byte, and moves `main` to that commit. A pushed v* tag also builds straight to stable.
+#
+# Each release carries the iPhone/iPad and Apple TV IPAs (unsigned; sideloading re-signs them), the
+# universal Mac DMG and zip (ad-hoc signed), encore-update.json for the Mac updater, the AltStore /
+# SideStore source, and the one-line Mac installer. No secrets are needed.
+#
+# Versioning: MARKETING_VERSION comes from Encore/project.yml; the build number is the workflow run number.
 
 on:
   push:
-    branches: [main]
-    paths: ["Encore/**", ".github/workflows/encore-release.yml"]
+    branches: [beta]
+    paths: ["Encore/**", ".github/workflows/encore-release.yml", ".github/scripts/**"]
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      channel:
+        description: "beta: a pre-release for you to test. stable: publish to everyone right away."
+        type: choice
+        options: [beta, stable]
+        default: beta
 
 permissions:
   contents: write
@@ -34,6 +42,7 @@ jobs:
       version: ${{ steps.v.outputs.version }}
       build: ${{ steps.v.outputs.build }}
       tag: ${{ steps.v.outputs.tag }}
+      channel: ${{ steps.v.outputs.channel }}
     steps:
       - uses: actions/checkout@v4
       - id: v
@@ -41,16 +50,18 @@ jobs:
           base="$(grep -m1 'MARKETING_VERSION:' Encore/project.yml | sed -E 's/.*"([^"]+)".*/\1/')"
           build="${{ github.run_number }}"
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            channel=stable
             tag="${GITHUB_REF#refs/tags/}"
             version="${tag#v}"
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.channel }}" = "stable" ]; then
+            channel=stable; version="${base}"; tag="v${base}-build.${build}"
           else
-            version="${base}"
-            tag="v${base}-build.${build}"
+            channel=beta; version="${base}"; tag="v${base}-beta.${build}"
           fi
-          echo "version=${version}" >> "$GITHUB_OUTPUT"
-          echo "build=${build}" >> "$GITHUB_OUTPUT"
-          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
-          echo "Encore ${version} (${build}) -> ${tag}"
+          {
+            echo "version=${version}"; echo "build=${build}"; echo "tag=${tag}"; echo "channel=${channel}"
+          } >> "$GITHUB_OUTPUT"
+          echo "::notice::Encore ${version} (${build}) -> ${tag} [${channel}]"
 
   build:
     needs: version
@@ -72,6 +83,7 @@ jobs:
     env:
       VERSION: ${{ needs.version.outputs.version }}
       BUILD: ${{ needs.version.outputs.build }}
+      CHANNEL: ${{ needs.version.outputs.channel }}
     steps:
       - uses: actions/checkout@v4
       - name: Select Xcode
@@ -116,7 +128,7 @@ jobs:
             -skipPackagePluginValidation -skipMacroValidation \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
             MARKETING_VERSION="$VERSION" CURRENT_PROJECT_VERSION="$BUILD" "${EXTRA[@]}" \
-            ENCORE_REPOSITORY="${{ github.repository }}" ENCORE_CLOUD_URL="${{ vars.ENCORE_CLOUD_URL }}" \
+            ENCORE_REPOSITORY="${{ github.repository }}" ENCORE_CLOUD_URL="${{ vars.ENCORE_CLOUD_URL }}" ENCORE_CHANNEL="$CHANNEL" \
             -quiet build 2>&1 | tee build.log || { grep -E "error:" build.log | sort -u | head -30 | sed 's/^/::error::/'; tail -15 build.log | sed 's/^/::error::/'; exit 1; }
       - name: Package
         working-directory: Encore
@@ -156,6 +168,7 @@ jobs:
       VERSION: ${{ needs.version.outputs.version }}
       BUILD: ${{ needs.version.outputs.build }}
       TAG: ${{ needs.version.outputs.tag }}
+      CHANNEL: ${{ needs.version.outputs.channel }}
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
     steps:
@@ -164,54 +177,53 @@ jobs:
         with:
           path: dist
           merge-multiple: true
-      - name: Write AltStore / SideStore source
+      - name: Write manifests
         run: |
-          set -euo pipefail
-          IPA="Encore-iOS-${VERSION}.ipa"
-          SIZE=$(stat -c %s "dist/${IPA}")
-          cp "Encore/App/Resources/Assets.xcassets/AppIcon.appiconset/icon-1024.png" dist/icon.png
-          base="https://github.com/${REPO}/releases/download/${TAG}"
-          jq -n \
-            --arg version "$VERSION" --arg build "$BUILD" --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            --arg url "${base}/${IPA}" --argjson size "$SIZE" --arg icon "${base}/icon.png" \
-            --arg site "https://github.com/${REPO}" \
-            '{
-              name: "Encore", identifier: "com.ivanxcc.encore.source", website: $site,
-              subtitle: "An Apple TV-style home for your Stremio add-ons.", iconURL: $icon, tintColor: "4C5BD4",
-              apps: [{
-                name: "Encore", bundleIdentifier: "com.ivanxcc.encore", developerName: "ivanxcc",
-                subtitle: "Stream beautifully on iPhone and iPad.",
-                localizedDescription: "Encore is a native client for the Stremio add-on ecosystem, designed after the Apple TV app, with households, profiles, and libmpv playback.",
-                iconURL: $icon, tintColor: "4C5BD4", category: "entertainment",
-                versions: [{ version: $version, buildVersion: $build, date: $date, downloadURL: $url, size: $size, minOSVersion: "18.0" }],
-                appPermissions: { entitlements: [], privacy: {} }
-              }],
-              news: []
-            }' > dist/altstore-source.json
-          cat dist/altstore-source.json
-      - name: Write Mac update manifest
-        run: |
-          set -euo pipefail
-          ZIP="Encore-macOS-${VERSION}.zip"
-          SHA=$(sha256sum "dist/${ZIP}" | cut -d' ' -f1)
-          NOTES=$(git log -1 --pretty=%B "$GITHUB_SHA" | head -40)
-          jq -n --arg version "$VERSION" --argjson build "$BUILD" \
-            --arg url "https://github.com/${REPO}/releases/download/${TAG}/${ZIP}" --arg sha "$SHA" \
-            --arg notes "$NOTES" --arg page "https://github.com/${REPO}/releases/tag/${TAG}" \
-            '{version: $version, build: $build, url: $url, sha256: $sha, notes: $notes, releasePage: $page, minimumSystemVersion: "15.0"}' \
-            > dist/encore-update.json
-          cat dist/encore-update.json
-      - name: Mac one-line installer
-        run: |
-          sed "s#__REPOSITORY__#${REPO}#" Encore/Scripts/install-mac.sh > dist/install-mac.sh
-          chmod +x dist/install-mac.sh
-      - name: Publish release
+          git log -1 --pretty=%B "$GITHUB_SHA" | head -40 > notes.txt
+          .github/scripts/write-manifests.sh dist "$TAG" "$VERSION" "$BUILD" "$CHANNEL" notes.txt
+      - name: Publish ${{ needs.version.outputs.channel }} release
         run: |
           set -euo pipefail
           ls -la dist
-          if gh release view "$TAG" -R "$REPO" >/dev/null 2>&1; then
-            gh release upload "$TAG" dist/* --clobber -R "$REPO"
-          else
+          if [ "$CHANNEL" = "stable" ]; then
             gh release create "$TAG" dist/* -R "$REPO" --target "$GITHUB_SHA" \
               --title "Encore ${VERSION} (build ${BUILD})" --generate-notes --latest
+            exit 0
           fi
+          PROMOTE="https://github.com/${REPO}/actions/workflows/encore-promote.yml"
+          {
+            echo "**Beta build for testing.** Only beta installs are offered this build."
+            echo
+            echo "When you are happy with it, ship it to everyone: [Promote to Stable](${PROMOTE}) › Run workflow."
+            echo
+            echo "Mac (beta channel): \`curl -fsSL https://github.com/${REPO}/releases/download/beta-channel/install-mac.sh | ENCORE_CHANNEL=beta bash\`"
+            echo
+            echo "### Changes"
+            cat notes.txt
+          } > body.md
+          gh release create "$TAG" dist/* -R "$REPO" --target "$GITHUB_SHA" \
+            --title "Encore ${VERSION} beta (build ${BUILD})" --notes-file body.md --prerelease --latest=false
+          # The rolling pre-release beta Mac apps (and the beta installer) read.
+          gh release delete beta-channel -R "$REPO" --cleanup-tag --yes 2>/dev/null || true
+          gh release create beta-channel -R "$REPO" --target "$GITHUB_SHA" --prerelease --latest=false \
+            --title "Encore beta channel" \
+            --notes "Always points at the newest beta build (currently ${TAG}). Beta builds of the Mac app check here for updates." \
+            dist/encore-update.json dist/install-mac.sh dist/altstore-source.json dist/icon.png
+          echo "::notice::Beta ${TAG} is published. Promote it: ${PROMOTE}"
+
+  # Optional: an Approve button instead of running "Promote to Stable" by hand. Create an environment
+  # named "stable" with yourself as a required reviewer and set the repository variable
+  # ENCORE_RELEASE_APPROVAL=true; GitHub then asks you to approve each beta (email, app, or web).
+  approve:
+    needs: [version, release]
+    if: needs.version.outputs.channel == 'beta' && vars.ENCORE_RELEASE_APPROVAL == 'true'
+    runs-on: ubuntu-24.04
+    environment: stable
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Promote ${{ needs.version.outputs.tag }} to stable
+        run: .github/scripts/promote.sh "${{ needs.version.outputs.tag }}"

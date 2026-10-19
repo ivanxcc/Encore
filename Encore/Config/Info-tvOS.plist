@@ -15,6 +15,8 @@
 	<string>$(ENCORE_REPOSITORY)</string>
 	<key>EncoreCloudURL</key>
 	<string>$(ENCORE_CLOUD_URL)</string>
+	<key>EncoreChannel</key>
+	<string>$(ENCORE_CHANNEL)</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Encore connects to a streaming server on your network to play torrent sources.</string>
 	<key>UIUserInterfaceStyle</key>
