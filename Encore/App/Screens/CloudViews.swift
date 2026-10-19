@@ -14,6 +14,17 @@ struct CloudSection: View {
                 } label: {
                     Label("Sync", systemImage: "icloud.fill")
                 }
+                Button {
+                    Task { await app.syncCloud() }
+                } label: {
+                    LabeledContent {
+                        Text("\(app.profiles.count) profiles · \(app.households.count) households")
+                            .foregroundStyle(.secondary)
+                    } label: {
+                        Label("Sync Now", systemImage: "arrow.triangle.2.circlepath")
+                    }
+                }
+                .disabled(app.cloudStatus == .syncing)
                 NavigationLink { ShareHouseholdView() } label: {
                     Label("Share This Household", systemImage: "person.badge.plus")
                 }

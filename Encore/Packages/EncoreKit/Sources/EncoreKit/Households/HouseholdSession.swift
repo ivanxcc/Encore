@@ -13,6 +13,9 @@ public struct HouseholdSettings: Codable, Hashable, Sendable {
     /// A Stremio streaming server (Stremio Service on a Mac/PC/NAS). Only torrents need it.
     public var streamingServer: URL?
     public var preferences: StreamPreferences
+    /// Someone else's household, managed from here (added with a share code or from the account's
+    /// directory). Never chosen as this device's home household.
+    public var isSharedWithMe: Bool?
 
     public init(accountEmail: String? = nil, accountUserID: String? = nil, addons: [Addon] = DefaultAddons.all,
                 streamingServer: URL? = nil, preferences: StreamPreferences = StreamPreferences()) {
@@ -124,14 +127,20 @@ public final class HouseholdSession: @unchecked Sendable {
 
     /// Store a signed-in session in this household and claim the household for that account.
     public func adopt(_ session: StremioAPI.Session) async throws {
+        try store(session)
+        try await refreshFromAccount()
+    }
+
+    /// `adopt` without the network: the account's add-ons and library arrive on the next refresh.
+    public func store(_ session: StremioAPI.Session, sharedWithMe: Bool? = nil) throws {
         guard accepts(session) else { throw BindingError.belongsToAnotherAccount(email: settings.ownerEmail) }
         scope.secrets.set(session.authKey, for: Self.authKeyName)
         updateSettings {
             $0.accountEmail = session.user.email
             $0.accountUserID = session.user.id
             $0.ownerEmail = session.user.email
+            if let sharedWithMe { $0.isSharedWithMe = sharedWithMe }
         }
-        try await refreshFromAccount()
     }
 
     public func signOut() async {

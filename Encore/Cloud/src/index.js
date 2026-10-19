@@ -9,6 +9,8 @@
 //   GET    /v1/household                      -> { version, doc, updatedAt } | 404
 //   PUT    /v1/household   { baseVersion, doc } -> { version } | 409 { version, doc }
 //   DELETE /v1/household                      -> erase this account's cloud data
+//   GET    /v1/directory                      -> { version, doc } | 404   (households this account manages)
+//   PUT    /v1/directory   { baseVersion, doc } -> { version } | 409 { version, doc }
 //   POST   /v1/share       { name }           -> { code, expiresAt }   (owner shares the household)
 //   POST   /v1/share/redeem { code }          -> { ownerId, email, authKey, name }  (once)
 //   POST   /v1/pair/start                     -> { code, pollToken, expiresAt }     (a TV, no auth)
@@ -50,8 +52,10 @@ export async function handle(request, env, deps) {
     const user = await authenticate(request, env, deps);
     if (!user) return json({ error: "Sign in to Stremio again." }, 401);
     switch (route) {
-      case "GET /v1/household": return getHousehold(env, user);
-      case "PUT /v1/household": return putHousehold(request, env, deps, user);
+      case "GET /v1/household": return getDocument(env, user, HOUSEHOLDS);
+      case "PUT /v1/household": return putDocument(request, env, deps, user, HOUSEHOLDS);
+      case "GET /v1/directory": return getDocument(env, user, DIRECTORIES);
+      case "PUT /v1/directory": return putDocument(request, env, deps, user, DIRECTORIES);
       case "DELETE /v1/household": return deleteHousehold(env, user);
       case "POST /v1/share": return shareCreate(request, env, deps, user);
       case "POST /v1/share/redeem": return shareRedeem(request, env, deps);
@@ -88,36 +92,50 @@ async function authenticate(request, env, deps) {
   return { id: user._id, email: user.email || null, authKey };
 }
 
-// MARK: Household documents
+// MARK: Versioned documents (a household, or an account's directory of households)
 
-async function getHousehold(env, user) {
-  const row = await env.DB.prepare("SELECT doc, version, updated_at FROM households WHERE owner_id = ?").bind(user.id).first();
-  if (!row) return json({ error: "No household yet" }, 404);
+const HOUSEHOLDS = { table: "households", hasEmail: true, missing: "No household yet" };
+const DIRECTORIES = { table: "directories", hasEmail: false, missing: "No directory yet" };
+
+async function getDocument(env, user, kind) {
+  const row = await env.DB.prepare(`SELECT doc, version, updated_at FROM ${kind.table} WHERE owner_id = ?`).bind(user.id).first();
+  if (!row) return json({ error: kind.missing }, 404);
   return json({ version: row.version, doc: JSON.parse(row.doc), updatedAt: row.updated_at });
 }
 
-async function putHousehold(request, env, deps, user) {
+async function putDocument(request, env, deps, user, kind) {
   const body = await readJSON(request);
   if (!body || typeof body.doc !== "object" || body.doc === null || !Number.isInteger(body.baseVersion)) {
     return json({ error: "Expected { baseVersion, doc }" }, 400);
   }
   const doc = JSON.stringify(body.doc);
-  if (doc.length > MAX_DOC_BYTES) return json({ error: "Household is too large to sync" }, 413);
+  if (doc.length > MAX_DOC_BYTES) return json({ error: "Too large to sync" }, 413);
   const now = deps.now();
-  const current = await env.DB.prepare("SELECT doc, version FROM households WHERE owner_id = ?").bind(user.id).first();
+  const select = `SELECT doc, version FROM ${kind.table} WHERE owner_id = ?`;
+  const current = await env.DB.prepare(select).bind(user.id).first();
   const currentVersion = current ? current.version : 0;
   if (body.baseVersion !== currentVersion) {
     return json({ version: currentVersion, doc: current ? JSON.parse(current.doc) : null }, 409);
   }
   const next = currentVersion + 1;
   // The WHERE clause makes the write atomic against a concurrent writer that read the same version.
-  const result = current
-    ? await env.DB.prepare("UPDATE households SET doc = ?, version = ?, updated_at = ?, owner_email = ? WHERE owner_id = ? AND version = ?")
-        .bind(doc, next, now, user.email, user.id, currentVersion).run()
-    : await env.DB.prepare("INSERT OR IGNORE INTO households (owner_id, owner_email, doc, version, updated_at) VALUES (?, ?, ?, ?, ?)")
-        .bind(user.id, user.email, doc, next, now).run();
+  let statement;
+  if (current) {
+    statement = kind.hasEmail
+      ? env.DB.prepare(`UPDATE ${kind.table} SET doc = ?, version = ?, updated_at = ?, owner_email = ? WHERE owner_id = ? AND version = ?`)
+          .bind(doc, next, now, user.email, user.id, currentVersion)
+      : env.DB.prepare(`UPDATE ${kind.table} SET doc = ?, version = ?, updated_at = ? WHERE owner_id = ? AND version = ?`)
+          .bind(doc, next, now, user.id, currentVersion);
+  } else {
+    statement = kind.hasEmail
+      ? env.DB.prepare(`INSERT OR IGNORE INTO ${kind.table} (owner_id, owner_email, doc, version, updated_at) VALUES (?, ?, ?, ?, ?)`)
+          .bind(user.id, user.email, doc, next, now)
+      : env.DB.prepare(`INSERT OR IGNORE INTO ${kind.table} (owner_id, doc, version, updated_at) VALUES (?, ?, ?, ?)`)
+          .bind(user.id, doc, next, now);
+  }
+  const result = await statement.run();
   if (!result.meta || result.meta.changes !== 1) {
-    const latest = await env.DB.prepare("SELECT doc, version FROM households WHERE owner_id = ?").bind(user.id).first();
+    const latest = await env.DB.prepare(select).bind(user.id).first();
     return json({ version: latest ? latest.version : 0, doc: latest ? JSON.parse(latest.doc) : null }, 409);
   }
   return json({ version: next });
@@ -125,6 +143,7 @@ async function putHousehold(request, env, deps, user) {
 
 async function deleteHousehold(env, user) {
   await env.DB.prepare("DELETE FROM households WHERE owner_id = ?").bind(user.id).run();
+  await env.DB.prepare("DELETE FROM directories WHERE owner_id = ?").bind(user.id).run();
   await env.DB.prepare("DELETE FROM codes WHERE user_id = ?").bind(user.id).run();
   return json({ ok: true });
 }

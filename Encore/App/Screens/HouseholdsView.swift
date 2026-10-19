@@ -24,7 +24,12 @@ struct HouseholdsView: View {
                             Image(systemName: household.symbol)
                                 .frame(width: 44, height: 44)
                                 .background(Color.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
-                            Text(household.name)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(household.name)
+                                if let caption = caption(for: household) {
+                                    Text(caption).font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
                             Spacer()
                             if household.id == app.household.id {
                                 Image(systemName: "checkmark").foregroundStyle(.tint)
@@ -33,15 +38,22 @@ struct HouseholdsView: View {
                     }
                     .contextMenu {
                         Button("Rename", systemImage: "pencil") { editing = household }
+                        if app.cloud != nil, household.id != app.homeHousehold?.id, !app.isSharedWithMe(household),
+                           app.directory.settings(for: household)?.accountUserID != nil {
+                            Button("Make Home Household", systemImage: "house.circle") { app.makeHome(household) }
+                        }
                         if household.id != app.household.id {
-                            Button("Remove from This Device", systemImage: "trash", role: .destructive) {
+                            Button(app.cloud != nil ? "Remove Household" : "Remove from This Device",
+                                   systemImage: "trash", role: .destructive) {
                                 app.deleteHousehold(household)
                             }
                         }
                     }
                 }
             } footer: {
-                Text("Give each person or family their own household so their Stremio account, profiles, and watch history stay completely separate.")
+                Text(app.cloud != nil
+                     ? "Each household keeps its own Stremio account, profiles, and watch history. Households you add here appear on every device signed in to your home household's account."
+                     : "Give each person or family their own household so their Stremio account, profiles, and watch history stay completely separate.")
             }
             Section {
                 Button { creating = true } label: { Label("Add Household", systemImage: "plus") }
@@ -57,6 +69,7 @@ struct HouseholdsView: View {
             }
         }
         .navigationTitle("Households")
+        .task { await app.syncCloud() }
         .sheet(isPresented: $creating) {
             HouseholdEditor(title: "New Household", name: "", symbol: "house.fill") { name, symbol in
                 app.addHousehold(name: name, symbol: symbol)
@@ -67,6 +80,16 @@ struct HouseholdsView: View {
                 app.renameHousehold(household, name: name, symbol: symbol)
             }
         }
+    }
+}
+
+extension HouseholdsView {
+    /// "Home · syncs your household list", "Shared with you", or the signed-in account.
+    func caption(for household: Household) -> String? {
+        if app.cloud != nil, household.id == app.homeHousehold?.id { return "Home · your households sync with this account" }
+        if app.isSharedWithMe(household) { return "Shared with you" }
+        if let email = app.directory.settings(for: household)?.accountEmail { return email }
+        return nil
     }
 }
 

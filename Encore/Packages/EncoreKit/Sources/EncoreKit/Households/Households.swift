@@ -75,9 +75,10 @@ public final class HouseholdDirectory: @unchecked Sendable {
     }
 
     @discardableResult
-    public func add(name: String, symbol: String = "house.fill") -> Household {
+    public func add(name: String, symbol: String = "house.fill", id: UUID = UUID()) -> Household {
         var reg = registry()
-        let household = Household(name: name, symbol: symbol)
+        if let existing = reg.households.first(where: { $0.id == id }) { return existing }
+        let household = Household(id: id, name: name, symbol: symbol)
         reg.households.append(household)
         save(reg)
         return household
@@ -98,14 +99,48 @@ public final class HouseholdDirectory: @unchecked Sendable {
         save(reg)
     }
 
-    /// Delete a household that is not open, with all of its data and secrets.
-    public func delete(_ id: UUID) {
+    /// Delete a household that is not open, with all of its data and secrets. Unless `remember` is false,
+    /// the deletion is remembered so Encore Cloud removes it from the account's other devices too.
+    public func delete(_ id: UUID, remember: Bool = true, now: Date = Date()) {
         var reg = registry()
         guard id != reg.activeID, let household = reg.households.first(where: { $0.id == id }) else { return }
+        if remember {
+            let key = DirectoryKey.for(household, settings: settings(for: household))
+            updateSyncState { $0.deleted[key] = now }
+        }
         scope(for: household).secrets.removeAll()
         try? FileManager.default.removeItem(at: directory(for: id))
         reg.households.removeAll { $0.id == id }
         save(reg)
+    }
+
+    // MARK: Directory sync state (this device)
+
+    /// What this device knows about its account's household directory in Encore Cloud.
+    public struct SyncState: Codable, Equatable, Sendable {
+        /// The household whose Stremio account holds the directory: the first one signed in here that
+        /// was not shared with this person.
+        public var homeID: UUID?
+        public var version: Int = 0
+        /// Directory key -> when its household was removed.
+        public var deleted: [String: Date] = [:]
+        public init() {}
+    }
+
+    private var syncFile: JSONFile<SyncState> { JSONFile(root.appendingPathComponent("directory-sync.json")) }
+
+    public var syncState: SyncState { lock.withLock { syncFile.load() ?? SyncState() } }
+
+    public func updateSyncState(_ change: (inout SyncState) -> Void) {
+        lock.withLock {
+            var state = syncFile.load() ?? SyncState()
+            change(&state)
+            try? syncFile.save(state)
+        }
+    }
+
+    public func settings(for household: Household) -> HouseholdSettings? {
+        JSONFile<HouseholdSettings>(directory(for: household.id).appendingPathComponent("settings.json")).load()
     }
 
     private func save(_ reg: Registry) {
@@ -123,5 +158,17 @@ public struct HouseholdScope: Sendable {
 
     public func file<T: Codable>(_ name: String, as: T.Type = T.self) -> JSONFile<T> {
         JSONFile(directory.appendingPathComponent(name))
+    }
+}
+
+/// How a household is named in its account's directory: by its Stremio account when it has one (the same
+/// household has a different local id on every device), otherwise by its id.
+public enum DirectoryKey {
+    public static func account(_ userID: String) -> String { "account:" + userID }
+    public static func local(_ id: UUID) -> String { "local:" + id.uuidString }
+
+    public static func `for`(_ household: Household, settings: HouseholdSettings?) -> String {
+        if let user = settings?.accountUserID, !user.isEmpty { return account(user) }
+        return local(household.id)
     }
 }
