@@ -486,3 +486,39 @@ final class RatingsTests: XCTestCase {
         XCTAssertNil(RatingsExtractor.extract(from: nil).description)
     }
 }
+
+final class UpNextPolicyTests: XCTestCase {
+    private let t0 = Date(timeIntervalSince1970: 1_000)
+
+    func testGrowingStreamNeverStartsUpNextEarly() {
+        var policy = UpNextPolicy()
+        // A streaming-server stream: the duration stays ~10 s ahead of the playhead.
+        for second in stride(from: 0, through: 1200, by: 1) {
+            let position = TimeInterval(second)
+            XCTAssertFalse(policy.shouldStart(position: position, duration: position + 10, credits: [],
+                                              now: t0.addingTimeInterval(position)), "started at \(second)s")
+        }
+    }
+
+    func testStartsInTheLastSecondsOnceTheDurationIsSettled() {
+        var policy = UpNextPolicy()
+        XCTAssertFalse(policy.shouldStart(position: 5, duration: 2600, credits: [], now: t0))
+        XCTAssertFalse(policy.shouldStart(position: 2580, duration: 2600, credits: [], now: t0.addingTimeInterval(5)))
+        XCTAssertTrue(policy.shouldStart(position: 2581, duration: 2600, credits: [], now: t0.addingTimeInterval(20)))
+    }
+
+    func testOpeningCreditsDoNotStartUpNext() {
+        var policy = UpNextPolicy()
+        let opening = SkipSegment(kind: .credits, start: 0, end: 90)
+        let closing = SkipSegment(kind: .credits, start: 2450, end: 2600)
+        XCTAssertFalse(policy.shouldStart(position: 0, duration: 2600, credits: [opening], now: t0))
+        XCTAssertFalse(policy.shouldStart(position: 30, duration: 2600, credits: [opening, closing], now: t0.addingTimeInterval(30)))
+        XCTAssertTrue(policy.shouldStart(position: 2460, duration: 2600, credits: [opening, closing], now: t0.addingTimeInterval(60)))
+    }
+
+    func testShortClipsNeverStartUpNext() {
+        var policy = UpNextPolicy()
+        XCTAssertFalse(policy.shouldStart(position: 100, duration: 110, credits: [], now: t0))
+        XCTAssertFalse(policy.shouldStart(position: 100, duration: 110, credits: [], now: t0.addingTimeInterval(60)))
+    }
+}

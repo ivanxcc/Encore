@@ -167,3 +167,35 @@ public struct SkipSegmentService: Sendable {
             .filter { seen.insert("\($0.kind.rawValue)@\(Int($0.start))").inserted }
     }
 }
+
+/// When to start the Next Episode countdown. The duration a player reports is not always the episode's:
+/// a stream from a Stremio streaming server grows as it is prepared, so early on its "duration" is only
+/// a few seconds ahead of the playhead. Up Next waits for a settled duration and a point that is
+/// really the end of the episode.
+public struct UpNextPolicy: Sendable {
+    /// How long the reported duration must stay put before it is trusted.
+    public var settleTime: TimeInterval = 15
+    private var lastDuration: TimeInterval = 0
+    private var durationSince: Date = .distantPast
+
+    public init() {}
+
+    /// Call on every progress tick; returns true when the countdown should start.
+    public mutating func shouldStart(position: TimeInterval, duration: TimeInterval,
+                                     credits: [SkipSegment], now: Date = Date()) -> Bool {
+        if abs(duration - lastDuration) > 2 {
+            lastDuration = duration
+            durationSince = now
+        }
+        guard duration >= 300, now.timeIntervalSince(durationSince) >= settleTime else { return false }
+        // Credits markers count only when they really are at the end (not "opening credits").
+        let inCredits = credits.contains {
+            $0.kind == .credits && $0.isActive(at: position) && $0.start >= duration * 0.6 && $0.end >= duration - 90
+        }
+        let nearEnd = duration - position < 25 && position >= duration * 0.8
+        return inCredits || nearEnd
+    }
+
+    /// A new episode starts: forget the previous duration.
+    public mutating func reset() { self = UpNextPolicy() }
+}
