@@ -22,6 +22,11 @@ public struct HouseholdDocument: Codable, Equatable, Sendable {
     /// Non-owner profile id (uuidString) -> its library.
     public var libraries: [String: [StremioLibraryItem]]
     public var settings: SyncedSettings
+    /// Each profile's watched marks: "owner" for the account's own profile (its id differs per
+    /// device), else the profile id. Absent in documents from older builds.
+    public var watched: [String: [String: HouseholdSession.WatchMark]]?
+
+    static func watchedKey(_ profile: Profile) -> String { profile.isOwner ? "owner" : profile.id.uuidString }
 
     public struct SyncedSettings: Codable, Equatable, Sendable {
         public var streamingServer: URL?
@@ -86,6 +91,7 @@ public struct HouseholdDocument: Codable, Equatable, Sendable {
         var localProfiles = local.profiles
         var localLibraries = local.libraries
         var localDeleted = local.deletedProfiles
+        var localWatched = local.watched ?? [:]
         let remoteIDs = Set(remote.profiles.map(\.id))
         for index in localProfiles.indices where !remoteIDs.contains(localProfiles[index].id) {
             let profile = localProfiles[index]
@@ -95,6 +101,7 @@ public struct HouseholdDocument: Codable, Equatable, Sendable {
                           && !localProfiles.contains(where: { $0.id == candidate.id })
                   }) else { continue }
             localProfiles[index].id = twin.id
+            if let marks = localWatched.removeValue(forKey: profile.id.uuidString) { localWatched[twin.id.uuidString] = marks }
             if let items = localLibraries.removeValue(forKey: profile.id.uuidString) { localLibraries[twin.id.uuidString] = items }
             localDeleted.removeValue(forKey: profile.id.uuidString)
         }
@@ -137,6 +144,17 @@ public struct HouseholdDocument: Codable, Equatable, Sendable {
             libraries[id] = mergeLibrary(localLibraries[id] ?? [], remote.libraries[id] ?? [])
         }
         merged.libraries = libraries
+
+        // Watched marks: per profile and per video, the newer mark wins.
+        var watched = remote.watched ?? [:]
+        for (key, marks) in localWatched {
+            var into = watched[key] ?? [:]
+            for (id, mark) in marks where mark.at > (into[id]?.at ?? .distantPast) { into[id] = mark }
+            watched[key] = into
+        }
+        let keep = Set(merged.profiles.map(HouseholdDocument.watchedKey))
+        watched = watched.filter { keep.contains($0.key) }
+        merged.watched = watched.isEmpty ? nil : watched
         merged.schema = max(local.schema, remote.schema)
         return merged
     }

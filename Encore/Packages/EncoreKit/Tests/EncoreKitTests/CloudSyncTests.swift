@@ -300,3 +300,44 @@ final class DirectorySyncTests: XCTestCase {
         XCTAssertEqual(DirectorySync.home(in: device)?.id, mine.id)
     }
 }
+
+final class WatchedSyncTests: XCTestCase {
+    func testWatchedMarksSyncAndNewestWins() async throws {
+        let cloud = FakeCloud()
+        let sync = CloudSync(client: CloudClient(base: URL(string: "https://cloud.test")!, transport: cloud))
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("encore-watched-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        func device(_ name: String) -> HouseholdSession {
+            let dir = HouseholdDirectory(root: root.appendingPathComponent(name)) { _, d in FileSecretStore(url: d.appendingPathComponent("s.json")) }
+            let session = HouseholdSession(scope: dir.scope(for: dir.registry().households[0]))
+            session.scope.secrets.set("KEY", for: "stremio.authKey")
+            return session
+        }
+        let phone = device("phone"), tv = device("tv")
+        let owner = phone.profiles()[0]
+        let show = MetaPreview(id: "tt1442437", type: "series", name: "Modern Family")
+        phone.markWatched(show, videoID: "tt1442437:1:1", watched: true, for: owner)
+        phone.recordProgress(show, videoID: "tt1442437:1:2", position: 1290, duration: 1300, for: owner)
+        XCTAssertTrue(phone.isWatched("tt1442437:1:2", for: owner), "finishing marks watched")
+        _ = try await sync.sync(phone, name: "Home", symbol: "house.fill")
+        _ = try await sync.sync(tv, name: "Home", symbol: "house.fill")
+        let tvOwner = tv.profiles()[0]
+        XCTAssertTrue(tv.isWatched("tt1442437:1:1", for: tvOwner))
+        XCTAssertTrue(tv.isWatched("tt1442437:1:2", for: tvOwner))
+
+        // The TV unmarks later; the phone takes the newer decision.
+        tv.setWatched(["tt1442437:1:1"], false, for: tvOwner, now: Date().addingTimeInterval(60))
+        _ = try await sync.sync(tv, name: "Home", symbol: "house.fill")
+        _ = try await sync.sync(phone, name: "Home", symbol: "house.fill")
+        XCTAssertFalse(phone.isWatched("tt1442437:1:1", for: owner))
+        XCTAssertTrue(phone.isWatched("tt1442437:1:2", for: owner))
+    }
+
+    func testStremioWatchedBitfieldSurvivesARoundTrip() throws {
+        let json = #"{"_id":"tt1","name":"S","type":"series","_mtime":"2024-01-01T00:00:00Z","state":{"timeOffset":0,"duration":0,"video_id":"tt1:1:2","watched":"tt1:1:2:5:eJyLBgAAKQBg"}}"#
+        let item = try JSONDecoder().decode(StremioLibraryItem.self, from: Data(json.utf8))
+        XCTAssertEqual(item.state.watchedField, "tt1:1:2:5:eJyLBgAAKQBg")
+        let back = try JSONSerialization.jsonObject(with: JSONEncoder().encode(item)) as? [String: Any]
+        XCTAssertEqual((back?["state"] as? [String: Any])?["watched"] as? String, "tt1:1:2:5:eJyLBgAAKQBg")
+    }
+}

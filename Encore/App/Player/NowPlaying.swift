@@ -28,6 +28,12 @@ final class NowPlayingController {
         end()
         self.session = session
         self.engine = engine
+        #if os(iOS) || os(tvOS)
+        // iOS picks the "now playing" app from whoever owns an active playback session and listens for
+        // remote control; say both explicitly rather than relying on libmpv's audio unit to imply them.
+        try? AVAudioSession.sharedInstance().setActive(true)
+        UIApplication.shared.beginReceivingRemoteControlEvents()
+        #endif
         installCommands()
         observeInterruptions()
         info = [
@@ -69,6 +75,9 @@ final class NowPlayingController {
         info = [:]
         artworkURL = nil
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+        #if os(iOS) || os(tvOS)
+        UIApplication.shared.endReceivingRemoteControlEvents()
+        #endif
         #if os(macOS)
         MPNowPlayingInfoCenter.default().playbackState = .stopped
         #endif

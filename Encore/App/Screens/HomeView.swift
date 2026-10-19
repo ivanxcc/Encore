@@ -32,6 +32,7 @@ struct HomeView: View {
                                     PosterCardLabel(meta: meta)
                                 }
                                 .cardLinkStyle()
+                                .titleMenu(meta)
                             }
                         }
                     } else {
@@ -51,6 +52,8 @@ struct HomeView: View {
         .scrollClipDisabled()
         .task(id: app.household.id) { model.load(using: app) }
         .onChange(of: app.settings.addons) { _, _ in model.load(using: app) }
+        .onChange(of: app.activeProfile?.homeLayout) { _, _ in model.load(using: app) }
+        .onChange(of: app.activeProfile?.id) { _, _ in model.reload(using: app) }
         .refreshable {
             await app.refresh()
             model.reload(using: app)
@@ -79,6 +82,33 @@ extension View {
     /// NavigationLink with the platform card behavior (tvOS focus lift, Mac hover, touch press).
     @ViewBuilder func cardLinkStyle() -> some View {
         cardButtonStyle()
+    }
+
+    /// The hold-down / right-click menu for a title on a shelf: My List, and Mark as Watched for movies.
+    func titleMenu(_ meta: MetaPreview) -> some View {
+        modifier(TitleMenu(meta: meta))
+    }
+}
+
+private struct TitleMenu: ViewModifier {
+    let meta: MetaPreview
+    @EnvironmentObject private var app: AppModel
+
+    func body(content: Content) -> some View {
+        content.contextMenu {
+            let _ = app.libraryRevision
+            let inList = app.libraryItem(meta.id)?.isInLibrary == true
+            Button { app.setInList(meta, !inList) } label: {
+                inList ? Label("Remove from My List", systemImage: "minus") : Label("Add to My List", systemImage: "plus")
+            }
+            if meta.type == "movie" {
+                let watched = app.isWatched(meta.id)
+                Button { app.setWatched(meta, video: nil, !watched) } label: {
+                    watched ? Label("Mark as Unwatched", systemImage: "eye.slash")
+                            : Label("Mark as Watched", systemImage: "checkmark.circle")
+                }
+            }
+        }
     }
 }
 
@@ -123,6 +153,10 @@ private struct ContinueCard: View {
         .cardLinkStyle()
         .contextMenu {
             Button("Resume", systemImage: "play.fill") { playback.resume(item, app: app) }
+            Button("Mark as Watched", systemImage: "checkmark.circle") {
+                let video = item.state.videoID.flatMap { $0 == item.id ? nil : Video(id: $0, title: item.name) }
+                app.setWatched(item.preview, video: video, true)
+            }
             Button("Remove from Continue Watching", systemImage: "xmark") { app.dismissContinueWatching(item.id) }
         }
     }
@@ -160,21 +194,29 @@ struct HeroCarousel: View {
 
     var body: some View {
         let item = items[min(index, items.count - 1)]
+        let timer = HeroTimer(start: slideStart, held: heldElapsed, duration: Self.slideDuration)
         GeometryReader { proxy in
             ZStack(alignment: isCompact ? .bottom : .bottomLeading) {
-                ZStack {
-                    HeroBackdrop(url: item.backdropURL, size: proxy.size)
-                        .id(item.id)
-                        .transition(.opacity)
-                }
-                .frame(width: proxy.size.width, height: proxy.size.height)
-                .clipped()
-                HeroScrim(centered: isCompact)
-                HeroInfo(item: item, count: items.count, index: index,
-                         timer: HeroTimer(start: slideStart, held: heldElapsed, duration: Self.slideDuration),
+                Color.clear
+                HeroInfo(item: item, count: items.count, index: index, timer: timer,
                          compact: isCompact, width: proxy.size.width, focus: $focus)
                     .padding(.horizontal, Theme.Metrics.edge)
                     .padding(.bottom, bottomInset)
+            }
+            // The artwork sits behind everything and runs under the window's title area and a Mac
+            // sidebar, which only pushes the logo and buttons over (they respect its inset). Tapping the
+            // artwork opens the title (iPhone, iPad, Mac).
+            .background {
+                HeroArt(item: item, centered: isCompact)
+                    .ignoresSafeArea(edges: [.top, .leading])
+            }
+            // The page dots stay at the hero's bottom-right corner whatever the sidebar does.
+            .overlay(alignment: .bottomTrailing) {
+                if !isCompact {
+                    PageDots(count: items.count, index: index, timer: timer, glass: true)
+                        .padding(.trailing, Theme.Metrics.edge)
+                        .padding(.bottom, bottomInset + dotsLift)
+                }
             }
             .animation(Theme.Motion.hero, value: index)
             #if os(tvOS)
@@ -198,7 +240,7 @@ struct HeroCarousel: View {
             #endif
         }
         .containerRelativeFrame(.horizontal)
-        .containerRelativeFrame(.vertical) { height, _ in max(height * heightRatio, minimumHeight) }
+        .containerRelativeFrame(.vertical) { height, _ in heroHeight(in: height) }
         .onChange(of: isHeld) { _, held in
             // Hold the timer (and its progress bar) where it is, then carry on from there.
             if held {
@@ -235,7 +277,24 @@ struct HeroCarousel: View {
         #endif
     }
 
-    private var heightRatio: CGFloat { isCompact ? 0.76 : Theme.Metrics.heroHeightRatio }
+    /// Mac: the window's height less enough to show half of Continue Watching, so the art leads but the
+    /// next row is plainly there. Elsewhere a share of the screen.
+    private func heroHeight(in available: CGFloat) -> CGFloat {
+        #if os(macOS)
+        return max(available - 300, minimumHeight)
+        #else
+        return max(available * (isCompact ? 0.76 : Theme.Metrics.heroHeightRatio), minimumHeight)
+        #endif
+    }
+
+    /// Lines the dots up with the middle of the buttons beside them.
+    private var dotsLift: CGFloat {
+        #if os(tvOS)
+        return 16
+        #else
+        return 10
+        #endif
+    }
 
     private var minimumHeight: CGFloat {
         #if os(tvOS)
@@ -273,6 +332,36 @@ struct HeroTimer: Equatable {
     func progress(at now: Date) -> Double {
         let elapsed = held ?? now.timeIntervalSince(start)
         return min(1, max(0, elapsed / duration))
+    }
+}
+
+/// The hero's artwork and scrims, edge to edge. On iPhone, iPad, and Mac the whole picture is a link to
+/// the title; on Apple TV the remote works the buttons instead.
+private struct HeroArt: View {
+    let item: MetaPreview
+    var centered = false
+
+    var body: some View {
+        #if os(tvOS)
+        art
+        #else
+        NavigationLink(value: Route.title(item)) { art.contentShape(Rectangle()) }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Open \(item.name)")
+        #endif
+    }
+
+    private var art: some View {
+        GeometryReader { proxy in
+            ZStack {
+                HeroBackdrop(url: item.backdropURL, size: proxy.size)
+                    .id(item.id)
+                    .transition(.opacity)
+                HeroScrim(centered: centered)
+            }
+            .frame(width: proxy.size.width, height: proxy.size.height)
+            .clipped()
+        }
     }
 }
 
@@ -359,8 +448,6 @@ struct HeroInfo: View {
                 HStack(spacing: 16) {
                     watchButton
                     listButton
-                    Spacer(minLength: 16)
-                    PageDots(count: count, index: index, timer: timer, glass: true)
                 }
                 .tvFocusSection()
             }

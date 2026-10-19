@@ -37,6 +37,9 @@ struct DetailView: View {
     @State private var scrolled: CGFloat = 0
     @State private var sourcesFor: SourcesTarget?
     @State private var episodeDetails: Video?
+    @State private var trailerID: TrailerID?
+
+    struct TrailerID: Identifiable { let id: String }
     @FocusState private var focus: HeaderFocus?
     #if os(iOS)
     @Environment(\.horizontalSizeClass) private var sizeClass
@@ -62,7 +65,9 @@ struct DetailView: View {
                                         play: { play($0, fromBeginning: false) },
                                         playFromBeginning: { play($0, fromBeginning: true) },
                                         chooseSource: { sourcesFor = SourcesTarget(video: $0) },
-                                        showDetails: { episodeDetails = $0 })
+                                        showDetails: { episodeDetails = $0 },
+                                        isWatched: { app.isWatched($0.id) },
+                                        setWatched: { app.setWatched(meta.preview, video: $0, $1) })
                     }
                     if !cast.isEmpty { CastShelf(people: cast) }
                     if let meta = model.meta { AboutSection(meta: meta, extras: model.extras) }
@@ -88,6 +93,11 @@ struct DetailView: View {
         .navigationDestination(item: $episodeDetails) { video in
             if let meta = model.meta { EpisodeDetailView(meta: meta, video: video) }
         }
+        #if os(iOS)
+        .fullScreenCover(item: $trailerID) { TrailerView(videoID: $0.id, title: preview.name) }
+        #elseif os(macOS)
+        .sheet(item: $trailerID) { TrailerView(videoID: $0.id, title: preview.name) }
+        #endif
         .sheet(item: $sourcesFor) { target in
             SourcesView(meta: model.meta?.preview ?? preview, video: target.video)
         }
@@ -119,6 +129,14 @@ struct DetailView: View {
         return 0.92
         #else
         return 0.78
+        #endif
+    }
+
+    private var trailerAvailable: Bool {
+        #if os(tvOS)
+        return Trailers.canPlay
+        #else
+        return true
         #endif
     }
 
@@ -251,6 +269,20 @@ struct DetailView: View {
             }
             .pillButtonStyle(.icon)
             .accessibilityLabel("Choose Source")
+
+            if let trailer = Trailers.youTubeID(extras: model.extras, meta: model.meta), trailerAvailable {
+                Button {
+                    #if os(tvOS)
+                    Trailers.open(trailer)
+                    #else
+                    trailerID = TrailerID(id: trailer)
+                    #endif
+                } label: {
+                    Image(systemName: "film")
+                }
+                .pillButtonStyle(.icon)
+                .accessibilityLabel("Play Trailer")
+            }
         }
         .tvFocusSection()
         if let libraryItem, resuming {
@@ -316,6 +348,8 @@ private struct EpisodesSection: View {
     let playFromBeginning: (Video) -> Void
     let chooseSource: (Video) -> Void
     let showDetails: (Video) -> Void
+    let isWatched: (Video) -> Bool
+    let setWatched: (Video, Bool) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -324,7 +358,7 @@ private struct EpisodesSection: View {
                     HStack(spacing: 10) {
                         ForEach(meta.seasons, id: \.self) { number in
                             Button(number == 0 ? "Specials" : "Season \(number)") {
-                                withAnimation(Theme.Motion.content) { season = number }
+                                withAnimation(.easeInOut(duration: 0.35)) { season = number }
                             }
                             .pillButtonStyle(.tab(selected: number == season))
                         }
@@ -339,11 +373,12 @@ private struct EpisodesSection: View {
             }
 
             let episodes = meta.episodes(inSeason: season)
+            ZStack(alignment: .topLeading) {
             ScrollViewReader { reader in
                 ScrollView(.horizontal, showsIndicators: false) {
                     LazyHStack(alignment: .top, spacing: Theme.Metrics.itemSpacing) {
                         ForEach(episodes) { video in
-                            EpisodeCard(meta: meta, video: video, progress: progress(video),
+                            EpisodeCard(meta: meta, video: video, progress: progress(video), watched: isWatched(video),
                                         play: { play(video) }) {
                                 Button { play(video) } label: {
                                     Label(progress(video) != nil ? "Resume" : "Play", systemImage: "play.fill")
@@ -354,6 +389,11 @@ private struct EpisodesSection: View {
                                     }
                                 }
                                 Button { chooseSource(video) } label: { Label("Choose Source", systemImage: "list.bullet") }
+                                Button { setWatched(video, !isWatched(video)) } label: {
+                                    isWatched(video)
+                                        ? Label("Mark as Unwatched", systemImage: "eye.slash")
+                                        : Label("Mark as Watched", systemImage: "checkmark.circle")
+                                }
                                 Button { showDetails(video) } label: { Label("View Details", systemImage: "info.circle") }
                             }
                             .id(video.id)
@@ -372,7 +412,10 @@ private struct EpisodesSection: View {
                 .tvFocusSection()
                 // Open on the episode in progress, not always on episode 1.
                 .onAppear { scrollToCurrent(reader, episodes) }
-                .onChange(of: season) { _, _ in scrollToCurrent(reader, meta.episodes(inSeason: season)) }
+            }
+            // Each season is its own row that cross-fades in place, instead of cards sliding in one by one.
+            .id(season)
+            .transition(.opacity)
             }
         }
     }
@@ -394,6 +437,7 @@ private struct EpisodeCard<Menu: View>: View {
     let meta: MetaDetail
     let video: Video
     let progress: Double?
+    var watched = false
     let play: () -> Void
     @ViewBuilder let menu: () -> Menu
 
@@ -405,6 +449,16 @@ private struct EpisodeCard<Menu: View>: View {
                     .overlay(alignment: .bottom) {
                         if let progress {
                             ProgressBar(value: progress).padding(.horizontal, 14).padding(.bottom, 12)
+                        }
+                    }
+                    .overlay(alignment: .topTrailing) {
+                        if watched && progress == nil {
+                            Image(systemName: "checkmark")
+                                .font(.system(size: badge * 0.5, weight: .bold))
+                                .frame(width: badge, height: badge)
+                                .liquidGlass(in: Circle())
+                                .padding(10)
+                                .accessibilityLabel("Watched")
                         }
                     }
                     .overlay {
@@ -443,6 +497,13 @@ private struct EpisodeCard<Menu: View>: View {
     }
 
     private var width: CGFloat { Theme.Metrics.landscapeWidth }
+    private var badge: CGFloat {
+        #if os(tvOS)
+        return 40
+        #else
+        return 26
+        #endif
+    }
     private var isUpcoming: Bool { (video.released ?? .distantPast) > Date() }
     private var comingText: String {
         "Coming " + (video.released ?? Date()).formatted(.dateTime.month(.abbreviated).day())

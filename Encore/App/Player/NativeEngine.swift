@@ -1,5 +1,6 @@
 import AVFoundation
 import AVKit
+import MediaPlayer
 import SwiftUI
 import EncoreKit
 #if canImport(UIKit)
@@ -21,6 +22,19 @@ final class NativeEngine: PlayerEngine {
     private var started = false
     /// Shown by the system's Now Playing for this item.
     var artworkURL: URL?
+    /// The show's name under an episode title.
+    var subtitle: String?
+
+    #if os(iOS) || os(tvOS)
+    /// Publishes this player to the Lock Screen, Control Center, and the TV's Now Playing, and routes
+    /// their commands to it. More dependable than the player view's automatic publishing, which a
+    /// SwiftUI-hosted player view does not always do.
+    private lazy var nowPlayingSession: MPNowPlayingSession = {
+        let session = MPNowPlayingSession(players: [player])
+        session.automaticallyPublishesNowPlayingInfo = true
+        return session
+    }()
+    #endif
 
     var isPaused: Bool { player.timeControlStatus == .paused }
     var audioTracks: [MediaTrack] { [] }      // the system player UI owns track selection
@@ -44,7 +58,15 @@ final class NativeEngine: PlayerEngine {
         title.identifier = .commonIdentifierTitle
         title.value = source.title as NSString
         title.extendedLanguageTag = "und"
-        item.externalMetadata = [title]
+        var metadata = [title]
+        if let subtitle {
+            let line = AVMutableMetadataItem()
+            line.identifier = .iTunesMetadataTrackSubTitle
+            line.value = subtitle as NSString
+            line.extendedLanguageTag = "und"
+            metadata.append(line)
+        }
+        item.externalMetadata = metadata
         // Artwork for the Lock Screen, Control Center, and the Apple TV info panel.
         if let artworkURL {
             Task { [weak item] in
@@ -109,6 +131,9 @@ final class NativeEngine: PlayerEngine {
         ]
         player.replaceCurrentItem(with: item)
         player.play()
+        #if os(iOS) || os(tvOS)
+        nowPlayingSession.becomeActiveIfPossible { _ in }
+        #endif
     }
 
     func play() { player.play() }
@@ -174,6 +199,7 @@ struct NativePlayerView: UIViewControllerRepresentable {
         #if os(iOS)
         controller.allowsPictureInPicturePlayback = true
         controller.canStartPictureInPictureAutomaticallyFromInline = true
+        controller.updatesNowPlayingInfoCenter = false   // NativeEngine's MPNowPlayingSession publishes
         #endif
         return controller
     }

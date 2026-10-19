@@ -22,6 +22,7 @@ struct SearchView: View {
                     Shelf(title: ref.title, items: metas) { meta in
                         NavigationLink(value: Route.title(meta)) { PosterCardLabel(meta: meta) }
                             .cardLinkStyle()
+                            .titleMenu(meta)
                     }
                 }
             }

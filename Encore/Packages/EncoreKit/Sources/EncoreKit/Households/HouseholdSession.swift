@@ -278,6 +278,8 @@ public final class HouseholdSession: @unchecked Sendable {
     public func recordProgress(_ meta: MetaPreview, videoID: String?, position: TimeInterval,
                                duration: TimeInterval, for profile: Profile) {
         mutate(meta, profile) { $0.recordProgress(videoID: videoID, position: position, duration: duration) }
+        // Finishing something marks it watched, like the Apple TV app's checkmark.
+        if duration > 0, position / duration >= 0.92 { setWatched([videoID ?? meta.id], true, for: profile) }
     }
 
     /// Remove from Continue Watching without touching My List.
@@ -342,10 +344,17 @@ public final class HouseholdSession: @unchecked Sendable {
         for profile in roster where !profile.isOwner {
             libraries[profile.id.uuidString] = library(for: profile).sorted { $0.id < $1.id }
         }
-        return HouseholdDocument(
+        var watched: [String: [String: WatchMark]] = [:]
+        for profile in roster {
+            let marks = watchMarks(for: profile)
+            if !marks.isEmpty { watched[HouseholdDocument.watchedKey(profile)] = marks }
+        }
+        var document = HouseholdDocument(
             name: name, symbol: symbol, nameUpdatedAt: state.nameUpdatedAt, profiles: roster,
             deletedProfiles: state.deletedProfiles, libraries: libraries,
             settings: .init(streamingServer: s.streamingServer, preferences: s.preferences, updatedAt: state.settingsUpdatedAt))
+        document.watched = watched.isEmpty ? nil : watched
+        return document
     }
 
     /// Make this device match a merged cloud document. The local owner keeps its id (its library is the
@@ -372,6 +381,11 @@ public final class HouseholdSession: @unchecked Sendable {
             scope.file("library-\(id.uuidString).json", as: [StremioLibraryItem].self).remove()
         }
 
+        for profile in profiles {
+            let marks = document.watched?[HouseholdDocument.watchedKey(profile)] ?? [:]
+            lock.withLock { try? watchedFile(profile).save(marks) }
+        }
+
         lock.lock()
         _settings.streamingServer = document.settings.streamingServer
         _settings.preferences = document.settings.preferences
@@ -385,6 +399,54 @@ public final class HouseholdSession: @unchecked Sendable {
             state.deletedProfiles = document.deletedProfiles
             state.settingsUpdatedAt = document.settings.updatedAt
             state.nameUpdatedAt = document.nameUpdatedAt
+        }
+    }
+
+    // MARK: Watched
+
+    /// One profile's "watched" marks, by video id (an episode id, or a movie's id). Unmarking is a mark
+    /// too (watched: false), so the newest decision wins when devices sync.
+    public struct WatchMark: Codable, Hashable, Sendable {
+        public var watched: Bool
+        public var at: Date
+        public init(watched: Bool, at: Date) { self.watched = watched; self.at = at }
+    }
+
+    private func watchedFile(_ profile: Profile) -> JSONFile<[String: WatchMark]> {
+        scope.file("watched-\(profile.isOwner ? "account" : profile.id.uuidString).json")
+    }
+
+    public func watchMarks(for profile: Profile) -> [String: WatchMark] {
+        lock.withLock { watchedFile(profile).load() ?? [:] }
+    }
+
+    public func isWatched(_ videoID: String, for profile: Profile) -> Bool {
+        watchMarks(for: profile)[videoID]?.watched == true
+    }
+
+    public func setWatched(_ videoIDs: [String], _ watched: Bool, for profile: Profile, now: Date = Date()) {
+        guard !videoIDs.isEmpty else { return }
+        lock.withLock {
+            var marks = watchedFile(profile).load() ?? [:]
+            for id in videoIDs { marks[id] = WatchMark(watched: watched, at: now) }
+            try? watchedFile(profile).save(marks)
+        }
+    }
+
+    /// Mark a title (or one of its episodes) watched or unwatched. Marking the video the viewer is in the
+    /// middle of also finishes it in the library, so it leaves Continue Watching, as on Stremio.
+    public func markWatched(_ meta: MetaPreview, videoID: String?, watched: Bool, for profile: Profile) {
+        setWatched([videoID ?? meta.id], watched, for: profile)
+        guard let item = item(meta.id, for: profile), item.state.videoID == videoID || (videoID == nil && item.state.videoID == nil) || videoID == nil else { return }
+        mutate(meta, profile) { item in
+            item.state.timeOffset = 0
+            if watched {
+                item.state.flaggedWatched = 1
+                item.state.timesWatched += 1
+                item.state.lastWatched = Date()
+            } else {
+                item.state.flaggedWatched = 0
+            }
         }
     }
 

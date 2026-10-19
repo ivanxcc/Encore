@@ -19,6 +19,15 @@ public struct TitleExtras: Codable, Hashable, Sendable {
         public var job: String
     }
 
+    /// An official trailer (YouTube video id), the best TMDB has.
+    public struct Trailer: Codable, Hashable, Sendable {
+        public var site: String
+        public var key: String
+        public var name: String?
+        public init(site: String = "YouTube", key: String, name: String? = nil) { self.site = site; self.key = key; self.name = name }
+    }
+
+    public var trailer: Trailer?
     public var tmdbId: Int?
     public var backdrop: URL?
     public var logo: URL?
@@ -42,6 +51,7 @@ public struct TitleExtras: Codable, Hashable, Sendable {
         cast = (try? c.decodeIfPresent([Lossy<Person>].self, forKey: .cast))?.compactMap(\.value) ?? []
         crew = (try? c.decodeIfPresent([Lossy<Credit>].self, forKey: .crew))?.compactMap(\.value) ?? []
         certification = try? c.decodeIfPresent(String.self, forKey: .certification)
+        trailer = try? c.decodeIfPresent(Trailer.self, forKey: .trailer)
     }
 
     /// Names only (Cinemeta), for when the cloud has no TMDB key: the page still shows the cast.

@@ -16,7 +16,7 @@ export async function tmdbRoute(route, url, env, deps) {
     const imdb = url.searchParams.get("imdb") || "";
     const type = url.searchParams.get("type") === "series" ? "series" : "movie";
     if (!/^tt\d{5,10}$/.test(imdb)) return { status: 400, body: { error: "Expected imdb=tt…" } };
-    return cached(deps, `title:${type}:${imdb}`, 24 * 3600, () => title(imdb, type, env, deps));
+    return cached(deps, `title:v2:${type}:${imdb}`, 24 * 3600, () => title(imdb, type, env, deps));
   }
   if (route === "GET /v1/trending") {
     return cached(deps, "trending:v1", 6 * 3600, () => trending(env, deps));
@@ -58,8 +58,9 @@ async function title(imdb, type, env, deps) {
   if (!hit) return { status: 404, body: { error: "Not on TMDB" } };
   const kind = hit.media_type === "tv" || (found.tv_results || []).includes(hit) ? "tv" : "movie";
   const detail = await call(`/${kind}/${hit.id}`, {
-    append_to_response: kind === "tv" ? "aggregate_credits,images,content_ratings" : "credits,images,release_dates",
+    append_to_response: kind === "tv" ? "aggregate_credits,images,content_ratings,videos" : "credits,images,release_dates,videos",
     include_image_language: "en,null",
+    include_video_language: "en,null",
   }, env, deps);
   return { status: 200, body: shapeTitle(detail, kind) };
 }
@@ -82,7 +83,18 @@ export function shapeTitle(detail, kind) {
     cast,
     crew: crew.slice(0, 4),
     certification: certification(detail, kind),
+    trailer: bestTrailer(detail),
   };
+}
+
+/** The official trailer at the highest resolution (YouTube serves it adaptively, up to 4K). */
+export function bestTrailer(detail) {
+  const videos = ((detail.videos || {}).results || []).filter((v) => v.site === "YouTube" && v.key);
+  const score = (v) => (v.type === "Trailer" ? 1000 : v.type === "Teaser" ? 500 : 0)
+    + (v.official ? 200 : 0) + (v.iso_639_1 === "en" ? 100 : 0) + (v.size || 0) / 100
+    + (Date.parse(v.published_at || 0) || 0) / 1e13;
+  const best = videos.filter((v) => v.type === "Trailer" || v.type === "Teaser").sort((a, b) => score(b) - score(a))[0];
+  return best ? { site: "YouTube", key: best.key, name: best.name || "Trailer", size: best.size || null } : null;
 }
 
 /** The best-voted backdrop without text on it, at original resolution (up to 4K). */

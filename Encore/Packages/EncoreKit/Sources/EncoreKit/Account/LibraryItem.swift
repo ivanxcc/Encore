@@ -25,6 +25,9 @@ public struct StremioLibraryItem: Codable, Hashable, Identifiable, Sendable {
         public var videoID: String?
         public var timesWatched: Int
         public var flaggedWatched: Int
+        /// Stremio's own per-episode watched marks (a compressed bitfield). Encore does not read it but
+        /// must hand it back untouched, or saving an item would erase the marks in other Stremio apps.
+        public var watchedField: String?
 
         public init() {
             timeWatched = 0; timeOffset = 0; duration = 0; timesWatched = 0; flaggedWatched = 0
@@ -39,6 +42,7 @@ public struct StremioLibraryItem: Codable, Hashable, Identifiable, Sendable {
             videoID = try? c.decodeIfPresent(String.self, forKey: .videoID)
             timesWatched = Int(Self.int64(c, .timesWatched))
             flaggedWatched = Int(Self.int64(c, .flaggedWatched))
+            watchedField = try? c.decodeIfPresent(String.self, forKey: .watchedField)
         }
 
         public func encode(to encoder: Encoder) throws {
@@ -50,6 +54,7 @@ public struct StremioLibraryItem: Codable, Hashable, Identifiable, Sendable {
             try c.encodeIfPresent(videoID, forKey: .videoID)
             try c.encode(timesWatched, forKey: .timesWatched)
             try c.encode(flaggedWatched, forKey: .flaggedWatched)
+            try c.encodeIfPresent(watchedField, forKey: .watchedField)
         }
 
         private static func int64(_ c: KeyedDecodingContainer<CodingKeys>, _ key: CodingKeys) -> Int64 {
@@ -61,6 +66,7 @@ public struct StremioLibraryItem: Codable, Hashable, Identifiable, Sendable {
         enum CodingKeys: String, CodingKey {
             case lastWatched, timeWatched, timeOffset, duration, timesWatched, flaggedWatched
             case videoID = "video_id"
+            case watchedField = "watched"
         }
     }
 

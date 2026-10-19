@@ -615,3 +615,23 @@ final class FeaturedPickerTests: XCTestCase {
         XCTAssertEqual(extras.crew.first?.job, "Creator")
     }
 }
+
+final class HomeLayoutTests: XCTestCase {
+    func testArrangesHidesAndKeepsNewCatalogsAtTheEnd() throws {
+        let refs = AddonService.homeCatalogs(from: DefaultAddons.all) // Cinemeta: popular/featured movies and shows
+        XCTAssertGreaterThanOrEqual(refs.count, 2)
+        let ids = refs.map(\.id)
+        let layout = HomeLayout(order: [ids[1], "gone|catalog"], hidden: [ids[0]])
+        let arranged = layout.arrange(refs).map(\.id)
+        XCTAssertEqual(arranged.first, ids[1])
+        XCTAssertFalse(arranged.contains(ids[0]))
+        XCTAssertEqual(arranged.count, ids.count - 1)
+        XCTAssertEqual(layout.rows(refs).first?.ref.id, ids[1])
+        XCTAssertEqual(layout.rows(refs).first { $0.ref.id == ids[0] }?.shown, false)
+        // A profile's layout round-trips and older profiles without one still decode.
+        var profile = Profile(name: "Will")
+        profile.homeLayout = layout
+        let back = try JSONDecoder().decode(Profile.self, from: JSONEncoder().encode(profile))
+        XCTAssertEqual(back.homeLayout, layout)
+    }
+}

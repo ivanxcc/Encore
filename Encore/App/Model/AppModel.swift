@@ -356,6 +356,20 @@ final class AppModel: ObservableObject {
         pushSoon()
     }
 
+    func isWatched(_ videoID: String) -> Bool {
+        guard let profile = activeProfile else { return false }
+        return session.isWatched(videoID, for: profile)
+    }
+
+    /// Mark a movie, or one episode of a show, watched or unwatched for the active profile.
+    func setWatched(_ meta: MetaPreview, video: Video?, _ watched: Bool) {
+        guard let profile = activeProfile else { return }
+        session.markWatched(meta, videoID: video?.id, watched: watched, for: profile)
+        libraryRevision += 1
+        pushSoon()
+        syncSoon()
+    }
+
     func dismissContinueWatching(_ id: String) {
         guard let profile = activeProfile else { return }
         session.dismissFromContinueWatching(id, for: profile)
