@@ -105,3 +105,27 @@ struct MetaInfoLine: View {
         }
     }
 }
+
+/// The iPhone form of `MetaInfoLine`: centered, with the badges on a line of their own when the
+/// details are long, as the Apple TV app sets it under a centered logo.
+struct CenteredInfoLine: View {
+    let parts: [String?]
+    let ratings: [Rating]
+
+    var body: some View {
+        let text = parts.compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 12) {
+                Text(text).lineLimit(1)
+                RatingBadges(ratings: ratings)
+            }
+            VStack(spacing: 8) {
+                Text(text).multilineTextAlignment(.center).lineLimit(2)
+                RatingBadges(ratings: ratings)
+            }
+        }
+        .font(Theme.Fonts.meta)
+        .foregroundStyle(Theme.Colors.secondary)
+        .frame(maxWidth: .infinity)
+    }
+}

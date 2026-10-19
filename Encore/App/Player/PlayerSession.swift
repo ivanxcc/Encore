@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 import EncoreKit
 
 /// Runs one playback: resolve sources, walk the bounded `PlaybackPlan`, report progress, and offer the
@@ -44,6 +45,7 @@ final class PlayerSession: ObservableObject {
     /// The duration the current markers were looked up for.
     private var segmentsDuration: TimeInterval = 0
     private var segmentsTask: Task<Void, Never>?
+    private var pauseObservation: AnyCancellable?
     /// Segments the viewer already skipped or watched through, so the button does not come back.
     private var dismissedSegments: Set<SkipSegment> = []
 
@@ -86,6 +88,8 @@ final class PlayerSession: ObservableObject {
         mpv?.stop()
         native = nil
         mpv = nil
+        pauseObservation = nil
+        NowPlayingController.shared.end()
         app?.pushNow()
     }
 
@@ -141,7 +145,9 @@ final class PlayerSession: ObservableObject {
         switch kind {
         case .native:
             mpv?.stop(); mpv = nil
+            NowPlayingController.shared.end()   // the system player publishes its own
             let engine = native ?? NativeEngine()
+            engine.artworkURL = meta.backdropURL ?? meta.posterURL
             native = engine
             engineKind = .native
             return engine
@@ -150,6 +156,11 @@ final class PlayerSession: ObservableObject {
             let engine = mpv ?? MPVEngine()
             mpv = engine
             engineKind = .mpv
+            // Keep the system's Now Playing in step when the viewer pauses from our own controls.
+            pauseObservation = engine.$isPaused.dropFirst().sink { [weak self] paused in
+                guard let self, self.engineKind == .mpv else { return }
+                NowPlayingController.shared.update(position: self.position, duration: self.duration, paused: paused)
+            }
             return engine
         }
     }
@@ -169,6 +180,8 @@ final class PlayerSession: ObservableObject {
             watchdog?.cancel()
             withAnimation(Theme.Motion.content) { phase = .playing }
             loadSkipSegments()
+            // The system player publishes Now Playing itself; libmpv needs us to.
+            if engineKind == .mpv, let mpv { NowPlayingController.shared.begin(session: self, engine: mpv) }
         case let .progress(position, duration):
             self.position = position
             if duration > 0 {
@@ -178,6 +191,9 @@ final class PlayerSession: ObservableObject {
                 if segmentsDuration == 0 || duration > segmentsDuration * 1.25 + 60 { loadSkipSegments() }
             }
             recordProgress(force: false)
+            if engineKind == .mpv, let mpv {
+                NowPlayingController.shared.update(position: position, duration: self.duration, paused: mpv.isPaused)
+            }
             // Up Next starts when the closing credits begin, else in the last 25 s, and only once the
             // duration has settled (see UpNextPolicy).
             if nextEpisode != nil, upNextCountdown == nil, phase == .playing,
@@ -310,6 +326,7 @@ final class PlayerSession: ObservableObject {
         duration = 0
         lastRecorded = 0
         updateNextEpisode()
+        if engineKind == .mpv { NowPlayingController.shared.refreshMetadata() }   // the new episode's title and art
         Task { await resolveAndPlay() }
     }
 }

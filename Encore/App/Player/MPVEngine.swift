@@ -43,7 +43,57 @@ final class MPVEngine: ObservableObject, PlayerEngine {
         metalLayer.contentsGravity = .resizeAspect
         metalLayer.needsDisplayOnBoundsChange = false
         create()
+        observeAppLifecycle()
     }
+
+    // MARK: Background
+
+    #if os(iOS) || os(tvOS)
+    private var lifecycleTokens: [NSObjectProtocol] = []
+    /// The video track that was showing when the app left the foreground.
+    private var suspendedVideoTrack: String?
+    #endif
+
+    /// iOS takes the GPU away from a backgrounded app, which left the Metal/Vulkan swapchain dead: coming
+    /// back showed one frozen, stretched frame. So video output is switched off while in the background
+    /// (audio keeps playing) and switched back on when the app returns, which rebuilds the renderer
+    /// cleanly at the current position.
+    private func observeAppLifecycle() {
+        #if os(iOS) || os(tvOS)
+        let center = NotificationCenter.default
+        lifecycleTokens = [
+            center.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.suspendVideo() }
+            },
+            center.addObserver(forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.resumeVideo() }
+            },
+        ]
+        #endif
+    }
+
+    #if os(iOS) || os(tvOS)
+    private func suspendVideo() {
+        guard let mpv = handle, suspendedVideoTrack == nil,
+              let raw = mpv_get_property_string(mpv, "vid") else { return }
+        let track = String(cString: raw)
+        mpv_free(raw)
+        guard track != "no" else { return }
+        suspendedVideoTrack = track
+        mpv_set_property_string(mpv, "vid", "no")
+    }
+
+    private func resumeVideo() {
+        guard let mpv = handle, let track = suspendedVideoTrack else { return }
+        suspendedVideoTrack = nil
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        metalLayer.drawableSize = Self.displayPixelSize
+        metalLayer.contentsGravity = .resizeAspect
+        CATransaction.commit()
+        mpv_set_property_string(mpv, "vid", track)
+    }
+    #endif
 
     private func create() {
         guard let mpv = mpv_create() else { return }
@@ -180,6 +230,10 @@ final class MPVEngine: ObservableObject, PlayerEngine {
 
     func stop() {
         DisplayModeMatcher.reset()
+        #if os(iOS) || os(tvOS)
+        lifecycleTokens.forEach(NotificationCenter.default.removeObserver)
+        lifecycleTokens = []
+        #endif
         guard let mpv = handle else { return }
         handle = nil
         mpv_set_wakeup_callback(mpv, nil, nil)

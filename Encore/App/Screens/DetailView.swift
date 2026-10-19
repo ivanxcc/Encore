@@ -38,6 +38,9 @@ struct DetailView: View {
     @State private var sourcesFor: SourcesTarget?
     @State private var episodeDetails: Video?
     @FocusState private var focus: HeaderFocus?
+    #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var sizeClass
+    #endif
 
     enum HeaderFocus: Hashable { case play }
 
@@ -52,8 +55,8 @@ struct DetailView: View {
         GeometryReader { screen in
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(alignment: .leading, spacing: Theme.Metrics.shelfSpacing) {
-                    header(libraryItem)
-                        .frame(height: screen.size.height * headerRatio, alignment: .bottomLeading)
+                    header(libraryItem, width: screen.size.width)
+                        .frame(height: screen.size.height * headerRatio, alignment: isCompact ? .bottom : .bottomLeading)
                     if let meta = model.meta, meta.type == "series" || !meta.seasons.isEmpty {
                         EpisodesSection(meta: meta, season: $model.season, libraryItem: libraryItem,
                                         play: { play($0, fromBeginning: false) },
@@ -125,11 +128,46 @@ struct DetailView: View {
 
     // MARK: Header
 
+    /// iPhone: the Apple TV app's centered title page (a smaller centered logo, centered details and
+    /// buttons, the synopsis underneath).
+    private var isCompact: Bool {
+        #if os(iOS)
+        return sizeClass == .compact
+        #else
+        return false
+        #endif
+    }
+
     @ViewBuilder
-    private func header(_ libraryItem: StremioLibraryItem?) -> some View {
+    private func header(_ libraryItem: StremioLibraryItem?, width: CGFloat) -> some View {
+        if isCompact {
+            VStack(spacing: 16) {
+                Spacer(minLength: 0)
+                TitleLogo(logo: logoURL, title: model.meta?.name ?? preview.name,
+                          maxWidth: min(width * 0.7, 280), alignment: .bottom)
+                CenteredInfoLine(parts: metaParts, ratings: ratingsAndSynopsis.ratings)
+                actions(libraryItem)
+                if let description = ratingsAndSynopsis.description {
+                    Text(description)
+                        .font(Theme.Fonts.body)
+                        .foregroundStyle(Theme.Colors.secondary)
+                        .lineLimit(3)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.top, 4)
+                }
+            }
+            .padding(.horizontal, Theme.Metrics.edge)
+            .padding(.bottom, 12)
+        } else {
+            regularHeader(libraryItem, width: width)
+        }
+    }
+
+    @ViewBuilder
+    private func regularHeader(_ libraryItem: StremioLibraryItem?, width: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 20) {
             Spacer(minLength: 0)
-            TitleLogo(logo: logoURL, title: model.meta?.name ?? preview.name, maxWidth: logoWidth)
+            TitleLogo(logo: logoURL, title: model.meta?.name ?? preview.name, maxWidth: min(logoWidth, width * 0.55))
             MetaInfoLine(parts: metaParts, ratings: ratingsAndSynopsis.ratings)
             if let tagline = model.extras?.tagline, !tagline.isEmpty, ratingsAndSynopsis.description == nil {
                 Text(tagline).font(Theme.Fonts.body).foregroundStyle(Theme.Colors.secondary)
@@ -139,7 +177,7 @@ struct DetailView: View {
                     .font(Theme.Fonts.body)
                     .foregroundStyle(Theme.Colors.secondary)
                     .lineLimit(3)
-                    .frame(maxWidth: Theme.Metrics.landscapeWidth * 2.4, alignment: .leading)
+                    .frame(maxWidth: min(Theme.Metrics.landscapeWidth * 2.4, width * 0.6), alignment: .leading)
             }
             actions(libraryItem)
             if model.failed {
@@ -194,6 +232,7 @@ struct DetailView: View {
                 }
             } label: {
                 Label(playLabel(resuming: resuming, video: video), systemImage: "play.fill")
+                    .frame(maxWidth: isCompact ? 220 : nil)
             }
             .pillButtonStyle(.primary)
             .focused($focus, equals: .play)

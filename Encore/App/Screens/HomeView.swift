@@ -143,18 +143,25 @@ private struct ContinueCard: View {
 struct HeroCarousel: View {
     let items: [MetaPreview]
     @State private var index = 0
-    @State private var interacted = false
+    /// The slide timer: when the current title appeared, and how far it had got when it was held.
+    @State private var slideStart = Date()
+    @State private var heldElapsed: TimeInterval?
     /// While the viewer is on the hero's buttons it must hold still; rotating under the focus would move
     /// their selection to a different title.
     @FocusState private var focus: HeroInfo.Focus?
     #if os(macOS)
     @State private var hovering = false
     #endif
+    #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var sizeClass
+    #endif
+
+    static let slideDuration: TimeInterval = 9
 
     var body: some View {
         let item = items[min(index, items.count - 1)]
         GeometryReader { proxy in
-            ZStack(alignment: .bottomLeading) {
+            ZStack(alignment: isCompact ? .bottom : .bottomLeading) {
                 ZStack {
                     HeroBackdrop(url: item.backdropURL, size: proxy.size)
                         .id(item.id)
@@ -162,8 +169,10 @@ struct HeroCarousel: View {
                 }
                 .frame(width: proxy.size.width, height: proxy.size.height)
                 .clipped()
-                HeroScrim()
-                HeroInfo(item: item, count: items.count, index: index, focus: $focus)
+                HeroScrim(centered: isCompact)
+                HeroInfo(item: item, count: items.count, index: index,
+                         timer: HeroTimer(start: slideStart, held: heldElapsed, duration: Self.slideDuration),
+                         compact: isCompact, width: proxy.size.width, focus: $focus)
                     .padding(.horizontal, Theme.Metrics.edge)
                     .padding(.bottom, bottomInset)
             }
@@ -171,45 +180,62 @@ struct HeroCarousel: View {
             #if os(tvOS)
             .onMoveCommand { direction in
                 // Left from the first button or right from the last pages the hero, like the Apple TV app.
-                if direction == .left, focus == .watch { interacted = true; step(-1) }
-                if direction == .right, focus == .list { interacted = true; step(1) }
+                if direction == .left, focus == .watch { step(-1) }
+                if direction == .right, focus == .list { step(1) }
             }
             #elseif os(iOS)
             .gesture(DragGesture(minimumDistance: 30).onEnded { value in
-                interacted = true
                 step(value.translation.width < 0 ? 1 : -1)
             })
             #elseif os(macOS)
             // Mac: two-finger trackpad swipes (and horizontal mouse wheels), click-drag, and arrows that
             // appear on hover.
-            .overlay { MacHeroControls(hovering: $hovering) { delta in interacted = true; step(delta) } }
+            .overlay { MacHeroControls(hovering: $hovering) { delta in step(delta) } }
             .gesture(DragGesture(minimumDistance: 30).onEnded { value in
-                interacted = true
                 step(value.translation.width < 0 ? 1 : -1)
             })
             .onHover { hovering = $0 }
             #endif
         }
         .containerRelativeFrame(.horizontal)
-        .containerRelativeFrame(.vertical) { height, _ in max(height * Theme.Metrics.heroHeightRatio, minimumHeight) }
-        .task(id: interacted || focus != nil || isHovering) {
-            guard !interacted, focus == nil, !isHovering else { return }
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(9))
-                guard !Task.isCancelled else { return }
-                step(1)
+        .containerRelativeFrame(.vertical) { height, _ in max(height * heightRatio, minimumHeight) }
+        .onChange(of: isHeld) { _, held in
+            // Hold the timer (and its progress bar) where it is, then carry on from there.
+            if held {
+                heldElapsed = min(Self.slideDuration, Date().timeIntervalSince(slideStart))
+            } else {
+                slideStart = Date().addingTimeInterval(-(heldElapsed ?? 0))
+                heldElapsed = nil
             }
+        }
+        .task(id: "\(index)|\(isHeld)") {
+            guard !isHeld, items.count > 1 else { return }
+            let remaining = Self.slideDuration - Date().timeIntervalSince(slideStart)
+            try? await Task.sleep(for: .seconds(max(0.1, remaining)))
+            guard !Task.isCancelled else { return }
+            step(1)
         }
     }
 
-    /// Rotation pauses while the pointer rests on the hero (Mac), like it does while the remote is on it.
-    private var isHovering: Bool {
+    /// The slideshow holds while the remote is on its buttons (tvOS) or the pointer rests on it (Mac).
+    private var isHeld: Bool {
         #if os(macOS)
-        return hovering
+        return focus != nil || hovering
+        #else
+        return focus != nil
+        #endif
+    }
+
+    /// iPhone: the Apple TV app's centered layout.
+    private var isCompact: Bool {
+        #if os(iOS)
+        return sizeClass == .compact
         #else
         return false
         #endif
     }
+
+    private var heightRatio: CGFloat { isCompact ? 0.76 : Theme.Metrics.heroHeightRatio }
 
     private var minimumHeight: CGFloat {
         #if os(tvOS)
@@ -225,13 +251,28 @@ struct HeroCarousel: View {
         #if os(tvOS)
         return 70
         #else
-        return 36
+        return isCompact ? 22 : 36
         #endif
     }
 
+    /// Paging by hand restarts the title's timer; the slideshow keeps going afterwards.
     private func step(_ delta: Int) {
         guard !items.isEmpty else { return }
         index = (index + delta + items.count) % items.count
+        slideStart = Date()
+        if heldElapsed != nil { heldElapsed = 0 }
+    }
+}
+
+/// Where the current hero title is in its time on screen.
+struct HeroTimer: Equatable {
+    var start: Date
+    var held: TimeInterval?
+    var duration: TimeInterval
+
+    func progress(at now: Date) -> Double {
+        let elapsed = held ?? now.timeIntervalSince(start)
+        return min(1, max(0, elapsed / duration))
     }
 }
 
@@ -254,17 +295,21 @@ private struct HeroBackdrop: View {
     }
 }
 
-/// Darkens only where type sits: bottom (into the page), left (behind the text), and a little at the
-/// top so the tab bar stays legible over bright artwork.
+/// Darkens only where type sits: bottom (into the page), left (behind the text) or, centered on
+/// iPhone, the lower third, and a little at the top so the tab bar stays legible over bright artwork.
 private struct HeroScrim: View {
+    var centered = false
+
     var body: some View {
         ZStack {
-            LinearGradient(stops: [.init(color: .clear, location: 0.45),
-                                   .init(color: Theme.Colors.canvas.opacity(0.75), location: 0.8),
+            LinearGradient(stops: [.init(color: .clear, location: centered ? 0.5 : 0.45),
+                                   .init(color: Theme.Colors.canvas.opacity(0.75), location: centered ? 0.82 : 0.8),
                                    .init(color: Theme.Colors.canvas, location: 1)],
                            startPoint: .top, endPoint: .bottom)
-            LinearGradient(stops: [.init(color: .black.opacity(0.6), location: 0), .init(color: .clear, location: 0.55)],
-                           startPoint: .leading, endPoint: .trailing)
+            if !centered {
+                LinearGradient(stops: [.init(color: .black.opacity(0.6), location: 0), .init(color: .clear, location: 0.55)],
+                               startPoint: .leading, endPoint: .trailing)
+            }
             LinearGradient(stops: [.init(color: .black.opacity(0.35), location: 0), .init(color: .clear, location: 0.18)],
                            startPoint: .top, endPoint: .bottom)
         }
@@ -278,44 +323,79 @@ struct HeroInfo: View {
     let item: MetaPreview
     let count: Int
     let index: Int
+    let timer: HeroTimer
+    /// iPhone: everything centered, no synopsis, the dots under the buttons.
+    var compact = false
+    /// The hero's width, so the logo and text never run past the screen.
+    var width: CGFloat = 1000
     var focus: FocusState<Focus?>.Binding
     @EnvironmentObject private var app: AppModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            TitleLogo(logo: item.logoURL, title: item.name, maxWidth: logoWidth)
-            MetaInfoLine(parts: metaParts, ratings: item.ratingsAndSynopsis.ratings)
-            if let description = item.ratingsAndSynopsis.description {
-                Text(description)
-                    .font(Theme.Fonts.body)
-                    .foregroundStyle(Theme.Colors.secondary)
-                    .lineLimit(3)
-                    .frame(maxWidth: Theme.Metrics.landscapeWidth * 2.2, alignment: .leading)
-            }
-            HStack(spacing: 16) {
-                NavigationLink(value: Route.title(item)) {
-                    Label("Watch Now", systemImage: "play.fill")
+        if compact {
+            VStack(spacing: 14) {
+                TitleLogo(logo: item.logoURL, title: item.name, maxWidth: min(width * 0.72, 300), alignment: .bottom)
+                CenteredInfoLine(parts: compactMetaParts, ratings: item.ratingsAndSynopsis.ratings)
+                HStack(spacing: 14) {
+                    watchButton.frame(maxWidth: min(width * 0.5, 240))
+                    listButton
                 }
-                .pillButtonStyle(.primary)
-                .focused(focus, equals: .watch)
-                Button {
-                    app.setInList(item, !(app.libraryItem(item.id)?.isInLibrary ?? false))
-                } label: {
-                    let _ = app.libraryRevision
-                    Image(systemName: app.libraryItem(item.id)?.isInLibrary == true ? "checkmark" : "plus")
-                }
-                .pillButtonStyle(.icon)
-                .focused(focus, equals: .list)
-                Spacer()
-                PageDots(count: count, index: index)
+                .padding(.top, 4)
+                PageDots(count: count, index: index, timer: timer, glass: false)
+                    .padding(.top, 6)
             }
-            .tvFocusSection()
+            .frame(maxWidth: .infinity)
+        } else {
+            VStack(alignment: .leading, spacing: 18) {
+                TitleLogo(logo: item.logoURL, title: item.name, maxWidth: min(logoWidth, width * 0.6))
+                MetaInfoLine(parts: metaParts, ratings: item.ratingsAndSynopsis.ratings)
+                if let description = item.ratingsAndSynopsis.description {
+                    Text(description)
+                        .font(Theme.Fonts.body)
+                        .foregroundStyle(Theme.Colors.secondary)
+                        .lineLimit(3)
+                        .frame(maxWidth: min(Theme.Metrics.landscapeWidth * 2.2, width * 0.6), alignment: .leading)
+                }
+                HStack(spacing: 16) {
+                    watchButton
+                    listButton
+                    Spacer(minLength: 16)
+                    PageDots(count: count, index: index, timer: timer, glass: true)
+                }
+                .tvFocusSection()
+            }
         }
+    }
+
+    private var watchButton: some View {
+        NavigationLink(value: Route.title(item)) {
+            Label("Watch Now", systemImage: "play.fill")
+                .frame(maxWidth: compact ? .infinity : nil)
+        }
+        .pillButtonStyle(.primary)
+        .focused(focus, equals: .watch)
+    }
+
+    private var listButton: some View {
+        Button {
+            app.setInList(item, !(app.libraryItem(item.id)?.isInLibrary ?? false))
+        } label: {
+            let _ = app.libraryRevision
+            Image(systemName: app.libraryItem(item.id)?.isInLibrary == true ? "checkmark" : "plus")
+        }
+        .pillButtonStyle(.icon)
+        .focused(focus, equals: .list)
     }
 
     private var metaParts: [String?] {
         let genres: String? = item.genres.map { $0.prefix(2).joined(separator: ", ") }
         return [item.releaseInfo, genres]
+    }
+
+    /// "TV Show · Drama · Horror", as the Apple TV app's iPhone hero reads.
+    private var compactMetaParts: [String?] {
+        let kind = item.type == "series" ? "TV Show" : item.type == "movie" ? "Movie" : nil
+        return [kind] + (item.genres ?? []).prefix(2).map { Optional($0) }
     }
 
     private var logoWidth: CGFloat {
@@ -327,24 +407,43 @@ struct HeroInfo: View {
     }
 }
 
-/// Page indicator on a small Liquid Glass capsule, like the Apple TV app's.
+/// Page indicator, like the Apple TV app's: the current title's dot is a longer bar that fills over
+/// the time the title stays up, so it is clear when the next one comes. On a Liquid Glass capsule over
+/// the art on Apple TV, iPad, and Mac; bare dots under the buttons on iPhone.
 struct PageDots: View {
     let count: Int
     let index: Int
+    let timer: HeroTimer
+    var glass = true
 
     var body: some View {
-        HStack(spacing: dot) {
-            ForEach(0..<count, id: \.self) { i in
-                Capsule()
-                    .fill(i == index ? Color.white : Color.white.opacity(0.4))
-                    .frame(width: i == index ? dot * 2.8 : dot, height: dot)
+        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: timer.held != nil)) { context in
+            let progress = timer.progress(at: context.date)
+            HStack(spacing: dot) {
+                ForEach(0..<count, id: \.self) { i in
+                    if i == index {
+                        Capsule()
+                            .fill(Color.white.opacity(0.35))
+                            .overlay(alignment: .leading) {
+                                Capsule().fill(Color.white).frame(width: max(dot, activeWidth * progress))
+                            }
+                            .frame(width: activeWidth, height: dot)
+                            .clipShape(Capsule())
+                    } else {
+                        Circle().fill(Color.white.opacity(0.45)).frame(width: dot, height: dot)
+                    }
+                }
             }
         }
-        .padding(.horizontal, dot * 1.6)
-        .padding(.vertical, dot * 1.1)
-        .liquidGlass(in: Capsule())
+        .padding(.horizontal, glass ? dot * 1.6 : 0)
+        .padding(.vertical, glass ? dot * 1.1 : 0)
+        .modifier(GlassIf(enabled: glass))
         .animation(Theme.Motion.focus, value: index)
+        .accessibilityElement()
+        .accessibilityLabel("Title \(index + 1) of \(count)")
     }
+
+    private var activeWidth: CGFloat { dot * 4.5 }
 
     private var dot: CGFloat {
         #if os(tvOS)
@@ -355,22 +454,33 @@ struct PageDots: View {
     }
 }
 
+private struct GlassIf: ViewModifier {
+    let enabled: Bool
+    func body(content: Content) -> some View {
+        if enabled { content.liquidGlass(in: Capsule()) } else { content }
+    }
+}
+
 /// The title's logo artwork, falling back to the title set large.
 struct TitleLogo: View {
     let logo: URL?
     let title: String
     var maxWidth: CGFloat
+    /// `.bottom` centers the logo (iPhone); the default keeps it at the left edge.
+    var alignment: Alignment = .bottomLeading
     @State private var failed = false
 
     var body: some View {
         Group {
             if let logo, !failed {
-                LogoImage(url: logo, maxWidth: maxWidth) { failed = true }
+                LogoImage(url: logo, maxWidth: maxWidth, alignment: alignment) { failed = true }
             } else {
                 Text(title)
                     .font(Theme.Fonts.heroTitle)
                     .foregroundStyle(.white)
+                    .multilineTextAlignment(alignment == .bottom ? .center : .leading)
                     .lineLimit(2)
+                    .minimumScaleFactor(0.6)
                     .shadow(color: .black.opacity(0.4), radius: 12)
             }
         }
@@ -381,22 +491,23 @@ struct TitleLogo: View {
 private struct LogoImage: View {
     let url: URL
     let maxWidth: CGFloat
+    var alignment: Alignment = .bottomLeading
     let onFailure: () -> Void
     @State private var shown: (url: URL, image: CGImage)?
 
-    init(url: URL, maxWidth: CGFloat, onFailure: @escaping () -> Void) {
-        self.url = url; self.maxWidth = maxWidth; self.onFailure = onFailure
+    init(url: URL, maxWidth: CGFloat, alignment: Alignment = .bottomLeading, onFailure: @escaping () -> Void) {
+        self.url = url; self.maxWidth = maxWidth; self.alignment = alignment; self.onFailure = onFailure
         _shown = State(initialValue: ImagePipeline.shared.cached(url, maxPixel: HeroArtwork.logoPixel).map { (url, $0) })
     }
 
     var body: some View {
-        ZStack(alignment: .bottomLeading) {
+        ZStack(alignment: alignment) {
             Color.clear.frame(width: maxWidth, height: maxWidth * 0.2)
             if let shown {
                 Image(decorative: shown.image, scale: 1)
                     .resizable()
                     .aspectRatio(contentMode: .fit)
-                    .frame(maxWidth: maxWidth, maxHeight: maxWidth * 0.36, alignment: .bottomLeading)
+                    .frame(maxWidth: maxWidth, maxHeight: maxWidth * 0.36, alignment: alignment)
                     .shadow(color: .black.opacity(0.35), radius: 14)
                     .id(shown.url)
                     .transition(.opacity)
