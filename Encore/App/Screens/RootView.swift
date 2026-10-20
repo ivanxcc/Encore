@@ -48,9 +48,11 @@ struct RootView: View {
         .encoreCanvas()
         .playerPresentation(playback)
         #if os(macOS)
-        // Encore draws its own controls over the artwork, so the window has no toolbar at all: nothing
-        // grey across the top in full screen. While a video plays the traffic lights go too.
-        .toolbar(.hidden, for: .windowToolbar)
+        // Encore draws its own controls over the artwork and puts nothing in the window's toolbar, so the
+        // window keeps its close / minimize / zoom buttons with no grey bar behind them, in full screen
+        // too. While a video plays the window is all picture.
+        .toolbar(playback.request == nil ? .automatic : .hidden, for: .windowToolbar)
+        .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
         .background(WindowChromeController(hidden: playback.request != nil, fullScreen: $fullScreen))
         #endif
     }
@@ -77,6 +79,9 @@ struct RootView: View {
                 section(.library, libraryNav) { LibraryView() }
                 section(.settings, settingsNav) { SettingsView() }
             }
+            // A click anywhere on the page takes the focus out of the search field (the Mac doesn't do
+            // that by itself for clicks on things that can't take focus), which folds an empty field.
+            .simultaneousGesture(TapGesture().onEnded { if searchFocused { searchFocused = false } })
 
             if sidebarOpen {
                 Color.black.opacity(0.28)
@@ -109,7 +114,10 @@ struct RootView: View {
 
     private var controls: some View {
         HStack(spacing: 10) {
-            ChromeButton(systemImage: "sidebar.leading", help: sidebarOpen ? "Hide Sidebar" : "Show Sidebar") {
+            // With the sidebar open the button becomes part of its header, beside the window buttons, as in
+            // the Mac's own sidebars; closed, it floats as a glass circle.
+            ChromeButton(systemImage: "sidebar.leading", help: sidebarOpen ? "Hide Sidebar" : "Show Sidebar",
+                         glass: !sidebarOpen) {
                 setSidebar(!sidebarOpen)
             }
             .keyboardShortcut("s", modifiers: [.command, .control])
@@ -290,6 +298,7 @@ private struct WindowChromeController: NSViewRepresentable {
 private struct ChromeButton: View {
     let systemImage: String
     let help: String
+    var glass = true
     let action: () -> Void
     @State private var hovering = false
 
@@ -297,9 +306,18 @@ private struct ChromeButton: View {
         Button(action: action) {
             Image(systemName: systemImage)
                 .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(glass ? .primary : .secondary)
                 .frame(width: 34, height: 34)
-                .liquidGlass(in: Circle())
-                .scaleEffect(hovering ? 1.06 : 1)
+                .background {
+                    if glass {
+                        Color.clear.liquidGlass(in: Circle())
+                    } else {
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(.white.opacity(hovering ? 0.12 : 0))
+                            .frame(width: 30, height: 26)
+                    }
+                }
+                .scaleEffect(glass && hovering ? 1.06 : 1)
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)

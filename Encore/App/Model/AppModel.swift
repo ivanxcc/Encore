@@ -382,6 +382,18 @@ final class AppModel: ObservableObject {
         return extras
     }
 
+    private var runtimeCache: [String: [Int: TimeInterval]] = [:]
+
+    /// Each episode's exact length in a season (seconds by episode number), from Encore Cloud (TMDB).
+    func episodeRuntimes(tmdbID: Int, season: Int) async -> [Int: TimeInterval] {
+        let key = "\(tmdbID):\(season)"
+        if let hit = runtimeCache[key] { return hit }
+        guard let cloud else { return [:] }
+        let runtimes = await cloud.episodeRuntimes(tmdbID: tmdbID, season: season)
+        if !runtimes.isEmpty { runtimeCache[key] = runtimes }
+        return runtimes
+    }
+
     // MARK: Library
 
     func continueWatching() -> [ContinueItem] {

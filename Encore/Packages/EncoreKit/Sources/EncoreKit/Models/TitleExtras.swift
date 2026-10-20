@@ -35,6 +35,8 @@ public struct TitleExtras: Codable, Hashable, Sendable {
     public var cast: [Person]
     public var crew: [Credit]
     public var certification: String?
+    /// A movie's exact length in minutes (TMDB); nil for shows, whose episodes vary.
+    public var runtime: Int?
 
     public init(cast: [Person] = [], crew: [Credit] = [], backdrop: URL? = nil, logo: URL? = nil,
                 tagline: String? = nil, certification: String? = nil, tmdbId: Int? = nil) {
@@ -52,6 +54,7 @@ public struct TitleExtras: Codable, Hashable, Sendable {
         crew = (try? c.decodeIfPresent([Lossy<Credit>].self, forKey: .crew))?.compactMap(\.value) ?? []
         certification = try? c.decodeIfPresent(String.self, forKey: .certification)
         trailer = try? c.decodeIfPresent(Trailer.self, forKey: .trailer)
+        runtime = try? c.decodeIfPresent(Int.self, forKey: .runtime)
     }
 
     /// Names only (Cinemeta), for when the cloud has no TMDB key: the page still shows the cast.

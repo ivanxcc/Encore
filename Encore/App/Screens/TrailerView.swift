@@ -36,9 +36,14 @@ struct TrailerView: View {
     var body: some View {
         ZStack(alignment: .topLeading) {
             Color.black.ignoresSafeArea()
-            YouTubePlayer(videoID: videoID)
-                .aspectRatio(16 / 9, contentMode: .fit)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // An explicit 16:9 frame: a web view has no size of its own, and on the Mac a fitted aspect
+            // ratio left it at zero, a black window.
+            GeometryReader { proxy in
+                let width = min(proxy.size.width, proxy.size.height * 16 / 9)
+                YouTubePlayer(videoID: videoID)
+                    .frame(width: width, height: width * 9 / 16)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
             CloseButton { dismiss() }
                 .padding(20)
         }
@@ -72,11 +77,17 @@ private struct YouTubePlayer {
         config.allowsPictureInPictureMediaPlayback = true
         #endif
         config.mediaTypesRequiringUserActionForPlayback = []
+        #if os(macOS)
+        config.preferences.isElementFullscreenEnabled = true
+        #endif
         let view = WKWebView(frame: .zero, configuration: config)
         #if os(iOS)
         view.isOpaque = false
         view.backgroundColor = .black
         view.scrollView.isScrollEnabled = false
+        #else
+        // Safari's identity: YouTube's embed treats an unknown desktop web view as unsupported.
+        view.customUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15"
         #endif
         // youtube-nocookie requires a page origin; give it one so the embed is allowed to play.
         view.loadHTMLString(html, baseURL: URL(string: "https://encore.app"))

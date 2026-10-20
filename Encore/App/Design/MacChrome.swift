@@ -1,4 +1,7 @@
 import SwiftUI
+#if os(macOS)
+import AppKit
+#endif
 
 /// Page titles and back navigation that work with the Mac's floating window controls.
 ///
@@ -11,6 +14,13 @@ extension View {
     /// the Mac, below the floating controls.
     func pageTitle(_ title: String) -> some View {
         modifier(PageTitle(title: title))
+    }
+
+    /// Mac: a pushed page fades in once it has been laid out at the window's size, so the first frame of
+    /// a push (laid out narrower than the window, artwork and controls out of line) is never seen.
+    /// Elsewhere it does nothing.
+    func revealWhenLaidOut() -> some View {
+        modifier(RevealWhenLaidOut())
     }
 
     /// Marks a page pushed onto a navigation stack, so the Mac's back button can return from it.
@@ -28,7 +38,6 @@ private struct PageTitle: ViewModifier {
     func body(content: Content) -> some View {
         #if os(macOS)
         content
-            .navigationTitle(title)
             .safeAreaInset(edge: .top, spacing: 0) {
                 Text(title)
                     .font(.system(size: 30, weight: .bold))
@@ -52,6 +61,38 @@ private struct PageTitle: ViewModifier {
     }
 }
 
+private struct RevealWhenLaidOut: ViewModifier {
+    #if os(macOS)
+    @State private var shown = false
+    @State private var width: CGFloat = 0
+    #endif
+
+    func body(content: Content) -> some View {
+        #if os(macOS)
+        content
+            .opacity(shown ? 1 : 0)
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
+            // Shown once the page is as wide as the window and has held that size for a moment.
+            .task(id: width) {
+                guard !shown else { return }
+                let window = NSApp.keyWindow?.contentLayoutRect.width ?? 0
+                guard width > 0, width >= window - 2 else {
+                    // Never leave a page hidden: give up waiting after a short while.
+                    try? await Task.sleep(for: .milliseconds(400))
+                    guard !Task.isCancelled else { return }
+                    withAnimation(.easeOut(duration: 0.3)) { shown = true }
+                    return
+                }
+                try? await Task.sleep(for: .milliseconds(40))
+                guard !Task.isCancelled else { return }
+                withAnimation(.easeOut(duration: 0.3)) { shown = true }
+            }
+        #else
+        content
+        #endif
+    }
+}
+
 private struct PushedPage: ViewModifier {
     #if os(macOS)
     @Environment(\.dismiss) private var dismiss
@@ -62,6 +103,8 @@ private struct PushedPage: ViewModifier {
     func body(content: Content) -> some View {
         #if os(macOS)
         content
+            // The floating back button replaces the toolbar's, which would bring a toolbar back.
+            .navigationBarBackButtonHidden(true)
             .onAppear { navigator?.appeared(id, back: dismiss) }
             .onDisappear { navigator?.disappeared(id) }
         #else

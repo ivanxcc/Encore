@@ -7,6 +7,15 @@ final class DetailModel: ObservableObject {
     @Published var extras: TitleExtras?
     @Published var failed = false
     @Published var season: Int = 1
+    /// Exact episode lengths for the season on screen (TMDB), by episode number.
+    @Published var runtimes: [Int: TimeInterval] = [:]
+
+    func loadRuntimes(app: AppModel) async {
+        guard let id = extras?.tmdbId else { return }
+        let wanted = season
+        let found = await app.episodeRuntimes(tmdbID: id, season: wanted)
+        if wanted == season { runtimes = found }
+    }
 
     func load(_ preview: MetaPreview, app: AppModel) async {
         guard meta?.id != preview.id else { return }
@@ -76,7 +85,7 @@ struct DetailView: View {
                     header(libraryItem, width: screen.size.width)
                         .frame(height: screen.size.height * headerRatio, alignment: isCompact ? .bottom : .bottomLeading)
                     if let meta = model.meta, meta.type == "series" || !meta.seasons.isEmpty {
-                        EpisodesSection(meta: meta, season: $model.season, libraryItem: libraryItem,
+                        EpisodesSection(meta: meta, season: $model.season, libraryItem: libraryItem, runtimes: model.runtimes,
                                         play: { play($0, fromBeginning: false) },
                                         playFromBeginning: { play($0, fromBeginning: true) },
                                         chooseSource: { sourcesFor = SourcesTarget(video: $0) },
@@ -103,8 +112,10 @@ struct DetailView: View {
         .ignoresSafeArea(edges: .top)
         #endif
         .encoreCanvas()
+        .revealWhenLaidOut()
         .defaultFocus($focus, .play)
         .task(id: preview.id) { await model.load(preview, app: app) }
+        .task(id: "\(model.season)|\(model.extras?.tmdbId ?? 0)") { await model.loadRuntimes(app: app) }
         .navigationDestination(item: $episodeDetails) { video in
             if let meta = model.meta { EpisodeDetailView(meta: meta, video: video).pushedPage() }
         }
@@ -229,7 +240,11 @@ struct DetailView: View {
         let year: String? = meta?.releaseInfo ?? preview.releaseInfo
         let genres: [String]? = meta?.genres ?? preview.genres
         let genreText: String? = genres.map { $0.prefix(2).joined(separator: ", ") }
-        return [year, meta?.runtime, genreText, model.extras?.certification]
+        // A movie's exact length from TMDB reads better than an add-on's rounded "120 min".
+        let exact = model.extras?.runtime.map { minutes in
+            minutes < 60 ? "\(minutes) min" : minutes % 60 == 0 ? "\(minutes / 60) hr" : "\(minutes / 60) hr \(minutes % 60) min"
+        }
+        return [year, exact ?? meta?.runtime, genreText, model.extras?.certification]
     }
 
     /// Ratings lifted out of the add-on's synopsis text, and the synopsis without them.
@@ -361,6 +376,7 @@ private struct EpisodesSection: View {
     let meta: MetaDetail
     @Binding var season: Int
     let libraryItem: StremioLibraryItem?
+    var runtimes: [Int: TimeInterval] = [:]
     let play: (Video) -> Void
     let playFromBeginning: (Video) -> Void
     let chooseSource: (Video) -> Void
@@ -402,6 +418,7 @@ private struct EpisodesSection: View {
                     LazyHStack(alignment: .top, spacing: Theme.Metrics.itemSpacing) {
                         ForEach(episodes) { video in
                             EpisodeCard(meta: meta, video: video, progress: progress(video), remaining: remaining(video),
+                                        runtime: video.episode.flatMap { runtimes[$0] },
                                         watched: isWatched(video),
                                         play: { play(video) }) {
                                 Button { play(video) } label: {
@@ -468,6 +485,8 @@ private struct EpisodeCard<Menu: View>: View {
     let video: Video
     let progress: Double?
     var remaining: TimeInterval?
+    /// The episode's exact length when TMDB knows it; else the show's typical one.
+    var runtime: TimeInterval?
     var watched = false
     let play: () -> Void
     @ViewBuilder let menu: () -> Menu
@@ -482,7 +501,7 @@ private struct EpisodeCard<Menu: View>: View {
                     // left while in progress.
                     .overlay(alignment: .bottomLeading) {
                         if !isUpcoming { EpisodeStatus(watched: watched, progress: progress, remaining: remaining,
-                                                       runtime: Self.runtime(meta.runtime)) }
+                                                       runtime: runtime ?? Self.runtime(meta.runtime)) }
                     }
                     .overlay {
                         if isUpcoming {

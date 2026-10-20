@@ -86,6 +86,7 @@ struct EpisodeDetailView: View {
         .ignoresSafeArea(edges: .top)
         #endif
         .encoreCanvas()
+        .revealWhenLaidOut()
         .defaultFocus($focus, .play)
         .sheet(isPresented: $showSources) {
             SourcesView(meta: meta.preview, video: video) { ranked in
