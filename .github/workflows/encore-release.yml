@@ -30,6 +30,7 @@ on:
 
 permissions:
   contents: write
+  pull-requests: read   # the merged pull request's summary becomes the release notes
 
 concurrency:
   group: encore-release
@@ -179,7 +180,7 @@ jobs:
           merge-multiple: true
       - name: Write manifests
         run: |
-          git log -1 --pretty=%B "$GITHUB_SHA" | head -40 > notes.txt
+          .github/scripts/release-notes.sh "$GITHUB_SHA" > notes.txt
           .github/scripts/write-manifests.sh dist "$TAG" "$VERSION" "$BUILD" "$CHANNEL" notes.txt
       - name: Publish ${{ needs.version.outputs.channel }} release
         run: |

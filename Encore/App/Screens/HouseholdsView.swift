@@ -58,7 +58,7 @@ struct HouseholdsView: View {
             Section {
                 Button { creating = true } label: { Label("Add Household", systemImage: "plus") }
                 if app.cloud != nil {
-                    NavigationLink { RedeemShareView() } label: {
+                    NavigationLink { RedeemShareView().pushedPage() } label: {
                         Label("Add a Shared Household", systemImage: "person.2.badge.key.fill")
                     }
                 }
@@ -68,7 +68,7 @@ struct HouseholdsView: View {
                 }
             }
         }
-        .navigationTitle("Households")
+        .pageTitle("Households")
         .task { await app.syncCloud() }
         .sheet(isPresented: $creating) {
             HouseholdEditor(title: "New Household", name: "", symbol: "house.fill") { name, symbol in
@@ -147,7 +147,7 @@ struct ProfilesView: View {
                 } label: { Label("Add Profile", systemImage: "plus") }
             }
         }
-        .navigationTitle("Profiles")
+        .pageTitle("Profiles")
         .sheet(item: $editing) { profile in
             ProfileEditor(profile: profile, isNew: !app.profiles.contains { $0.id == profile.id })
         }

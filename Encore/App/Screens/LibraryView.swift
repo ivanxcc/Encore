@@ -27,7 +27,7 @@ struct LibraryView: View {
             .padding(.vertical, 24)
         }
         .scrollClipDisabled()
-        .navigationTitle("Library")
+        .pageTitle("Library")
     }
 
     @ViewBuilder

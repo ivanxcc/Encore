@@ -3,10 +3,18 @@ import EncoreKit
 
 /// Search across every add-on catalog that supports it, debounced as you type.
 struct SearchView: View {
+    /// The Mac's floating search field drives this page; elsewhere the page has its own search field.
+    var externalQuery: Binding<String>?
     @EnvironmentObject private var app: AppModel
-    @State private var query = ""
+    @State private var ownQuery = ""
     @State private var results: [(CatalogRef, [MetaPreview])] = []
     @State private var searching = false
+
+    init(query: Binding<String>? = nil) {
+        externalQuery = query
+    }
+
+    private var query: String { externalQuery?.wrappedValue ?? ownQuery }
 
     var body: some View {
         ScrollView(.vertical, showsIndicators: false) {
@@ -29,7 +37,7 @@ struct SearchView: View {
             .padding(.vertical, 24)
         }
         .scrollClipDisabled()
-        .searchable(text: $query, prompt: "Movies, Shows, and More")
+        .modifier(OwnSearchField(enabled: externalQuery == nil, text: $ownQuery))
         .task(id: query) {
             let trimmed = query.trimmingCharacters(in: .whitespaces)
             guard trimmed.count >= 2 else { results = []; return }
@@ -43,7 +51,7 @@ struct SearchView: View {
         }
         #if !os(tvOS)
         // tvOS draws its own search field and keyboard at the top; a title there sits under the letters.
-        .navigationTitle("Search")
+        .pageTitle("Search")
         #endif
     }
 
@@ -54,5 +62,19 @@ struct SearchView: View {
         #else
         return true
         #endif
+    }
+}
+
+/// The system search field, for every platform but the Mac (which has a floating one).
+private struct OwnSearchField: ViewModifier {
+    let enabled: Bool
+    @Binding var text: String
+
+    func body(content: Content) -> some View {
+        if enabled {
+            content.searchable(text: $text, prompt: "Movies, Shows, and More")
+        } else {
+            content
+        }
     }
 }

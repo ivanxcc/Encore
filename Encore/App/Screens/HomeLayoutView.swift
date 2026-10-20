@@ -48,7 +48,7 @@ struct HomeLayoutView: View {
                 }
             }
         }
-        .navigationTitle("Home Screen")
+        .pageTitle("Home Screen")
         #if os(iOS)
         .environment(\.editMode, .constant(.active))
         #endif
