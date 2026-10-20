@@ -1,5 +1,8 @@
 import SwiftUI
 import Combine
+#if canImport(UIKit)
+import UIKit
+#endif
 import EncoreKit
 
 /// Runs one playback: resolve sources, walk the bounded `PlaybackPlan`, report progress, and offer the
@@ -90,6 +93,7 @@ final class PlayerSession: ObservableObject {
         mpv = nil
         pauseObservation = nil
         NowPlayingController.shared.end()
+        keepScreenAwake(false)
         app?.pushNow()
     }
 
@@ -161,6 +165,7 @@ final class PlayerSession: ObservableObject {
             pauseObservation = engine.$isPaused.dropFirst().sink { [weak self] paused in
                 guard let self, self.engineKind == .mpv else { return }
                 NowPlayingController.shared.update(position: self.position, duration: self.duration, paused: paused)
+                self.keepScreenAwake(!paused)
             }
             return engine
         }
@@ -183,6 +188,7 @@ final class PlayerSession: ObservableObject {
             loadSkipSegments()
             // The system player publishes Now Playing itself; libmpv needs us to.
             if engineKind == .mpv, let mpv { NowPlayingController.shared.begin(session: self, engine: mpv) }
+            keepScreenAwake(true)
         case let .progress(position, duration):
             self.position = position
             if duration > 0 {
@@ -210,6 +216,17 @@ final class PlayerSession: ObservableObject {
         case .failed:
             advance()
         }
+    }
+
+    // MARK: Screen
+
+    /// The screensaver (Apple TV) and auto-lock (iPhone, iPad) must not start while a video plays. The
+    /// system player handles this for itself; libmpv draws with Metal, so the app has to say so, as VLC
+    /// and Infuse do. Paused, the screensaver may come back.
+    private func keepScreenAwake(_ awake: Bool) {
+        #if os(iOS) || os(tvOS)
+        UIApplication.shared.isIdleTimerDisabled = awake
+        #endif
     }
 
     // MARK: Skip Intro / Next Episode

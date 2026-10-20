@@ -253,3 +253,28 @@ test("trending keeps titles with an IMDb id and artwork", async () => {
     logo: null, overview: null, year: "2024", genres: ["Sci-Fi"], rating: 8.2,
   }]);
 });
+
+test("skip markers are fetched from TheIntroDB, falling back across API versions, and cached", async () => {
+  const w = makeWorld();
+  const store = new Map();
+  w.deps.cache = {
+    async match(req) { const hit = store.get(req.url); return hit ? new Response(hit) : undefined; },
+    async put(req, res) { store.set(req.url, await res.text()); },
+  };
+  const calls = [];
+  w.deps.fetchTMDB = async (url) => {
+    calls.push(url);
+    if (url.includes("/v3/")) return new Response("<html>blocked</html>", { status: 403 });
+    return new Response(JSON.stringify({ intro: [{ start_ms: 0, end_ms: 30000 }] }));
+  };
+  const res = await w.call("GET", "/v1/skip?imdb=tt1442437&season=1&episode=1&duration_ms=1300000");
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.body.intro, [{ start_ms: 0, end_ms: 30000 }]);
+  assert.ok(calls[1].includes("/v2/media?imdb_id=tt1442437&season=1&episode=1&duration_ms=1300000"));
+  const before = calls.length;
+  await w.call("GET", "/v1/skip?imdb=tt1442437&season=1&episode=1&duration_ms=1300000");
+  assert.equal(calls.length, before, "cached");
+  const probe = await w.call("GET", "/v1/skip?imdb=tt1442437&season=1&episode=1&probe=1");
+  assert.equal(probe.body.attempts.length, 3);
+  assert.equal(probe.body.attempts[0].status, 403);
+});
