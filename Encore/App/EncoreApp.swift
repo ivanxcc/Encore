@@ -15,6 +15,7 @@ struct EncoreApp: App {
             RootView()
                 .environmentObject(app)
                 .environmentObject(playback)
+                .onOpenURL { app.handle($0) }   // encore://pair?code=… from a TV's QR code
                 .onChange(of: scenePhase) { _, phase in
                     // Leaving the foreground is the last reliable moment to save progress to the account.
                     if phase == .background { app.pushNow() }

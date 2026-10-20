@@ -278,3 +278,13 @@ test("skip markers are fetched from TheIntroDB, falling back across API versions
   assert.equal(probe.body.attempts.length, 3);
   assert.equal(probe.body.attempts[0].status, 403);
 });
+
+test("a TV's QR code opens a page that hands the code to the Encore app", async () => {
+  const w = makeWorld();
+  const response = await handle(new Request("https://cloud.test/pair/ABCD-EFGH"), w.env, w.deps);
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("content-type"), /text\/html/);
+  const html = await response.text();
+  assert.ok(html.includes('href="encore://pair?code=ABCDEFGH"'));
+  assert.ok(html.includes("ABCD-EFGH"));
+});

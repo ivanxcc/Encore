@@ -30,6 +30,13 @@ struct RootView: View {
             }
         }
         .animation(Theme.Motion.content, value: app.activeProfile?.id)
+        #if !os(tvOS)
+        // A TV's QR code, scanned with this phone, lands here: choose the account and approve.
+        .sheet(item: $app.pendingPair) { request in
+            NavigationStack { ApproveDeviceView(initialCode: request.code) }
+                .environmentObject(app)
+        }
+        #endif
         .encoreCanvas()
         .playerPresentation(playback)
         #if os(macOS)

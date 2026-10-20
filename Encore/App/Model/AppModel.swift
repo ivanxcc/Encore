@@ -275,10 +275,48 @@ final class AppModel: ObservableObject {
 
     /// A phone or Mac approves the code an Apple TV is showing; the TV signs in as this household.
     func approveTV(code: String) async throws {
+        guard let account = homeHousehold ?? signInAccounts.first else { throw CloudActionError.signInFirst }
+        try await approveDevice(code: code, as: account)
+    }
+
+    /// Households on this device that can sign another device in (signed in to their own Stremio
+    /// account), the home household first.
+    var signInAccounts: [Household] {
+        let home = homeHousehold?.id
+        return households
+            .filter { HouseholdSession(scope: directory.scope(for: $0)).isSignedIn }
+            .sorted { ($0.id == home ? 0 : 1, $0.createdAt) < ($1.id == home ? 0 : 1, $1.createdAt) }
+    }
+
+    func accountEmail(of target: Household) -> String? {
+        directory.settings(for: target)?.accountEmail
+    }
+
+    /// Approve a TV's (or Mac's) sign-in code as one of this device's accounts. Always an explicit
+    /// choice, defaulting to the home household: approving with whichever household happened to be open
+    /// signed TVs in to the wrong account.
+    func approveDevice(code: String, as account: Household) async throws {
         guard let cloud else { throw CloudActionError.unavailable }
-        guard let key = session.cloudAuthKey else { throw CloudActionError.signInFirst }
-        await syncCloud()   // so the TV finds the household's latest profiles waiting
+        let target = account.id == household.id ? session : HouseholdSession(scope: directory.scope(for: account))
+        guard let key = target.cloudAuthKey else { throw CloudActionError.signInFirst }
+        if account.id == household.id { await syncCloud() }   // the TV finds the latest profiles waiting
         try await cloud.approvePairing(code: code, authKey: key)
+    }
+
+    // MARK: Deep links
+
+    struct PairRequest: Identifiable, Equatable { let code: String; var id: String { code } }
+
+    /// A TV's QR code was scanned on this phone: ask which account to sign it in to.
+    @Published var pendingPair: PairRequest?
+
+    /// `encore://pair?code=ABCDEFGH` (from the QR code's landing page).
+    func handle(_ url: URL) {
+        guard url.scheme == "encore", url.host == "pair",
+              let code = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+                .queryItems?.first(where: { $0.name == "code" })?.value,
+              code.count >= 8 else { return }
+        pendingPair = PairRequest(code: code)
     }
 
     /// Any signed-in household's session, to authenticate requests that aren't about a household.

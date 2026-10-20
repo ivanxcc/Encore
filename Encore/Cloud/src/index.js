@@ -47,6 +47,9 @@ export async function handle(request, env, deps) {
   const route = `${request.method} ${url.pathname}`;
   try {
     await env.DB.prepare("DELETE FROM codes WHERE expires_at < ?").bind(deps.now()).run();
+    // The page a TV's QR code opens on the phone: it hands the code to the Encore app.
+    const pairPage = url.pathname.match(/^\/pair\/([A-Za-z0-9-]{8,9})$/);
+    if (request.method === "GET" && pairPage) return pairLanding(normalizeCode(pairPage[1]));
     switch (route) {
       case "GET /":
       case "GET /v1/health":
@@ -245,4 +248,34 @@ function formatCode(code) { return code.slice(0, 4) + "-" + code.slice(4); }
 export function normalizeCode(raw) {
   // "abcd efgh", "ABCD-EFGH" and "abcdefgh" are the same code.
   return String(raw || "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 8);
+}
+
+// MARK: QR sign-in landing page
+
+/** Opens Encore with the code (encore://pair?code=…); if Encore is not installed, says how to finish. */
+export function pairLanding(code) {
+  const display = formatCode(code);
+  const deepLink = `encore://pair?code=${code}`;
+  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Sign in to Encore</title>
+<style>
+  :root{color-scheme:dark}
+  body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#000;color:#fff;
+       font:17px/1.45 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;text-align:center}
+  main{padding:32px 24px;max-width:420px}
+  h1{font-size:28px;margin:0 0 8px}
+  p{color:rgba(255,255,255,.7);margin:0 0 24px}
+  a.button{display:block;background:#fff;color:#000;text-decoration:none;font-weight:600;padding:16px;border-radius:999px;margin-bottom:24px}
+  .code{font:700 34px/1 ui-monospace,"SF Mono",monospace;letter-spacing:.12em;padding:18px;border-radius:18px;background:rgba(255,255,255,.1)}
+  small{display:block;margin-top:16px;color:rgba(255,255,255,.5)}
+</style></head><body><main>
+<h1>Sign in your TV</h1>
+<p>Open Encore on this iPhone to approve the sign-in.</p>
+<a class="button" href="${deepLink}">Open Encore</a>
+<div class="code">${display}</div>
+<small>Or in Encore, go to Settings › Encore Cloud › Sign In an Apple TV and enter this code. It expires in 15 minutes.</small>
+</main><script>setTimeout(function(){location.href=${JSON.stringify(deepLink)}},150)</script></body></html>`;
+  return new Response(html, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
 }
