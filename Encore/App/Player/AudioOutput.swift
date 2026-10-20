@@ -29,11 +29,15 @@ enum AudioSessionConfigurator {
     static func configureForPlayback() -> Int {
         #if os(iOS) || os(tvOS)
         let session = AVAudioSession.sharedInstance()
+        let mode: AVAudioSession.Mode = AudioOutputMode.current == .stereo ? .default : .moviePlayback
         #if os(iOS)
-        try? session.setCategory(.playback, mode: .moviePlayback, policy: .longFormVideo)
+        try? session.setCategory(.playback, mode: mode, policy: .longFormVideo)
         #else
-        try? session.setCategory(.playback, mode: .moviePlayback)
+        try? session.setCategory(.playback, mode: mode, options: [])
         #endif
+        // HDMI / eARC links run at 48 kHz: ask for it before activating so film audio is not resampled
+        // to 44.1 kHz, then pin whatever rate the route actually opened at.
+        try? session.setPreferredSampleRate(48_000)
         guard AudioOutputMode.current != .stereo else {
             try? session.setPreferredOutputNumberOfChannels(2)
             try? session.setActive(true)
@@ -43,6 +47,7 @@ enum AudioSessionConfigurator {
         let maximum = min(max(session.maximumOutputNumberOfChannels, 2), 8)
         try? session.setPreferredOutputNumberOfChannels(maximum)
         try? session.setActive(true)
+        if session.sampleRate >= 8000 { try? session.setPreferredSampleRate(session.sampleRate) }
         return max(session.outputNumberOfChannels, 2)
         #else
         return 8   // macOS: CoreAudio follows the output device's own channel layout

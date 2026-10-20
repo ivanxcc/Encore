@@ -181,11 +181,15 @@ final class MPVEngine: ObservableObject, PlayerEngine {
         return CGSize(width: (largest.width * scale).rounded(), height: (largest.height * scale).rounded())
     }
 
+    /// iOS / tvOS: mpv's AVFoundation output first (AVSampleBufferAudioRenderer, which MPVKit builds
+    /// for both), the AudioUnit one as the fallback. Audio rendered through AVFoundation is what the
+    /// system recognizes as media playback: with the raw AudioUnit output tvOS showed no Now Playing at
+    /// all. This is the configuration VortX settled on for the same problem.
     private static var audioOutputDriver: String {
         #if os(macOS)
         return "coreaudio"
         #else
-        return "audiounit"
+        return "avfoundation,audiounit"
         #endif
     }
 

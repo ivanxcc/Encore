@@ -25,10 +25,9 @@ final class NativeEngine: PlayerEngine {
     /// The show's name under an episode title.
     var subtitle: String?
 
-    #if os(iOS) || os(tvOS)
-    /// Publishes this player to the Lock Screen, Control Center, and the TV's Now Playing, and routes
-    /// their commands to it. More dependable than the player view's automatic publishing, which a
-    /// SwiftUI-hosted player view does not always do.
+    #if os(iOS)
+    /// Publishes this player to the Lock Screen and Control Center, and routes their commands to it. On
+    /// Apple TV the system player view does this itself, and a second publisher would compete with it.
     private lazy var nowPlayingSession: MPNowPlayingSession = {
         let session = MPNowPlayingSession(players: [player])
         session.automaticallyPublishesNowPlayingInfo = true
@@ -131,7 +130,7 @@ final class NativeEngine: PlayerEngine {
         ]
         player.replaceCurrentItem(with: item)
         player.play()
-        #if os(iOS) || os(tvOS)
+        #if os(iOS)
         nowPlayingSession.becomeActiveIfPossible { _ in }
         #endif
     }
