@@ -101,6 +101,11 @@ jobs:
             else
               echo "::notice::No TMDB_API_KEY secret: cast photos, 4K artwork, trailers, and trending are off."
             fi
+            # Skip markers: what TheIntroDB answers the Worker (Breaking Bad S2E3 has an intro and credits).
+            for q in "tt0903747&season=2&episode=3"; do
+              curl -sS "$url/v1/skip?imdb=$q&probe=1" \
+                | jq -r '.attempts[0] | "::notice title=TheIntroDB \(.status // "error")::\(.url | sub(".*imdb_id="; "")) \(.body // .error | tostring | gsub("[\\r\\n]"; " ") | .[0:400])"' || true
+            done
             {
               echo "### Encore Cloud is live"
               echo ""

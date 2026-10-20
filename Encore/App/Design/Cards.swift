@@ -75,6 +75,7 @@ struct LandscapeCard: View {
 
 struct ProgressBar: View {
     let value: Double
+    var height: CGFloat = 5
 
     var body: some View {
         GeometryReader { proxy in
@@ -83,7 +84,7 @@ struct ProgressBar: View {
                     Capsule().fill(Color.white).frame(width: proxy.size.width * min(1, max(0, value)))
                 }
         }
-        .frame(height: 5)
+        .frame(height: height)
         .shadow(color: .black.opacity(0.4), radius: 4)
     }
 }

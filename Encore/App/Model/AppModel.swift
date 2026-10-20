@@ -37,9 +37,13 @@ final class AppModel: ObservableObject {
         self.households = registry.households
         reloadProfiles()
         // One profile and no PIN: go straight in. Otherwise the launch picker asks who is watching.
-        if profiles.count == 1, !profiles[0].hasPin { activeProfile = profiles[0] }
+        if profiles.count == 1, !profiles[0].hasPin { activeProfile = profiles[0]; profileWasAutoPicked = true }
         Task { await refresh() }
     }
+
+    /// The only profile was chosen automatically (nobody was asked). If syncing then brings the
+    /// household's other profiles, "Who's watching?" appears so they can be chosen.
+    private var profileWasAutoPicked = false
 
     // MARK: Households
 
@@ -54,7 +58,8 @@ final class AppModel: ObservableObject {
             settings = next.settings
             activeProfile = nil
             reloadProfiles()
-            if profiles.count == 1, !profiles[0].hasPin { activeProfile = profiles[0] }
+            profileWasAutoPicked = false
+            if profiles.count == 1, !profiles[0].hasPin { activeProfile = profiles[0]; profileWasAutoPicked = true }
             households = directory.registry().households
             libraryRevision += 1
         }
@@ -177,6 +182,7 @@ final class AppModel: ObservableObject {
             if session.isSignedIn,
                let outcome = try await CloudSync(client: cloud).sync(session, name: household.name, symbol: household.symbol),
                session === self.session {
+                let profilesBefore = profiles.count
                 if outcome.name != household.name || outcome.symbol != household.symbol {
                     directory.rename(household.id, to: outcome.name, symbol: outcome.symbol)
                     households = directory.registry().households
@@ -185,6 +191,12 @@ final class AppModel: ObservableObject {
                 reloadProfiles()
                 settings = session.settings
                 libraryRevision += 1
+                // A new device that went straight into its only profile now has the household's others:
+                // ask who is watching, as the Apple TV app does after signing in.
+                if profileWasAutoPicked, profilesBefore <= 1, profiles.count > 1 {
+                    profileWasAutoPicked = false
+                    withAnimation(Theme.Motion.content) { activeProfile = nil }
+                }
             }
             // 2. The list of households: the ones your home account manages appear on every device.
             let directoryOutcome = try await DirectorySync(client: cloud).sync(directory, activeID: household.id)

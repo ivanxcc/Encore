@@ -20,6 +20,7 @@
 //   GET    /v1/trending                       -> this week's trending titles (TMDB)
 
 import { tmdbRoute } from "./tmdb.js";
+import { skipRoute } from "./skip.js";
 
 const STREMIO_API = "https://api.strem.io/api/";
 const SESSION_TTL = 6 * 60 * 60;         // seconds a verified Stremio session is trusted without re-checking
@@ -54,6 +55,10 @@ export async function handle(request, env, deps) {
         return pairStart(env, deps);
       case "GET /v1/pair/poll":
         return pairPoll(env, deps, url.searchParams.get("token"));
+      case "GET /v1/skip": {
+        const result = await skipRoute(url, deps);
+        return json(result.body, result.status, result.status === 200 ? 3600 : 0);
+      }
       case "GET /v1/title":
       case "GET /v1/trending": {
         const result = await tmdbRoute(route, url, env, deps);
