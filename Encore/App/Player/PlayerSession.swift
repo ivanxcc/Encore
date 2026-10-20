@@ -237,8 +237,9 @@ final class PlayerSession: ObservableObject {
         segmentsTask?.cancel()
         let metaID = meta.id, season = video?.season, episode = video?.episode, length = duration
         let videoID = video?.id
+        let proxy = app?.cloud?.base
         segmentsTask = Task { [weak self] in
-            var found = await SkipSegmentService().segments(metaID: metaID, season: season, episode: episode, duration: length)
+            var found = await SkipSegmentService(proxy: proxy).segments(metaID: metaID, season: season, episode: episode, duration: length)
             if found.isEmpty, let chapters = self?.mpv?.chapters(), !chapters.isEmpty {
                 found = SkipSegmentService.fromChapters(chapters, duration: length)
             }

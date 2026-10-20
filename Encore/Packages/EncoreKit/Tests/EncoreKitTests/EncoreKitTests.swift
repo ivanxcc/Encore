@@ -635,3 +635,22 @@ final class HomeLayoutTests: XCTestCase {
         XCTAssertEqual(back.homeLayout, layout)
     }
 }
+
+final class IntroDBLiveShapeTests: XCTestCase {
+    /// Real answers from TheIntroDB (captured through Encore Cloud).
+    func testRealResponses() throws {
+        func parse(_ json: String, _ duration: TimeInterval) throws -> [SkipSegment] {
+            SkipSegmentService.segments(from: try JSONDecoder().decode(SkipSegmentService.IntroDBResponse.self, from: Data(json.utf8)), duration: duration)
+        }
+        // Modern Family S1E1: only a bogus "credits from 0:00" entry -> nothing.
+        XCTAssertEqual(try parse(#"{"tmdb_id":1421,"type":"tv","season":1,"episode":1,"credits":[{"start_ms":0,"end_ms":null}]}"#, 1300), [])
+        // Modern Family S5E10: a real intro survives, the bogus credits do not.
+        XCTAssertEqual(try parse(#"{"intro":[{"start_ms":100400,"end_ms":112800}],"credits":[{"start_ms":0,"end_ms":null}]}"#, 1290),
+                       [SkipSegment(kind: .intro, start: 100.4, end: 112.8)])
+        // Breaking Bad S2E3: intro, and credits running to the end.
+        XCTAssertEqual(try parse(#"{"intro":[{"start_ms":216218,"end_ms":233207}],"credits":[{"start_ms":2769000,"end_ms":null}]}"#, 2820),
+                       [SkipSegment(kind: .intro, start: 216.218, end: 233.207), SkipSegment(kind: .credits, start: 2769, end: 2820)])
+        // No submissions.
+        XCTAssertEqual(try parse(#"{"error":"no submissions for this media","code":"no_submissions"}"#, 1300), [])
+    }
+}

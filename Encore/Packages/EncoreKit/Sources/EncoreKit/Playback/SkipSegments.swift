@@ -36,8 +36,11 @@ public struct SkipSegment: Hashable, Sendable {
 /// no markers simply means no button.
 public struct SkipSegmentService: Sendable {
     public let http: HTTPClient
+    /// Encore Cloud, which asks TheIntroDB on the app's behalf: its bot protection can turn away a TV or
+    /// a phone, but not a request from Cloudflare's own network.
+    public let proxy: URL?
 
-    public init(http: HTTPClient = HTTPClient()) { self.http = http }
+    public init(http: HTTPClient = HTTPClient(), proxy: URL? = nil) { self.http = http; self.proxy = proxy }
 
     /// - Parameters:
     ///   - metaID: the title id (`tt…`, `kitsu:…`, `mal:…`).
@@ -107,16 +110,27 @@ public struct SkipSegmentService: Sendable {
     }
 
     func theIntroDB(imdbID: String, season: Int?, episode: Int?, duration: TimeInterval) async -> [SkipSegment] {
-        var components = URLComponents(string: "https://api.theintrodb.org/v3/media")!
-        var items = [URLQueryItem(name: "imdb_id", value: imdbID)]
+        var items: [URLQueryItem] = []
         if let season, let episode {
             items += [URLQueryItem(name: "season", value: String(season)), URLQueryItem(name: "episode", value: String(episode))]
         }
         if duration > 0 { items.append(URLQueryItem(name: "duration_ms", value: String(Int(duration * 1000)))) }
-        components.queryItems = items
-        guard let url = components.url,
-              let response = try? await http.get(url, as: IntroDBResponse.self, timeout: 6) else { return [] }
-        return Self.segments(from: response, duration: duration)
+
+        var urls: [URL] = []
+        if let proxy, var viaCloud = URLComponents(url: proxy.appendingPathComponent("v1/skip"), resolvingAgainstBaseURL: false) {
+            viaCloud.queryItems = [URLQueryItem(name: "imdb", value: imdbID)] + items
+            if let url = viaCloud.url { urls.append(url) }
+        }
+        var direct = URLComponents(string: "https://api.theintrodb.org/v3/media")!
+        direct.queryItems = [URLQueryItem(name: "imdb_id", value: imdbID)] + items
+        if let url = direct.url { urls.append(url) }
+
+        for url in urls {
+            if let response = try? await http.get(url, as: IntroDBResponse.self, timeout: 6) {
+                return Self.segments(from: response, duration: duration)
+            }
+        }
+        return []
     }
 
     static func segments(from response: IntroDBResponse, duration: TimeInterval) -> [SkipSegment] {

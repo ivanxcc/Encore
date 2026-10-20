@@ -151,19 +151,19 @@ struct MPVControls: View {
             CloseButton(action: close)
             #endif
             VStack(alignment: .leading, spacing: 4) {
-                Text(session.meta.name).font(Theme.Fonts.cardTitle.weight(.semibold))
+                Text(session.meta.name).font(PlayerType.title)
                 if let episode = session.video?.episodeLabel {
                     Text([episode, session.episodeTitle].compactMap { $0 }.joined(separator: " · "))
-                        .font(Theme.Fonts.cardSubtitle).foregroundStyle(Theme.Colors.secondary)
+                        .font(PlayerType.subtitle).foregroundStyle(Theme.Colors.secondary)
                 }
                 // Infuse-style truth panel: what is actually being decoded and sent to the TV/receiver.
                 if !engine.info.videoLine.isEmpty {
                     Label(engine.info.videoLine, systemImage: "film")
-                        .font(Theme.Fonts.cardSubtitle).foregroundStyle(Theme.Colors.tertiary)
+                        .font(PlayerType.info).foregroundStyle(Theme.Colors.tertiary)
                 }
                 if !engine.info.audioLine.isEmpty {
                     Label(engine.info.audioLine, systemImage: "speaker.wave.3")
-                        .font(Theme.Fonts.cardSubtitle).foregroundStyle(Theme.Colors.tertiary)
+                        .font(PlayerType.info).foregroundStyle(Theme.Colors.tertiary)
                 }
             }
             Spacer()
@@ -247,8 +247,7 @@ struct MPVControls: View {
     private var bottomBar: some View {
         VStack(spacing: 10) {
             #if os(tvOS)
-            ProgressBar(value: session.duration > 0 ? session.position / session.duration : 0)
-                .frame(height: 8)
+            ProgressBar(value: session.duration > 0 ? session.position / session.duration : 0, height: PlayerType.barHeight)
             #else
             Slider(value: Binding(get: { scrubPosition ?? session.position },
                                   set: { scrubPosition = $0 }),
@@ -265,7 +264,7 @@ struct MPVControls: View {
                 Spacer()
                 Text("-" + Self.format(max(0, session.duration - (scrubPosition ?? session.position))))
             }
-            .font(Theme.Fonts.cardSubtitle.monospacedDigit())
+            .font(PlayerType.time)
             .foregroundStyle(Theme.Colors.secondary)
         }
     }
@@ -344,4 +343,23 @@ private struct TrackLabel: View {
     var body: some View {
         if selected { Label(title, systemImage: "checkmark") } else { Text(title) }
     }
+}
+
+/// Type and bar sizes for the player's own controls. Apple TV is read from across the room: its sizes
+/// match the system player's (tvOS points are resolution independent, so a 4K TV draws them sharper,
+/// not smaller).
+enum PlayerType {
+    #if os(tvOS)
+    static let title = Font.system(size: 42, weight: .bold)
+    static let subtitle = Font.system(size: 30, weight: .medium)
+    static let info = Font.system(size: 24, weight: .medium)
+    static let time = Font.system(size: 30, weight: .semibold).monospacedDigit()
+    static let barHeight: CGFloat = 14
+    #else
+    static let title = Theme.Fonts.cardTitle.weight(.semibold)
+    static let subtitle = Theme.Fonts.cardSubtitle
+    static let info = Theme.Fonts.cardSubtitle
+    static let time = Theme.Fonts.cardSubtitle.monospacedDigit()
+    static let barHeight: CGFloat = 5
+    #endif
 }

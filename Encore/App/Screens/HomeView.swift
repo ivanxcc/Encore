@@ -259,12 +259,14 @@ struct HeroCarousel: View {
         }
     }
 
-    /// The slideshow holds while the remote is on its buttons (tvOS) or the pointer rests on it (Mac).
+    /// The slideshow holds while the pointer rests on it (Mac). On Apple TV it keeps going even with the
+    /// remote on Watch Now, where focus lands at launch, as the Apple TV app's top shelf does; the
+    /// button simply follows the title on screen.
     private var isHeld: Bool {
         #if os(macOS)
-        return focus != nil || hovering
+        return hovering
         #else
-        return focus != nil
+        return false
         #endif
     }
 
@@ -423,8 +425,15 @@ struct HeroInfo: View {
     var body: some View {
         if compact {
             VStack(spacing: 14) {
-                TitleLogo(logo: item.logoURL, title: item.name, maxWidth: min(width * 0.72, 300), alignment: .bottom)
-                CenteredInfoLine(parts: compactMetaParts, ratings: item.ratingsAndSynopsis.ratings)
+                // Each title's logo and details fade in place; nothing slides between titles.
+                ZStack(alignment: .bottom) {
+                    VStack(spacing: 14) {
+                        TitleLogo(logo: item.logoURL, title: item.name, maxWidth: min(width * 0.72, 300), alignment: .bottom)
+                        CenteredInfoLine(parts: compactMetaParts, ratings: item.ratingsAndSynopsis.ratings)
+                    }
+                    .id(item.id)
+                    .transition(.opacity)
+                }
                 HStack(spacing: 14) {
                     watchButton.frame(maxWidth: min(width * 0.5, 240))
                     listButton
@@ -436,14 +445,22 @@ struct HeroInfo: View {
             .frame(maxWidth: .infinity)
         } else {
             VStack(alignment: .leading, spacing: 18) {
-                TitleLogo(logo: item.logoURL, title: item.name, maxWidth: min(logoWidth, width * 0.6))
-                MetaInfoLine(parts: metaParts, ratings: item.ratingsAndSynopsis.ratings)
-                if let description = item.ratingsAndSynopsis.description {
-                    Text(description)
-                        .font(Theme.Fonts.body)
-                        .foregroundStyle(Theme.Colors.secondary)
-                        .lineLimit(3)
-                        .frame(maxWidth: min(Theme.Metrics.landscapeWidth * 2.2, width * 0.6), alignment: .leading)
+                // The logo, details, and synopsis change as one block that fades in place, so nothing
+                // (the IMDb badge, the year) travels across the screen between titles.
+                ZStack(alignment: .bottomLeading) {
+                    VStack(alignment: .leading, spacing: 18) {
+                        TitleLogo(logo: item.logoURL, title: item.name, maxWidth: min(logoWidth, width * 0.6))
+                        MetaInfoLine(parts: metaParts, ratings: item.ratingsAndSynopsis.ratings)
+                        if let description = item.ratingsAndSynopsis.description {
+                            Text(description)
+                                .font(Theme.Fonts.body)
+                                .foregroundStyle(Theme.Colors.secondary)
+                                .lineLimit(3)
+                                .frame(maxWidth: min(Theme.Metrics.landscapeWidth * 2.2, width * 0.6), alignment: .leading)
+                        }
+                    }
+                    .id(item.id)
+                    .transition(.opacity)
                 }
                 HStack(spacing: 16) {
                     watchButton

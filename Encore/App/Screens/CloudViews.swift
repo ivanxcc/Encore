@@ -7,7 +7,25 @@ struct CloudSection: View {
     @EnvironmentObject private var app: AppModel
 
     var body: some View {
-        if app.cloud != nil, app.settings.accountEmail != nil {
+        if app.cloud == nil {
+            Section {
+                Label("Not included in this build", systemImage: "icloud.slash")
+                    .foregroundStyle(.secondary)
+            } header: {
+                Text("Encore Cloud")
+            } footer: {
+                Text("This copy of Encore was built without an Encore Cloud address, so profiles and households stay on this device. Install the latest build from the Releases page.")
+            }
+        } else if app.settings.accountEmail == nil {
+            Section {
+                Label("Sign in to sync", systemImage: "icloud")
+                    .foregroundStyle(.secondary)
+            } header: {
+                Text("Encore Cloud")
+            } footer: {
+                Text("Sign in to this household's Stremio account and its profiles, history, and your other households appear here.")
+            }
+        } else {
             Section {
                 LabeledContent {
                     status

@@ -88,7 +88,7 @@ struct PillButtonStyle: ButtonStyle {
             switch kind {
             case .primary: return PillBackground.primaryIsSolid ? .black : .white
             case .secondary, .icon: return .white
-            case let .tab(selected): return selected ? .white : .white.opacity(0.6)
+            case let .tab(selected): return selected ? (PillBackground.primaryIsSolid ? .black : .white) : .white.opacity(0.6)
             }
         }
 
@@ -136,7 +136,14 @@ private struct PillBackground: ViewModifier {
             case .secondary, .icon:
                 content.liquidGlass(in: Capsule())
             case let .tab(selected):
-                if selected { content.liquidGlass(in: Capsule()) } else { content }
+                // Without focus (iPhone, iPad, Mac) the chosen tab is the white one; on Apple TV white
+                // means focus, so there it is a quiet glass.
+                if selected {
+                    if Self.primaryIsSolid { content.background(Color.white.opacity(0.92), in: Capsule()) }
+                    else { content.liquidGlass(in: Capsule()) }
+                } else {
+                    content
+                }
             }
         }
     }

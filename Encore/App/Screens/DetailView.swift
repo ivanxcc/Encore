@@ -15,8 +15,14 @@ final class DetailModel: ObservableObject {
             let detail = try await app.session.addonService.meta(type: preview.type, id: preview.id, in: app.settings.addons)
             meta = detail
             // Open on the season of the episode in progress, else the first real season.
-            let progressSeason = app.libraryItem(preview.id)?.state.videoID
-                .flatMap { id in detail.videos.first { $0.id == id }?.season }
+            let videoID = app.libraryItem(preview.id)?.state.videoID
+            let progressSeason = videoID.flatMap { id in detail.videos.first { $0.id == id }?.season }
+                // Ids from another app may not match this add-on's exactly: "tt…:4:2" still says season 4.
+                ?? videoID.flatMap { id -> Int? in
+                    let parts = id.split(separator: ":")
+                    guard parts.count == 3, let number = Int(parts[1]), detail.seasons.contains(number) else { return nil }
+                    return number
+                }
             season = progressSeason ?? detail.seasons.first(where: { $0 > 0 }) ?? detail.seasons.first ?? 1
         } catch {
             failed = true
@@ -354,20 +360,26 @@ private struct EpisodesSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             if meta.seasons.count > 1 {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 10) {
-                        ForEach(meta.seasons, id: \.self) { number in
-                            Button(number == 0 ? "Specials" : "Season \(number)") {
-                                withAnimation(.easeInOut(duration: 0.35)) { season = number }
+                ScrollViewReader { tabs in
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 10) {
+                            ForEach(meta.seasons, id: \.self) { number in
+                                Button(number == 0 ? "Specials" : "Season \(number)") {
+                                    withAnimation(.easeInOut(duration: 0.35)) { season = number }
+                                }
+                                .pillButtonStyle(.tab(selected: number == season))
+                                .id(number)
                             }
-                            .pillButtonStyle(.tab(selected: number == season))
                         }
+                        .padding(.horizontal, Theme.Metrics.edge)
+                        .padding(.vertical, 12)
                     }
-                    .padding(.horizontal, Theme.Metrics.edge)
-                    .padding(.vertical, 12)
+                    .scrollClipDisabled()
+                    .tvFocusSection()
+                    // The season being watched is always in view, not hidden past the screen's edge.
+                    .onAppear { tabs.scrollTo(season, anchor: .center) }
+                    .onChange(of: season) { _, now in withAnimation(Theme.Motion.content) { tabs.scrollTo(now, anchor: .center) } }
                 }
-                .scrollClipDisabled()
-                .tvFocusSection()
             } else {
                 Text("Episodes").font(Theme.Fonts.shelfTitle).padding(.horizontal, Theme.Metrics.edge)
             }
