@@ -9,21 +9,21 @@ struct SettingsView: View {
     var body: some View {
         Form {
             Section {
-                NavigationLink { HouseholdsView() } label: {
+                NavigationLink { HouseholdsView().pushedPage() } label: {
                     LabeledContent {
                         Text(app.household.name)
                     } label: {
                         Label("Household", systemImage: app.household.symbol)
                     }
                 }
-                NavigationLink { ProfilesView() } label: {
+                NavigationLink { ProfilesView().pushedPage() } label: {
                     LabeledContent {
                         Text(app.activeProfile?.name ?? "")
                     } label: {
                         Label("Profiles", systemImage: "person.2.fill")
                     }
                 }
-                NavigationLink { HomeLayoutView() } label: {
+                NavigationLink { HomeLayoutView().pushedPage() } label: {
                     Label("Home Screen", systemImage: "rectangle.grid.1x2")
                 }
                 Button {
@@ -43,7 +43,7 @@ struct SettingsView: View {
                     Button("Sync Now") { Task { await app.refresh() } }
                     Button("Sign Out", role: .destructive) { Task { await app.signOut() } }
                 } else {
-                    NavigationLink { SignInView() } label: {
+                    NavigationLink { SignInView().pushedPage() } label: {
                         Label(app.settings.ownerEmail.map { "Sign In as \($0)" } ?? "Sign In to Stremio",
                               systemImage: "person.crop.circle.badge.plus")
                     }
@@ -60,14 +60,14 @@ struct SettingsView: View {
             CloudSection()
 
             Section {
-                NavigationLink { AddonsView() } label: {
+                NavigationLink { AddonsView().pushedPage() } label: {
                     LabeledContent {
                         Text("\(app.settings.addons.count)")
                     } label: {
                         Label("Add-ons", systemImage: "puzzlepiece.extension.fill")
                     }
                 }
-                NavigationLink { StreamingServerView() } label: {
+                NavigationLink { StreamingServerView().pushedPage() } label: {
                     LabeledContent {
                         Text(app.settings.streamingServer?.host() ?? "Off")
                     } label: {
@@ -108,7 +108,7 @@ struct SettingsView: View {
                 #endif
             }
         }
-        .navigationTitle("Settings")
+        .pageTitle("Settings")
         #if os(macOS)
         .formStyle(.grouped)
         #endif
@@ -211,7 +211,7 @@ struct SignInView: View {
                 .disabled(email.isEmpty || password.isEmpty || working)
             }
         }
-        .navigationTitle("Sign In")
+        .pageTitle("Sign In")
         #if os(macOS)
         .formStyle(.grouped)
         #endif
@@ -276,7 +276,7 @@ struct AddonsView: View {
                 #endif
             }
         }
-        .navigationTitle("Add-ons")
+        .pageTitle("Add-ons")
         #if os(iOS)
         .toolbar { EditButton() }
         #endif
@@ -310,7 +310,7 @@ struct StreamingServerView: View {
                 Text("Run Stremio Service (or the Stremio desktop app) on a computer or NAS on your network and enter its address. Torrent sources play through it; debrid and direct links never need it.")
             }
         }
-        .navigationTitle("Streaming Server")
+        .pageTitle("Streaming Server")
         .onAppear { address = app.settings.streamingServer?.absoluteString ?? "" }
         #if os(macOS)
         .formStyle(.grouped)

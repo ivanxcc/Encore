@@ -37,6 +37,15 @@ final class DetailModel: ObservableObject {
 /// details over the same artwork, which softens and darkens behind them as they arrive.
 struct DetailView: View {
     let preview: MetaPreview
+    /// The artwork on screen as the page opened, when it was already decoded at full size (decided once).
+    private let heroBackdrop: URL?
+
+    init(preview: MetaPreview) {
+        self.preview = preview
+        heroBackdrop = preview.backdropURL.flatMap { url in
+            ImagePipeline.shared.cached(url, maxPixel: HeroArtwork.maxPixel) != nil ? url : nil
+        }
+    }
     @EnvironmentObject private var app: AppModel
     @EnvironmentObject private var playback: PlaybackCenter
     @StateObject private var model = DetailModel()
@@ -97,7 +106,7 @@ struct DetailView: View {
         .defaultFocus($focus, .play)
         .task(id: preview.id) { await model.load(preview, app: app) }
         .navigationDestination(item: $episodeDetails) { video in
-            if let meta = model.meta { EpisodeDetailView(meta: meta, video: video) }
+            if let meta = model.meta { EpisodeDetailView(meta: meta, video: video).pushedPage() }
         }
         #if os(iOS)
         .fullScreenCover(item: $trailerID) { TrailerView(videoID: $0.id, title: preview.name) }
@@ -115,10 +124,12 @@ struct DetailView: View {
 
     // MARK: Data
 
-    /// The sharpest artwork available: TMDB's original once it arrives, else what the shelf or hero
-    /// already showed (so the page opens on the exact image that was just on screen).
+    /// The page keeps the exact picture the Home hero was just showing when it is already decoded at
+    /// full size, so opening a title is one continuous image instead of one artwork replaced by another
+    /// a moment later. Otherwise the sharpest available: TMDB's original once it arrives.
     private var backdropURL: URL? {
-        model.extras?.backdrop ?? preview.backdropURL ?? model.meta?.backdropURL
+        if let heroBackdrop { return heroBackdrop }
+        return model.extras?.backdrop ?? preview.backdropURL ?? model.meta?.backdropURL
     }
 
     private var logoURL: URL? {
@@ -390,7 +401,8 @@ private struct EpisodesSection: View {
                 ScrollView(.horizontal, showsIndicators: false) {
                     LazyHStack(alignment: .top, spacing: Theme.Metrics.itemSpacing) {
                         ForEach(episodes) { video in
-                            EpisodeCard(meta: meta, video: video, progress: progress(video), watched: isWatched(video),
+                            EpisodeCard(meta: meta, video: video, progress: progress(video), remaining: remaining(video),
+                                        watched: isWatched(video),
                                         play: { play(video) }) {
                                 Button { play(video) } label: {
                                     Label(progress(video) != nil ? "Resume" : "Play", systemImage: "play.fill")
@@ -441,6 +453,12 @@ private struct EpisodesSection: View {
         guard let item = libraryItem, item.state.videoID == video.id, item.isInProgress else { return nil }
         return item.progress
     }
+
+    /// Time left in the episode in progress, from the saved position and the length the player saw.
+    private func remaining(_ video: Video) -> TimeInterval? {
+        guard let item = libraryItem, item.state.videoID == video.id, item.isInProgress, item.state.duration > 0 else { return nil }
+        return TimeInterval(item.state.duration - item.state.timeOffset) / 1000
+    }
 }
 
 /// An episode: its still, then "EPISODE 3", the title, and two lines of synopsis, as on Apple TV.
@@ -449,6 +467,7 @@ private struct EpisodeCard<Menu: View>: View {
     let meta: MetaDetail
     let video: Video
     let progress: Double?
+    var remaining: TimeInterval?
     var watched = false
     let play: () -> Void
     @ViewBuilder let menu: () -> Menu
@@ -458,20 +477,12 @@ private struct EpisodeCard<Menu: View>: View {
             Button(action: play) {
                 Artwork(url: video.thumbnail ?? meta.backdropURL, maxPixel: Int(width * 2.5))
                     .frame(width: width, height: width / Theme.Metrics.landscapeAspect)
-                    .overlay(alignment: .bottom) {
-                        if let progress {
-                            ProgressBar(value: progress).padding(.horizontal, 14).padding(.bottom, 12)
-                        }
-                    }
-                    .overlay(alignment: .topTrailing) {
-                        if watched && progress == nil {
-                            Image(systemName: "checkmark")
-                                .font(.system(size: badge * 0.5, weight: .bold))
-                                .frame(width: badge, height: badge)
-                                .liquidGlass(in: Circle())
-                                .padding(10)
-                                .accessibilityLabel("Watched")
-                        }
+                    // Apple TV style: what playing it means, low on the still. A check and the length once
+                    // watched; a play glyph and the length before; a play glyph, a short bar, and the time
+                    // left while in progress.
+                    .overlay(alignment: .bottomLeading) {
+                        if !isUpcoming { EpisodeStatus(watched: watched, progress: progress, remaining: remaining,
+                                                       runtime: Self.runtime(meta.runtime)) }
                     }
                     .overlay {
                         if isUpcoming {
@@ -509,17 +520,82 @@ private struct EpisodeCard<Menu: View>: View {
     }
 
     private var width: CGFloat { Theme.Metrics.landscapeWidth }
-    private var badge: CGFloat {
-        #if os(tvOS)
-        return 40
-        #else
-        return 26
-        #endif
+
+    /// An add-on's runtime ("22 min", "1h 5min", "45") in seconds; episodes share the show's.
+    static func runtime(_ text: String?) -> TimeInterval? {
+        guard let text = text?.lowercased() else { return nil }
+        var minutes = 0
+        var number = ""
+        for character in text {
+            if character.isNumber { number.append(character); continue }
+            if character == " " { continue }
+            if character == "h", let value = Int(number) { minutes += value * 60 }
+            else if character == "m", let value = Int(number) { minutes += value }
+            number = ""
+            if character == "m" { break }
+        }
+        if let value = Int(number) { minutes += value }
+        return minutes > 0 ? TimeInterval(minutes * 60) : nil
     }
     private var isUpcoming: Bool { (video.released ?? .distantPast) > Date() }
     private var comingText: String {
         "Coming " + (video.released ?? Date()).formatted(.dateTime.month(.abbreviated).day())
     }
+}
+
+/// The glass label at the bottom left of an episode's still: ✓ 22m, ▶ 22m, or ▶ ━━── 12m left.
+private struct EpisodeStatus: View {
+    let watched: Bool
+    let progress: Double?
+    let remaining: TimeInterval?
+    let runtime: TimeInterval?
+
+    var body: some View {
+        HStack(spacing: spacing) {
+            Image(systemName: progress == nil && watched ? "checkmark" : "play.fill")
+                .font(.system(size: size * 0.8, weight: .bold))
+            if let progress {
+                ProgressBar(value: progress, height: size * 0.3)
+                    .frame(width: size * 3)
+            }
+            if let text = timeText {
+                Text(text)
+                    .font(.system(size: size, weight: .semibold))
+                    .monospacedDigit()
+            }
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, size * 0.75)
+        .padding(.vertical, size * 0.45)
+        .liquidGlass(in: Capsule())
+        .padding(size * 0.7)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibilityText)
+    }
+
+    private var timeText: String? {
+        if progress != nil, let remaining { return Self.format(remaining) + " left" }
+        return runtime.map(Self.format)
+    }
+
+    private var accessibilityText: String {
+        let state = progress != nil ? "In progress" : watched ? "Watched" : "Not watched"
+        return [state, timeText].compactMap { $0 }.joined(separator: ", ")
+    }
+
+    /// 22m, 1h 5m.
+    static func format(_ seconds: TimeInterval) -> String {
+        let minutes = max(1, Int((seconds / 60).rounded()))
+        return minutes >= 60 ? "\(minutes / 60)h \(minutes % 60)m" : "\(minutes)m"
+    }
+
+    #if os(tvOS)
+    private let size: CGFloat = 22
+    private let spacing: CGFloat = 10
+    #else
+    private let size: CGFloat = 12
+    private let spacing: CGFloat = 6
+    #endif
 }
 
 // MARK: Cast

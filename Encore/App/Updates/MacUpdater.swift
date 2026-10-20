@@ -337,34 +337,72 @@ struct UpdatePromptView: View {
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            HStack(spacing: 16) {
-                Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 64, height: 64)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(title).font(.title2.weight(.bold))
-                    Text("You have \(updater.installedVersion) (build \(updater.installedBuild)).")
-                        .foregroundStyle(.secondary)
-                }
+        VStack(spacing: 0) {
+            VStack(spacing: 10) {
+                Image(nsImage: NSApp.applicationIconImage)
+                    .resizable()
+                    .frame(width: 88, height: 88)
+                    .shadow(color: .black.opacity(0.35), radius: 14, y: 6)
+                Text("A New Version of Encore Is Available")
+                    .font(.title2.weight(.bold))
+                    .multilineTextAlignment(.center)
+                Text(versionLine)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
             }
-            if let notes = manifest?.notes, !notes.isEmpty {
-                ScrollView {
-                    Text(notes).frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
+            .padding(.top, 30)
+            .padding(.bottom, 22)
+
+            if !changes.isEmpty {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("What's New")
+                        .font(.headline)
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 10) {
+                            ForEach(changes, id: \.self) { change in
+                                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                                    Image(systemName: "sparkle")
+                                        .font(.caption.weight(.bold))
+                                        .foregroundStyle(Color.accentColor)
+                                    Text(Self.styled(change))
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxHeight: 200)
                 }
-                .frame(maxHeight: 220)
-                .padding(12)
-                .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
+                .padding(18)
+                .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(.white.opacity(0.08)))
+                .padding(.horizontal, 26)
             }
+
             status
-            HStack {
-                Spacer()
-                Button("Later") { dismiss() }.keyboardShortcut(.cancelAction).disabled(isBusy)
-                Button("Update Now") { if let manifest { updater.install(manifest) } }
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(isBusy || manifest == nil)
+                .padding(.horizontal, 26)
+                .padding(.top, 16)
+
+            HStack(spacing: 12) {
+                Button("Not Now") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                    .disabled(isBusy)
+                    .frame(maxWidth: .infinity)
+                Button {
+                    if let manifest { updater.install(manifest) }
+                } label: {
+                    Text(isBusy ? "Updating…" : "Update Now").frame(maxWidth: .infinity)
+                }
+                .keyboardShortcut(.defaultAction)
+                .buttonStyle(.borderedProminent)
+                .disabled(isBusy || manifest == nil)
+                .frame(maxWidth: .infinity)
             }
+            .controlSize(.large)
+            .padding(26)
         }
-        .padding(24)
-        .frame(width: 480)
+        .frame(width: 460)
+        .animation(.smooth(duration: 0.3), value: isBusy)
     }
 
     private var manifest: UpdateManifest? {
@@ -374,9 +412,32 @@ struct UpdatePromptView: View {
         }
     }
 
-    private var title: String {
-        let beta = manifest?.releasePage?.absoluteString.contains("-beta.") == true ? " beta" : ""
-        return "Encore \(manifest?.version ?? "")\(beta) (build \(manifest?.build ?? 0)) is available"
+    private var isBeta: Bool { manifest?.releasePage?.absoluteString.contains("-beta.") == true }
+
+    /// "Version 0.2.0 beta (build 19) · you have build 18": what's coming against what's here.
+    private var versionLine: String {
+        guard let manifest else { return "" }
+        return "Version \(manifest.version)\(isBeta ? " beta" : "") (build \(manifest.build)) · you have build \(updater.installedBuild)"
+    }
+
+    /// The release's change list, one line per change. Older releases carried a merge commit's message,
+    /// so anything that isn't a change (merge lines, trailers, links) is left out.
+    private var changes: [String] {
+        guard let notes = manifest?.notes else { return [] }
+        return notes.split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .map { $0.hasPrefix("- ") || $0.hasPrefix("* ") ? String($0.dropFirst(2)) : $0 }
+            .filter { line in
+                !line.isEmpty && !line.hasPrefix("#") && !line.hasPrefix("http") && !line.hasPrefix("🤖")
+                    && !["Merge pull request", "Merge branch", "Co-Authored-By", "Claude-Session"].contains { line.hasPrefix($0) }
+            }
+            .prefix(10)
+            .map { $0 }
+    }
+
+    /// A change's "**Lead:** detail" reads as a bold lead-in.
+    static func styled(_ line: String) -> AttributedString {
+        (try? AttributedString(markdown: line)) ?? AttributedString(line)
     }
 
     private var isBusy: Bool {
@@ -389,11 +450,14 @@ struct UpdatePromptView: View {
     @ViewBuilder private var status: some View {
         switch updater.state {
         case let .downloading(_, progress):
-            ProgressView(value: progress) { Text("Downloading…") }
+            ProgressView(value: progress) { Text("Downloading…").font(.callout) }
         case .installing:
-            ProgressView { Text("Installing. Encore will close and reopen in a moment.") }
+            ProgressView { Text("Installing. Encore will close and reopen in a moment.").font(.callout) }
         case let .failed(_, message):
-            Label(message, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+            Label(message, systemImage: "exclamationmark.triangle.fill")
+                .font(.callout)
+                .foregroundStyle(.orange)
+                .frame(maxWidth: .infinity, alignment: .leading)
         default:
             EmptyView()
         }

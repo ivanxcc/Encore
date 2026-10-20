@@ -6,6 +6,7 @@ struct ProfilePickerView: View {
     @EnvironmentObject private var app: AppModel
     @State private var pinTarget: Profile?
     @State private var showHouseholds = false
+    @State private var rowWidth: CGFloat = 0
 
     var body: some View {
         VStack(spacing: 44) {
@@ -28,8 +29,11 @@ struct ProfilePickerView: View {
                     }
                 }
                 .padding(40)
-                .frame(maxWidth: .infinity)
+                // At least as wide as the screen, so a few profiles sit centered (a scroll view's content
+                // otherwise hugs the leading edge); more than fit still scroll.
+                .frame(minWidth: rowWidth)
             }
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { rowWidth = $0 }
             .scrollClipDisabled()
             .tvFocusSection()
             Spacer()

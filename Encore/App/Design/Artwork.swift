@@ -72,9 +72,10 @@ enum HeroArtwork {
 }
 
 /// An image that dissolves in once decoded, over a quiet placeholder. An image already in memory is on
-/// screen from the first frame (no flash of placeholder), and when the URL changes the old picture
-/// cross-dissolves into the new one instead of blinking out. Never shows a spinner: empty space that
-/// fills in reads as fast; spinners read as slow.
+/// screen from the first frame (no flash of placeholder), and when the URL changes the new picture is
+/// laid in fully opaque beneath the old one, which then fades away: a true cross-dissolve, with no dip
+/// through the background halfway. Never shows a spinner: empty space that fills in reads as fast;
+/// spinners read as slow.
 struct Artwork: View {
     let url: URL?
     var maxPixel: Int = 600
@@ -88,35 +89,68 @@ struct Artwork: View {
     }
 
     @State private var shown: Shown?
+    /// The picture being dissolved away, over `shown`.
+    @State private var outgoing: Shown?
+    @State private var outgoingOpacity: Double = 0
+    /// The first image fades in over the placeholder (nothing to dissolve from).
+    @State private var firstOpacity: Double
 
     init(url: URL?, maxPixel: Int = 600, contentMode: ContentMode = .fill, fade: Double = 0.4) {
         self.url = url; self.maxPixel = maxPixel; self.contentMode = contentMode; self.fade = fade
         let cached = url.flatMap { u in ImagePipeline.shared.cached(u, maxPixel: maxPixel).map { Shown(url: u, image: $0) } }
         _shown = State(initialValue: cached)
+        _firstOpacity = State(initialValue: cached == nil ? 0 : 1)
     }
 
     var body: some View {
         ZStack {
-            Theme.Colors.placeholder.opacity(shown == nil ? 1 : 0)
+            Theme.Colors.placeholder.opacity(1 - firstOpacity)
             if let shown {
-                Image(decorative: shown.image, scale: 1)
-                    .resizable()
-                    .aspectRatio(contentMode: contentMode)
-                    .id(shown.url)
-                    .transition(.opacity)
+                picture(shown.image).opacity(firstOpacity)
+            }
+            if let outgoing {
+                picture(outgoing.image).opacity(outgoingOpacity)
             }
         }
         .task(id: url) { await load() }
     }
 
+    private func picture(_ image: CGImage) -> some View {
+        Image(decorative: image, scale: 1)
+            .resizable()
+            .aspectRatio(contentMode: contentMode)
+    }
+
     private func load() async {
-        guard let url else { shown = nil; return }
+        guard let url else { return }
         if shown?.url == url { return }
+        let image: CGImage
         if let hit = ImagePipeline.shared.cached(url, maxPixel: maxPixel) {
-            withAnimation(.easeInOut(duration: fade)) { shown = Shown(url: url, image: hit) }
+            image = hit
+        } else {
+            guard let loaded = await ImagePipeline.shared.image(url, maxPixel: maxPixel), !Task.isCancelled else { return }
+            image = loaded
+        }
+        show(Shown(url: url, image: image))
+    }
+
+    private func show(_ next: Shown) {
+        guard let previous = shown, firstOpacity > 0 else {
+            shown = next
+            withAnimation(.easeInOut(duration: fade)) { firstOpacity = 1 }
             return
         }
-        guard let loaded = await ImagePipeline.shared.image(url, maxPixel: maxPixel), !Task.isCancelled else { return }
-        withAnimation(.easeInOut(duration: fade)) { shown = Shown(url: url, image: loaded) }
+        var instant = Transaction()
+        instant.disablesAnimations = true
+        withTransaction(instant) {
+            outgoing = previous
+            outgoingOpacity = 1
+            shown = next
+        }
+        withAnimation(.easeInOut(duration: fade)) {
+            outgoingOpacity = 0
+        } completion: {
+            if outgoing?.url == previous.url { outgoing = nil }
+        }
     }
 }

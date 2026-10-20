@@ -47,11 +47,11 @@ struct CloudSection: View {
                     }
                 }
                 .disabled(app.cloudStatus == .syncing)
-                NavigationLink { ShareHouseholdView() } label: {
+                NavigationLink { ShareHouseholdView().pushedPage() } label: {
                     Label("Share This Household", systemImage: "person.badge.plus")
                 }
                 #if !os(tvOS)
-                NavigationLink { ApproveTVView() } label: {
+                NavigationLink { ApproveTVView().pushedPage() } label: {
                     Label("Sign In an Apple TV", systemImage: "appletv.fill")
                 }
                 #endif
@@ -128,7 +128,7 @@ struct ShareHouseholdView: View {
         }
         .padding(40)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .navigationTitle("Share Household")
+        .pageTitle("Share Household")
         .task { await make() }
     }
 
@@ -192,7 +192,7 @@ struct CodeEntryView: View {
                 .disabled(code.filter(\.isLetter).count + code.filter(\.isNumber).count < 8 || working || done)
             }
         }
-        .navigationTitle(title)
+        .pageTitle(title)
         #if os(macOS)
         .formStyle(.grouped)
         #endif
@@ -296,7 +296,7 @@ struct ApproveDeviceView: View {
                 .disabled(code.filter { $0.isLetter || $0.isNumber }.count < 8 || selectedID == nil || working || done)
             }
         }
-        .navigationTitle("Sign In a TV")
+        .pageTitle("Sign In a TV")
         #if os(macOS)
         .formStyle(.grouped)
         #endif

@@ -203,14 +203,13 @@ struct HeroCarousel: View {
                     .padding(.horizontal, Theme.Metrics.edge)
                     .padding(.bottom, bottomInset)
             }
-            // The artwork sits behind everything and runs under the window's title area and a Mac
-            // sidebar, which only pushes the logo and buttons over (they respect its inset). Tapping the
+            // The artwork sits behind everything and runs under the window's title area. Tapping the
             // artwork opens the title (iPhone, iPad, Mac).
             .background {
                 HeroArt(item: item, centered: isCompact)
                     .ignoresSafeArea(edges: [.top, .leading])
             }
-            // The page dots stay at the hero's bottom-right corner whatever the sidebar does.
+            // The page dots sit at the hero's bottom-right corner.
             .overlay(alignment: .bottomTrailing) {
                 if !isCompact {
                     PageDots(count: items.count, index: index, timer: timer, glass: true)
