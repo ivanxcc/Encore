@@ -4,6 +4,9 @@ name: Encore Cloud Inspect
 # versions, sizes, household names, and profile counts: no emails, profile names, or session keys.
 on:
   workflow_dispatch:
+  push:
+    branches: [claude/marquee-native-app]
+    paths: [".github/workflows/encore-cloud-inspect.yml"]
 
 permissions:
   contents: read
