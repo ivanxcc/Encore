@@ -178,6 +178,11 @@ public struct CloudClient: Sendable {
 
     // MARK: Signing in a TV
 
+    /// The page a TV's QR code points at: it opens Encore on the phone with the code.
+    public func pairingPage(for code: String) -> URL {
+        base.appendingPathComponent("pair").appendingPathComponent(code.filter { $0.isLetter || $0.isNumber })
+    }
+
     public func startPairing() async throws -> Code {
         let (data, status) = try await send("POST", "v1/pair/start", authKey: nil)
         try check(status)

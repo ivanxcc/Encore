@@ -155,18 +155,25 @@ struct SignInView: View {
     @State private var password = ""
     @State private var working = false
     @State private var error: String?
+    @State private var useEmail = false
 
     var body: some View {
+        #if os(tvOS) || os(macOS)
+        // Apple TV and Mac: scan a QR code with your iPhone (or type its code there), as streaming apps do.
+        if app.cloud != nil, !useEmail {
+            DeviceSignInView(useEmail: { withAnimation(Theme.Motion.content) { useEmail = true } },
+                             onSignedIn: { dismiss() })
+                .navigationTitle("Sign In")
+        } else {
+            emailForm
+        }
+        #else
+        emailForm
+        #endif
+    }
+
+    private var emailForm: some View {
         Form {
-            #if os(tvOS)
-            if app.cloud != nil {
-                Section {
-                    TVPairingPanel { dismiss() }
-                } footer: {
-                    Text("Or sign in with your Stremio email and password below.")
-                }
-            }
-            #endif
             Section {
                 TextField("Email", text: $email)
                     .textContentType(.username)

@@ -1,5 +1,9 @@
 import SwiftUI
 import EncoreKit
+#if os(tvOS) || os(macOS)
+import CoreImage
+import CoreImage.CIFilterBuiltins
+#endif
 
 /// Settings › Encore Cloud: keeps this household's profiles, their history, and settings the same on
 /// every device signed in to its Stremio account. Hidden in builds released without a cloud.
@@ -215,44 +219,181 @@ struct RedeemShareView: View {
 }
 
 #if !os(tvOS)
+/// Settings › Encore Cloud › Sign In an Apple TV: type the code a TV (or Mac) shows.
 struct ApproveTVView: View {
+    var body: some View { ApproveDeviceView(initialCode: nil) }
+}
+
+/// Approve a TV's or Mac's sign-in, from its QR code or a typed code. The account it joins is always
+/// shown and chosen here (the home household by default), never inferred from whatever was open.
+struct ApproveDeviceView: View {
+    let initialCode: String?
     @EnvironmentObject private var app: AppModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var code = ""
+    @State private var accountID: UUID?
+    @State private var working = false
+    @State private var done = false
+    @State private var error: String?
 
     var body: some View {
-        CodeEntryView(
-            title: "Sign In an Apple TV",
-            message: "On the Apple TV, open Encore › Settings › Sign In. Enter the code it shows. The TV signs in to \(app.household.name) with all of its profiles.",
-            action: "Sign In TV") { code in
-            try await app.approveTV(code: code)
+        Form {
+            if initialCode == nil {
+                Section {
+                    TextField("ABCD-EFGH", text: $code)
+                        .font(.title2.monospaced())
+                        .autocorrectionDisabled()
+                        #if os(iOS)
+                        .textInputAutocapitalization(.characters)
+                        #endif
+                        .onChange(of: code) { _, value in code = CodeEntryView.format(value) }
+                } footer: {
+                    Text("On the TV, open Encore and choose Sign In. Enter the code it shows, or just scan its QR code with this iPhone's camera.")
+                }
+            } else {
+                Section {
+                    VStack(spacing: 14) {
+                        Image(systemName: "appletv.fill").font(.system(size: 44)).foregroundStyle(.secondary)
+                        Text("Sign in a TV?").font(.title2.weight(.bold))
+                        CodeDisplay(code: code)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 8)
+                }
+            }
+            Section {
+                ForEach(app.signInAccounts) { account in
+                    Button { accountID = account.id } label: {
+                        HStack(spacing: 14) {
+                            Image(systemName: account.symbol).frame(width: 30)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(account.name).foregroundStyle(.primary)
+                                if let email = app.accountEmail(of: account) {
+                                    Text(email).font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
+                            Spacer()
+                            if account.id == selectedID { Image(systemName: "checkmark").foregroundStyle(.primary) }
+                        }
+                    }
+                }
+            } header: {
+                Text("Sign In As")
+            } footer: {
+                Text("The TV joins this household: its Stremio account, profiles, and watch history.")
+            }
+            if let error {
+                Section { Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.orange) }
+            }
+            Section {
+                Button {
+                    approve()
+                } label: {
+                    if done { Label("Signed In", systemImage: "checkmark.circle.fill") }
+                    else if working { ProgressView() }
+                    else { Text("Sign In TV").fontWeight(.semibold) }
+                }
+                .disabled(code.filter { $0.isLetter || $0.isNumber }.count < 8 || selectedID == nil || working || done)
+            }
+        }
+        .navigationTitle("Sign In a TV")
+        #if os(macOS)
+        .formStyle(.grouped)
+        #endif
+        .onAppear {
+            if let initialCode { code = CodeEntryView.format(initialCode) }
+            accountID = accountID ?? app.signInAccounts.first?.id
+        }
+    }
+
+    private var selectedID: UUID? { accountID ?? app.signInAccounts.first?.id }
+
+    private func approve() {
+        guard let account = app.signInAccounts.first(where: { $0.id == selectedID }) else { return }
+        working = true
+        error = nil
+        Task {
+            do {
+                try await app.approveDevice(code: code, as: account)
+                done = true
+                try? await Task.sleep(for: .seconds(1.2))
+                dismiss()
+            } catch CloudClient.CloudError.expired {
+                error = "That code has expired. Choose Sign In on the TV again for a new one."
+            } catch {
+                self.error = (error as? LocalizedError)?.errorDescription ?? "Couldn't reach Encore Cloud."
+            }
+            working = false
         }
     }
 }
 #endif
 
-/// On the Apple TV: show a code, sign in when a phone approves it. No typing a password with a remote.
-struct TVPairingPanel: View {
-    @EnvironmentObject private var app: AppModel
+#if os(tvOS) || os(macOS)
+/// Sign in on a TV (or Mac), the way streaming apps do it: scan a QR code with your phone, or type the
+/// code on it, and approve there. No password typed with a remote. Email sign-in remains as a fallback.
+struct DeviceSignInView: View {
+    let useEmail: () -> Void
     let onSignedIn: () -> Void
+    @EnvironmentObject private var app: AppModel
     @State private var code: CloudClient.Code?
     @State private var error: String?
+    @State private var signedInAs: String?
 
     var body: some View {
-        VStack(spacing: 22) {
-            Text("Sign in with your iPhone or Mac").font(.title3.weight(.semibold))
-            Text("In Encore on a device that's already signed in, go to Settings › Encore Cloud › Sign In an Apple TV and enter:")
-                .multilineTextAlignment(.center)
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: 900)
-            if let code {
-                CodeDisplay(code: code.code)
-            } else if let error {
-                Label(error, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-            } else {
-                ProgressView()
+        HStack(alignment: .center, spacing: spacing) {
+            VStack(alignment: .leading, spacing: 26) {
+                Text(signedInAs == nil ? "Sign In to Encore" : "You're In")
+                    .font(.system(size: titleSize, weight: .bold))
+                if let signedInAs {
+                    Label("Signed in as \(signedInAs)", systemImage: "checkmark.circle.fill")
+                        .font(.system(size: bodySize, weight: .medium))
+                } else {
+                    VStack(alignment: .leading, spacing: 16) {
+                        step(1, "Scan the code with your iPhone's camera.")
+                        step(2, "Tap Open Encore, check the account, and tap Sign In TV.")
+                        Text("Or in Encore on your iPhone, go to Settings › Encore Cloud › Sign In an Apple TV and enter:")
+                            .font(.system(size: bodySize * 0.85))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if let code { CodeDisplay(code: code.code) }
+                    else if let error { Label(error, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange) }
+                    else { ProgressView() }
+                    Button("Use Email and Password Instead", action: useEmail)
+                        .pillButtonStyle(.secondary)
+                }
             }
+            .frame(maxWidth: textWidth, alignment: .leading)
+
+            ZStack {
+                RoundedRectangle(cornerRadius: qrSize * 0.08, style: .continuous).fill(Color.white)
+                if let code, let image = Self.qr(app.cloud?.pairingPage(for: code.code)) {
+                    Image(decorative: image, scale: 1)
+                        .interpolation(.none)
+                        .resizable()
+                        .padding(qrSize * 0.07)
+                } else {
+                    ProgressView().tint(.black)
+                }
+            }
+            .frame(width: qrSize, height: qrSize)
+            .opacity(signedInAs == nil ? 1 : 0.25)
+            .accessibilityLabel("QR code to sign in with your iPhone")
         }
-        .frame(maxWidth: .infinity)
+        .padding(spacing)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .task { await run() }
+    }
+
+    private func step(_ number: Int, _ text: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 14) {
+            Text("\(number)")
+                .font(.system(size: bodySize * 0.8, weight: .bold))
+                .frame(width: bodySize * 1.4, height: bodySize * 1.4)
+                .liquidGlass(in: Circle())
+            Text(text).font(.system(size: bodySize)).fixedSize(horizontal: false, vertical: true)
+        }
     }
 
     private func run() async {
@@ -267,6 +408,8 @@ struct TVPairingPanel: View {
                     try await Task.sleep(for: .seconds(2))
                     if let session = try await cloud.pollPairing(token: token) {
                         _ = try await app.signIn(with: session)
+                        withAnimation(Theme.Motion.content) { signedInAs = app.settings.accountEmail ?? app.household.name }
+                        try? await Task.sleep(for: .seconds(1.5))
                         onSignedIn()
                         return
                     }
@@ -274,11 +417,36 @@ struct TVPairingPanel: View {
             } catch is CancellationError {
                 return
             } catch CloudClient.CloudError.expired {
-                continue   // show a fresh code
+                continue   // a fresh code
             } catch {
                 self.error = "Couldn't reach Encore Cloud. Retrying…"
                 try? await Task.sleep(for: .seconds(5))
             }
         }
     }
+
+    static func qr(_ url: URL?) -> CGImage? {
+        guard let url else { return nil }
+        let filter = CIFilter.qrCodeGenerator()
+        filter.message = Data(url.absoluteString.utf8)
+        filter.correctionLevel = "M"
+        guard let output = filter.outputImage else { return nil }
+        let scaled = output.transformed(by: CGAffineTransform(scaleX: 16, y: 16))
+        return CIContext().createCGImage(scaled, from: scaled.extent)
+    }
+
+    #if os(tvOS)
+    private let qrSize: CGFloat = 520
+    private let titleSize: CGFloat = 64
+    private let bodySize: CGFloat = 32
+    private let textWidth: CGFloat = 900
+    private let spacing: CGFloat = 100
+    #else
+    private let qrSize: CGFloat = 260
+    private let titleSize: CGFloat = 30
+    private let bodySize: CGFloat = 16
+    private let textWidth: CGFloat = 420
+    private let spacing: CGFloat = 40
+    #endif
 }
+#endif

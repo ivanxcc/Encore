@@ -95,6 +95,16 @@ final class NowPlayingController {
 
     private func installCommands() {
         let center = MPRemoteCommandCenter.shared()
+        // Start clean: a target left from an earlier player would swallow the remote's presses.
+        for command in [center.playCommand, center.pauseCommand, center.togglePlayPauseCommand,
+                        center.skipForwardCommand, center.skipBackwardCommand,
+                        center.changePlaybackPositionCommand, center.nextTrackCommand] {
+            command.removeTarget(nil)
+        }
+        // Off unless used: enabled commands with no target draw dead buttons on the Now Playing card.
+        center.previousTrackCommand.isEnabled = false
+        center.seekForwardCommand.isEnabled = false
+        center.seekBackwardCommand.isEnabled = false
         func on(_ command: MPRemoteCommand, _ handler: @escaping (MPRemoteCommandEvent) -> MPRemoteCommandHandlerStatus) {
             command.isEnabled = true
             commandTargets.append((command, command.addTarget(handler: handler)))
