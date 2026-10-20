@@ -2,6 +2,7 @@
 // Optional: without a TMDB_API_KEY secret these routes answer 404 and the apps use Cinemeta alone.
 //
 //   GET /v1/title?imdb=tt…&type=movie|series -> { tmdbId, backdrop, logo, tagline, cast[], crew[], certification }
+//   GET /v1/season?tmdb=…&season=N          -> { episodes: [{ episode, runtime }] } (minutes, exact per episode)
 //   GET /v1/trending                         -> { items: [{ imdbId, type, name, backdrop, logo, overview, year, genres, rating }] }
 //
 // Responses are cached at the edge (a day for titles, six hours for trending) so a living room full of
@@ -16,7 +17,13 @@ export async function tmdbRoute(route, url, env, deps) {
     const imdb = url.searchParams.get("imdb") || "";
     const type = url.searchParams.get("type") === "series" ? "series" : "movie";
     if (!/^tt\d{5,10}$/.test(imdb)) return { status: 400, body: { error: "Expected imdb=tt…" } };
-    return cached(deps, `title:v2:${type}:${imdb}`, 24 * 3600, () => title(imdb, type, env, deps));
+    return cached(deps, `title:v3:${type}:${imdb}`, 24 * 3600, () => title(imdb, type, env, deps));
+  }
+  if (route === "GET /v1/season") {
+    const id = url.searchParams.get("tmdb") || "";
+    const number = url.searchParams.get("season") || "";
+    if (!/^\d{1,9}$/.test(id) || !/^\d{1,3}$/.test(number)) return { status: 400, body: { error: "Expected tmdb=…&season=N" } };
+    return cached(deps, `season:v1:${id}:${number}`, 24 * 3600, () => season(id, number, env, deps));
   }
   if (route === "GET /v1/trending") {
     return cached(deps, "trending:v1", 6 * 3600, () => trending(env, deps));
@@ -84,6 +91,7 @@ export function shapeTitle(detail, kind) {
     crew: crew.slice(0, 4),
     certification: certification(detail, kind),
     trailer: bestTrailer(detail),
+    runtime: typeof detail.runtime === "number" && detail.runtime > 0 ? detail.runtime : null,
   };
 }
 
@@ -120,6 +128,20 @@ function certification(detail, kind) {
   const us = ((detail.release_dates || {}).results || []).find((r) => r.iso_3166_1 === "US");
   const rated = us && (us.release_dates || []).find((d) => d.certification);
   return (rated && rated.certification) || null;
+}
+
+/** Each episode's own length, which Stremio add-ons don't carry. */
+async function season(id, number, env, deps) {
+  let detail;
+  try {
+    detail = await call(`/tv/${id}/season/${number}`, {}, env, deps);
+  } catch {
+    return { status: 404, body: { error: "No such season" } };
+  }
+  const episodes = (detail.episodes || [])
+    .filter((e) => Number.isInteger(e.episode_number) && typeof e.runtime === "number" && e.runtime > 0)
+    .map((e) => ({ episode: e.episode_number, runtime: e.runtime }));
+  return { status: 200, body: { episodes } };
 }
 
 async function trending(env, deps) {

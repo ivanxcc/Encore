@@ -68,6 +68,18 @@ public struct CloudClient: Sendable {
         return try? JSONDecoder().decode(TitleExtras.self, from: data)
     }
 
+    /// Each episode's exact length in a season, in seconds by episode number (TMDB). Empty when unknown.
+    public func episodeRuntimes(tmdbID: Int, season: Int) async -> [Int: TimeInterval] {
+        struct Episode: Decodable { let episode: Int; let runtime: Int }
+        struct Response: Decodable { let episodes: [Lossy<Episode>] }
+        var components = URLComponents(url: base.appendingPathComponent("v1/season"), resolvingAgainstBaseURL: false)!
+        components.queryItems = [URLQueryItem(name: "tmdb", value: String(tmdbID)), URLQueryItem(name: "season", value: String(season))]
+        guard let url = components.url, let (data, status) = try? await send("GET", url, authKey: nil, body: nil),
+              status == 200, let response = try? JSONDecoder().decode(Response.self, from: data) else { return [:] }
+        return Dictionary(response.episodes.compactMap(\.value).map { ($0.episode, TimeInterval($0.runtime * 60)) },
+                          uniquingKeysWith: { first, _ in first })
+    }
+
     /// This week's trending titles with their best artwork; empty when unavailable.
     public func trending() async -> [TrendingTitle] {
         struct Response: Decodable { let items: [Lossy<TrendingTitle>] }

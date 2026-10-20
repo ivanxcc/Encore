@@ -209,6 +209,7 @@ function tmdbWorld() {
           { site: "Vimeo", key: "v", type: "Trailer", official: true, iso_639_1: "en", size: 2160 },
         ] },
       },
+      "/3/tv/1421/season/2": { episodes: [{ episode_number: 1, runtime: 22 }, { episode_number: 2, runtime: 21 }, { episode_number: 3, runtime: null }] },
       "/3/trending/all/week": { results: [{ id: 1, media_type: "movie" }, { id: 2, media_type: "person" }, { id: 3, media_type: "tv" }] },
       "/3/movie/1": { imdb_id: "tt100", title: "Dune", release_date: "2024-03-01", genres: [{ name: "Sci-Fi" }], vote_average: 8.24,
                       images: { backdrops: [img("/dune.jpg", null, 8)], logos: [] } },
@@ -242,6 +243,15 @@ test("title extras: cast with photos, textless original backdrop, English PNG lo
   assert.equal((await w.call("GET", "/v1/title?imdb=tt1442437&type=series")).status, 200);
   assert.equal(w.tmdbCalls.length, calls);
   assert.equal((await w.call("GET", "/v1/title?imdb=nope")).status, 400);
+});
+
+test("season runtimes: exact minutes per episode, unknown ones left out", async () => {
+  const w = tmdbWorld();
+  const res = await w.call("GET", "/v1/season?tmdb=1421&season=2");
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.body.episodes, [{ episode: 1, runtime: 22 }, { episode: 2, runtime: 21 }]);
+  assert.equal((await w.call("GET", "/v1/season?tmdb=1421&season=9")).status, 404);
+  assert.equal((await w.call("GET", "/v1/season?tmdb=abc&season=1")).status, 400);
 });
 
 test("trending keeps titles with an IMDb id and artwork", async () => {

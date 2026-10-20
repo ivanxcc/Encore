@@ -18,6 +18,7 @@
 //   GET    /v1/pair/poll?token=…              -> 202 waiting | 200 { authKey, email } (once)
 //   GET    /v1/title?imdb=…&type=…            -> cast, original artwork (TMDB; see tmdb.js)
 //   GET    /v1/trending                       -> this week's trending titles (TMDB)
+//   GET    /v1/season?tmdb=…&season=N         -> each episode's runtime in minutes (TMDB)
 
 import { tmdbRoute } from "./tmdb.js";
 import { skipRoute } from "./skip.js";
@@ -63,6 +64,7 @@ export async function handle(request, env, deps) {
         return json(result.body, result.status, result.status === 200 ? 3600 : 0);
       }
       case "GET /v1/title":
+      case "GET /v1/season":
       case "GET /v1/trending": {
         const result = await tmdbRoute(route, url, env, deps);
         if (!result) return json({ error: "TMDB is not set up" }, 404);
