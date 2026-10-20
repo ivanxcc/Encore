@@ -102,8 +102,10 @@ jobs:
               echo "::notice::No TMDB_API_KEY secret: cast photos, 4K artwork, trailers, and trending are off."
             fi
             # Skip markers: what TheIntroDB answers the Worker (Modern Family S1E1).
-            curl -sS "$url/v1/skip?imdb=tt1442437&season=1&episode=1&probe=1" \
-              | jq -r '.attempts[] | "::notice title=TheIntroDB \(.status // "error")::\(.url) \(.body // .error | tostring | gsub("[\\r\\n]"; " ") | .[0:500])"' || true
+            for q in "tt1442437&season=3&episode=5" "tt1442437&season=5&episode=10" "tt0903747&season=2&episode=3" "tt0386676&season=2&episode=4" "tt4574334&season=1&episode=2" "tt7660850&season=1&episode=1"; do
+              curl -sS "$url/v1/skip?imdb=$q&probe=1" \
+                | jq -r '.attempts[0] | "::notice title=TheIntroDB \(.status // "error")::\(.url | sub(".*imdb_id="; "")) \(.body // .error | tostring | gsub("[\\r\\n]"; " ") | .[0:400])"' || true
+            done
             {
               echo "### Encore Cloud is live"
               echo ""
