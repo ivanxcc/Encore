@@ -654,3 +654,20 @@ final class IntroDBLiveShapeTests: XCTestCase {
         XCTAssertEqual(try parse(#"{"error":"no submissions for this media","code":"no_submissions"}"#, 1300), [])
     }
 }
+
+final class StorageTests: XCTestCase {
+    /// The durable copy of a file is keyed by its path inside Encore's folder, which stays the same when
+    /// the app's container moves (an update or reinstall).
+    func testDurableMirrorKeysFilesByTheirPathInsideEncore() {
+        let url = URL(fileURLWithPath: "/var/mobile/Containers/Data/Application/ABC/Library/Caches/Encore/households/X/settings.json")
+        XCTAssertEqual(DurableMirror.key(for: url), "encore.file.households/X/settings.json")
+        XCTAssertNil(DurableMirror.key(for: URL(fileURLWithPath: "/tmp/other/settings.json")))
+    }
+
+    /// A directory where nothing can be written is reported, not silently treated as storage.
+    func testWritableCheck() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        XCTAssertTrue(StorageLocation.isWritable(dir))
+        XCTAssertFalse(StorageLocation.isWritable(URL(fileURLWithPath: "/proc/encore-cannot-write-here")))
+    }
+}

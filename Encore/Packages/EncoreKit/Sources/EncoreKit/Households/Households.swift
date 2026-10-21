@@ -37,7 +37,8 @@ public final class HouseholdDirectory: @unchecked Sendable {
 
     public static func platformSecrets(id: UUID, directory: URL) -> SecretStore {
         #if canImport(Security) && !os(macOS)
-        return KeychainSecretStore(service: "encore.household." + id.uuidString)
+        return KeychainSecretStore(service: "encore.household." + id.uuidString,
+                                   fallback: FileSecretStore(url: directory.appendingPathComponent("secrets-fallback.json")))
         #else
         return FileSecretStore(url: directory.appendingPathComponent("secrets.json"))
         #endif
