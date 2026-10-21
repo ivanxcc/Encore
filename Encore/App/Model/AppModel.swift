@@ -26,8 +26,8 @@ final class AppModel: ObservableObject {
     }
 
     init() {
-        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        directory = HouseholdDirectory(root: support.appendingPathComponent("Encore", isDirectory: true))
+        // Apple TV can only write to Caches; see StorageLocation.
+        directory = HouseholdDirectory(root: StorageLocation.root)
         let registry = directory.registry()
         let household = registry.households.first { $0.id == registry.activeID } ?? registry.households[0]
         let session = HouseholdSession(scope: directory.scope(for: household))
@@ -38,8 +38,13 @@ final class AppModel: ObservableObject {
         reloadProfiles()
         // One profile and no PIN: go straight in. Otherwise the launch picker asks who is watching.
         if profiles.count == 1, !profiles[0].hasPin { activeProfile = profiles[0]; profileWasAutoPicked = true }
+        if !StorageLocation.isWritable(directory.root) { storageFailure = true }
         Task { await refresh() }
     }
+
+    /// This device refused to let Encore save its files: nothing (sign-in, profiles, households) would
+    /// last, so it is reported instead of failing silently.
+    private var storageFailure = false
 
     /// The only profile was chosen automatically (nobody was asked). If syncing then brings the
     /// household's other profiles, "Who's watching?" appears so they can be chosen.
@@ -119,7 +124,7 @@ final class AppModel: ObservableObject {
     func refresh() async {
         do {
             try await session.refreshFromAccount()
-            syncError = nil
+            syncError = storageFailure ? "This device isn't letting Encore save anything, so sign-in and profiles won't stick. Reinstall Encore, then sign in again." : nil
         } catch {
             syncError = "Couldn't reach your Stremio account. Showing what's saved on this device."
         }
