@@ -114,13 +114,34 @@ private struct PushedPage: ViewModifier {
 }
 
 #if os(macOS)
-/// One section's pushed pages, newest last; the floating back button dismisses the newest.
+/// One section's navigation on the Mac.
+///
+/// Titles and episodes (`Route`s) don't use the navigation stack's push, which lays a page out at the
+/// wrong size for its first frames and then jumps: they open as layers over the section, laid out at
+/// the window's size from the first frame, and dissolve in over the artwork they came from. Other
+/// pages (Settings' subpages) push normally and register here, so the floating back button can return
+/// from either, newest first.
 @MainActor
 final class MacNavigator: ObservableObject {
+    struct Layer: Identifiable { let id = UUID(); let route: Route }
     private struct Page { let id: UUID; let back: DismissAction }
+
+    @Published private(set) var layers: [Layer] = []
     @Published private var pages: [Page] = []
 
-    var canGoBack: Bool { !pages.isEmpty }
+    var canGoBack: Bool { !pages.isEmpty || !layers.isEmpty }
+
+    /// The path a section's navigation stack is bound to: always empty to the stack, so a link to a
+    /// `Route` opens a layer here instead of pushing.
+    var path: Binding<[Route]> {
+        Binding(get: { [] }, set: { [weak self] newPath in
+            if let route = newPath.last { self?.open(route) }
+        })
+    }
+
+    func open(_ route: Route) {
+        withAnimation(.easeInOut(duration: 0.4)) { layers.append(Layer(route: route)) }
+    }
 
     func appeared(_ id: UUID, back: DismissAction) {
         guard !pages.contains(where: { $0.id == id }) else { return }
@@ -132,7 +153,16 @@ final class MacNavigator: ObservableObject {
     }
 
     func goBack() {
-        pages.last?.back()
+        if let page = pages.last {
+            page.back()
+        } else if !layers.isEmpty {
+            withAnimation(.easeInOut(duration: 0.35)) { _ = layers.removeLast() }
+        }
+    }
+
+    func reset() {
+        layers = []
+        pages = []
     }
 }
 

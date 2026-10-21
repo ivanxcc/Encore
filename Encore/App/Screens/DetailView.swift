@@ -112,7 +112,6 @@ struct DetailView: View {
         .ignoresSafeArea(edges: .top)
         #endif
         .encoreCanvas()
-        .revealWhenLaidOut()
         .defaultFocus($focus, .play)
         .task(id: preview.id) { await model.load(preview, app: app) }
         .task(id: "\(model.season)|\(model.extras?.tmdbId ?? 0)") { await model.loadRuntimes(app: app) }
