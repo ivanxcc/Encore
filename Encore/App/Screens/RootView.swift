@@ -17,7 +17,7 @@ struct RootView: View {
     @State private var sidebarOpen = false
     @State private var searchQuery = ""
     @State private var searchExpanded = false
-    @State private var fullScreen = false
+    @State private var windowButtons = MacWindowButtons()
     @FocusState private var searchFocused: Bool
     @StateObject private var homeNav = MacNavigator()
     @StateObject private var searchNav = MacNavigator()
@@ -48,12 +48,9 @@ struct RootView: View {
         .encoreCanvas()
         .playerPresentation(playback)
         #if os(macOS)
-        // Encore draws its own controls over the artwork and puts nothing in the window's toolbar, so the
-        // window keeps its close / minimize / zoom buttons with no grey bar behind them, in full screen
-        // too. While a video plays the window is all picture.
-        .toolbar(playback.request == nil ? .automatic : .hidden, for: .windowToolbar)
-        .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
-        .background(WindowChromeController(hidden: playback.request != nil, fullScreen: $fullScreen))
+        // Encore draws its own controls over the artwork, lined up with the window buttons, as Safari
+        // does. While a video plays the window is all picture.
+        .background(WindowChromeController(hidden: playback.request != nil, buttons: $windowButtons))
         #endif
     }
 
@@ -89,19 +86,23 @@ struct RootView: View {
                     .contentShape(Rectangle())
                     .onTapGesture { setSidebar(false) }
                     .transition(.opacity)
-                MacSidebar(selection: tab) { select($0) }
+                MacSidebar(selection: tab, headerHeight: controlsBottom) { select($0) }
                     .transition(.move(edge: .leading).combined(with: .opacity))
             }
 
+            // On the window buttons' line, just after them (in full screen, where they're gone, the corner).
             controls
-                .padding(.leading, fullScreen ? 20 : 80)   // just after the close / minimize / zoom buttons
-                .padding(.top, 10)
+                .padding(.leading, windowButtons.fullScreen ? 20 : windowButtons.trailing + 16)
+                .padding(.top, windowButtons.fullScreen ? 12 : max(4, windowButtons.midY - ChromeButton.size / 2))
                 .opacity(playback.request == nil ? 1 : 0)
         }
         .ignoresSafeArea(edges: .top)
         .animation(.smooth(duration: 0.38), value: sidebarOpen)
         .animation(.smooth(duration: 0.38), value: searchExpanded)
         .animation(.smooth(duration: 0.3), value: navigator(for: tab).canGoBack)
+        .onChange(of: app.household.id) { _, _ in
+            for navigator in [homeNav, searchNav, libraryNav, settingsNav] { navigator.reset() }
+        }
         .onChange(of: searchQuery) { _, query in
             if !query.isEmpty, tab != .search { tab = .search }
         }
@@ -110,6 +111,11 @@ struct RootView: View {
             if !focused, searchQuery.isEmpty { searchExpanded = false }
         }
         .id(app.household.id)
+    }
+
+    /// Where the floating controls end, from the top of the window.
+    private var controlsBottom: CGFloat {
+        windowButtons.fullScreen ? 12 + ChromeButton.size : max(4, windowButtons.midY - ChromeButton.size / 2) + ChromeButton.size
     }
 
     private var controls: some View {
@@ -158,7 +164,7 @@ struct RootView: View {
             }
         }
         .padding(.horizontal, searchExpanded ? 12 : 0)
-        .frame(width: searchExpanded ? 300 : 34, height: 34)
+        .frame(width: searchExpanded ? 300 : ChromeButton.size, height: ChromeButton.size)
         .liquidGlass(in: Capsule())
         .contentShape(Capsule())
         .onTapGesture { openSearch() }
@@ -210,9 +216,9 @@ struct RootView: View {
 
     private func section<Content: View>(_ which: AppTab, _ navigator: MacNavigator,
                                         @ViewBuilder content: () -> Content) -> some View {
-        NavigationStack { content().withRoutes() }
+        MacSection(navigator: navigator, root: content())
             .environment(\.macNavigator, navigator)
-            .environment(\.macChromeInset, 54)
+            .environment(\.macChromeInset, controlsBottom)
             .opacity(tab == which ? 1 : 0)
             .allowsHitTesting(tab == which)
             .accessibilityHidden(tab != which)
@@ -253,49 +259,125 @@ extension View {
 #if os(macOS)
 import AppKit
 
-/// Hides the window's title-bar buttons while playing and restores them afterwards, and reports
-/// whether the window is in full screen (where there are no window buttons to leave room for).
+/// Where the window's close / minimize / zoom buttons are, in the window's top-left coordinates, so
+/// Encore's floating controls line up with them (centered on the same line, just after them).
+struct MacWindowButtons: Equatable {
+    var midY: CGFloat = 26
+    var trailing: CGFloat = 72
+    var fullScreen = false
+}
+
+/// Gives the window Safari's title bar: a tall, transparent unified toolbar with nothing in it, so the
+/// window buttons sit lower, on the same line as Encore's glass controls, over full-size content. In
+/// full screen the empty toolbar is taken away (it would show as a grey strip); while a video plays the
+/// window buttons hide. Reports where the buttons are.
 private struct WindowChromeController: NSViewRepresentable {
     let hidden: Bool
-    @Binding var fullScreen: Bool
+    @Binding var buttons: MacWindowButtons
 
     func makeNSView(context: Context) -> NSView { NSView() }
 
     func updateNSView(_ view: NSView, context: Context) {
         DispatchQueue.main.async {
             guard let window = view.window else { return }
+            context.coordinator.attach(window) { if buttons != $0 { buttons = $0 } }
             for kind in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
                 window.standardWindowButton(kind)?.isHidden = hidden
             }
-            window.titlebarAppearsTransparent = true
-            context.coordinator.observe(window) { fullScreen = $0 }
         }
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
+    @MainActor
     final class Coordinator {
         private weak var window: NSWindow?
         private var tokens: [NSObjectProtocol] = []
+        private var report: (MacWindowButtons) -> Void = { _ in }
+        private lazy var toolbar: NSToolbar = {
+            let toolbar = NSToolbar(identifier: "EncoreWindow")
+            toolbar.showsBaselineSeparator = false
+            toolbar.allowsUserCustomization = false
+            return toolbar
+        }()
 
-        func observe(_ window: NSWindow, changed: @escaping (Bool) -> Void) {
+        func attach(_ window: NSWindow, report: @escaping (MacWindowButtons) -> Void) {
+            self.report = report
             guard window !== self.window else { return }
             self.window = window
+            window.styleMask.insert(.fullSizeContentView)
+            window.titleVisibility = .hidden
+            window.titlebarAppearsTransparent = true
+            window.titlebarSeparatorStyle = .none
+            window.toolbarStyle = .unified
+            applyToolbar(fullScreen: window.styleMask.contains(.fullScreen))
+
             tokens.forEach(NotificationCenter.default.removeObserver)
-            changed(window.styleMask.contains(.fullScreen))
-            tokens = [NSWindow.willEnterFullScreenNotification, NSWindow.willExitFullScreenNotification].map { name in
-                NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { _ in
-                    changed(name == NSWindow.willEnterFullScreenNotification)
-                }
-            }
+            let center = NotificationCenter.default
+            tokens = [
+                center.addObserver(forName: NSWindow.willEnterFullScreenNotification, object: window, queue: .main) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.applyToolbar(fullScreen: true) }
+                },
+                center.addObserver(forName: NSWindow.didExitFullScreenNotification, object: window, queue: .main) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.applyToolbar(fullScreen: false) }
+                },
+                center.addObserver(forName: NSWindow.didResizeNotification, object: window, queue: .main) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.measure() }
+                },
+            ]
+        }
+
+        private func applyToolbar(fullScreen: Bool) {
+            guard let window else { return }
+            window.toolbar = fullScreen ? nil : toolbar
+            measure(fullScreen: fullScreen)
+            // The title bar settles after the change; measure again once it has.
+            DispatchQueue.main.async { [weak self] in self?.measure(fullScreen: fullScreen) }
+        }
+
+        private func measure(fullScreen: Bool? = nil) {
+            guard let window, let content = window.contentView,
+                  let zoom = window.standardWindowButton(.zoomButton), let host = zoom.superview else { return }
+            let frame = host.convert(zoom.frame, to: nil)   // window coordinates, bottom-left origin
+            let top = content.frame.height - frame.maxY
+            report(MacWindowButtons(midY: top + frame.height / 2, trailing: frame.maxX,
+                                    fullScreen: fullScreen ?? window.styleMask.contains(.fullScreen)))
         }
 
         deinit { tokens.forEach(NotificationCenter.default.removeObserver) }
     }
 }
 
+/// A Mac section: its root page in a navigation stack, with titles and episodes opened over it as
+/// layers (see `MacNavigator`), each laid out at the full window size from its first frame.
+private struct MacSection<Root: View>: View {
+    @ObservedObject var navigator: MacNavigator
+    let root: Root
+
+    var body: some View {
+        ZStack {
+            NavigationStack(path: navigator.path) { root.withRoutes() }
+                .allowsHitTesting(navigator.layers.isEmpty)
+            ForEach(navigator.layers) { layer in
+                NavigationStack(path: navigator.path) {
+                    Group {
+                        switch layer.route {
+                        case .title(let meta): DetailView(preview: meta)
+                        case let .episode(meta, video): EpisodeDetailView(meta: meta, video: video)
+                        }
+                    }
+                    .withRoutes()
+                }
+                .allowsHitTesting(layer.id == navigator.layers.last?.id)
+                .transition(.opacity)
+            }
+        }
+    }
+}
+
 /// A round glass button for the Mac's floating window controls.
 private struct ChromeButton: View {
+    static let size: CGFloat = 34
     let systemImage: String
     let help: String
     var glass = true
@@ -307,7 +389,7 @@ private struct ChromeButton: View {
             Image(systemName: systemImage)
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(glass ? .primary : .secondary)
-                .frame(width: 34, height: 34)
+                .frame(width: Self.size, height: Self.size)
                 .background {
                     if glass {
                         Color.clear.liquidGlass(in: Circle())
@@ -330,6 +412,8 @@ private struct ChromeButton: View {
 /// The Mac sidebar: a floating glass panel over the page, with the sections and who's watching.
 private struct MacSidebar: View {
     let selection: RootView.AppTab
+    /// The window buttons and the sidebar button sit in the panel's header, above the sections.
+    let headerHeight: CGFloat
     let select: (RootView.AppTab) -> Void
     @EnvironmentObject private var app: AppModel
 
@@ -363,13 +447,15 @@ private struct MacSidebar: View {
             }
         }
         .padding(.horizontal, 10)
-        .padding(.top, 58)   // below the window buttons and the sidebar button
+        .padding(.top, headerHeight + 8)
         .padding(.bottom, 12)
-        .frame(width: 240)
+        .frame(width: 250)
         .frame(maxHeight: .infinity)
-        .liquidGlass(in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .liquidGlass(in: RoundedRectangle(cornerRadius: 18, style: .continuous))
         .shadow(color: .black.opacity(0.35), radius: 30, x: 8)
-        .padding(8)
+        // Close to the window's corner, so the window buttons and the sidebar button sit inside the
+        // panel's header, exactly where they are with the sidebar closed.
+        .padding(6)
     }
 }
 
