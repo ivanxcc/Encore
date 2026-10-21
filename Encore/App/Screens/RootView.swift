@@ -80,15 +80,18 @@ struct RootView: View {
             // that by itself for clicks on things that can't take focus), which folds an empty field.
             .simultaneousGesture(TapGesture().onEnded { if searchFocused { searchFocused = false } })
 
-            if sidebarOpen {
-                Color.black.opacity(0.28)
-                    .ignoresSafeArea()
-                    .contentShape(Rectangle())
-                    .onTapGesture { setSidebar(false) }
-                    .transition(.opacity)
-                MacSidebar(selection: tab, headerHeight: controlsBottom) { select($0) }
-                    .transition(.move(edge: .leading).combined(with: .opacity))
-            }
+            // Always in place and slid in or out, rather than added and removed, so closing runs the
+            // very same motion as opening, in reverse (a removed glass panel vanished abruptly).
+            Color.black.opacity(sidebarOpen ? 0.28 : 0)
+                .ignoresSafeArea()
+                .contentShape(Rectangle())
+                .onTapGesture { setSidebar(false) }
+                .allowsHitTesting(sidebarOpen)
+            MacSidebar(selection: tab, headerHeight: controlsBottom) { select($0) }
+                .offset(x: sidebarOpen ? 0 : -290)
+                .opacity(sidebarOpen ? 1 : 0)
+                .allowsHitTesting(sidebarOpen)
+                .accessibilityHidden(!sidebarOpen)
 
             // On the window buttons' line, just after them (in full screen, where they're gone, the corner).
             controls
@@ -97,7 +100,6 @@ struct RootView: View {
                 .opacity(playback.request == nil ? 1 : 0)
         }
         .ignoresSafeArea(edges: .top)
-        .animation(.smooth(duration: 0.38), value: sidebarOpen)
         .animation(.smooth(duration: 0.38), value: searchExpanded)
         .animation(.smooth(duration: 0.3), value: navigator(for: tab).canGoBack)
         .onChange(of: app.household.id) { _, _ in
@@ -192,7 +194,7 @@ struct RootView: View {
 
     private func setSidebar(_ open: Bool) {
         if open { searchFocused = false }
-        sidebarOpen = open
+        withAnimation(.smooth(duration: 0.42)) { sidebarOpen = open }
     }
 
     private func select(_ which: AppTab) {
