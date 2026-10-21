@@ -95,7 +95,13 @@ private struct TitleMenu: ViewModifier {
     @EnvironmentObject private var app: AppModel
 
     func body(content: Content) -> some View {
-        content.contextMenu {
+        content
+            #if os(macOS)
+            // The pointer resting on a title is the moment before a click: fetch its page now, so it
+            // opens complete.
+            .onHover { if $0 { DetailModel.prefetch(meta, app: app) } }
+            #endif
+            .contextMenu {
             let _ = app.libraryRevision
             let inList = app.libraryItem(meta.id)?.isInLibrary == true
             Button { app.setInList(meta, !inList) } label: {
@@ -176,6 +182,7 @@ private struct ContinueCard: View {
 /// until the viewer interacts.
 struct HeroCarousel: View {
     let items: [MetaPreview]
+    @EnvironmentObject private var app: AppModel
     @State private var index = 0
     /// The slide timer: when the current title appeared, and how far it had got when it was held.
     @State private var slideStart = Date()
@@ -248,6 +255,11 @@ struct HeroCarousel: View {
                 slideStart = Date().addingTimeInterval(-(heldElapsed ?? 0))
                 heldElapsed = nil
             }
+        }
+        // The title on the hero is the likeliest to be opened: have its page ready.
+        .task(id: index) {
+            guard !items.isEmpty else { return }
+            DetailModel.prefetch(items[min(index, items.count - 1)], app: app)
         }
         .task(id: "\(index)|\(isHeld)") {
             guard !isHeld, items.count > 1 else { return }

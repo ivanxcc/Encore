@@ -17,27 +17,75 @@ final class DetailModel: ObservableObject {
         if wanted == season { runtimes = found }
     }
 
+    /// The page's text and buttons are shown once everything they depend on is here, all at once, so
+    /// nothing reflows as it arrives (a "Resume" that later becomes "Resume S1, E3", a logo that pops in).
+    @Published var ready = false
+
+    /// Titles already fetched this session (and ones prefetched as the pointer passes over them), so a
+    /// page reopened, or opened from a hovered card, is complete from its first frame.
+    private static var cache: [String: (meta: MetaDetail, extras: TitleExtras?)] = [:]
+    private static var inFlight: [String: Task<(meta: MetaDetail, extras: TitleExtras?)?, Never>] = [:]
+
+    /// Fetches a title's details and extras together, once, however many asks there are.
+    static func fetch(_ preview: MetaPreview, app: AppModel) async -> (meta: MetaDetail, extras: TitleExtras?)? {
+        if let hit = cache[preview.id] { return hit }
+        if let running = inFlight[preview.id] { return await running.value }
+        let task = Task { @MainActor () -> (meta: MetaDetail, extras: TitleExtras?)? in
+            async let extras = app.extras(for: preview)
+            guard let detail = try? await app.session.addonService.meta(type: preview.type, id: preview.id, in: app.settings.addons)
+            else { _ = await extras; return nil }
+            let found = await extras
+            // The logo the page will show, decoded before the page appears, so it doesn't pop in after.
+            if let logo = DetailView.logo(preview: preview, meta: detail, extras: found) {
+                _ = await ImagePipeline.shared.image(logo, maxPixel: HeroArtwork.logoPixel)
+            }
+            return (detail, found)
+        }
+        inFlight[preview.id] = task
+        let result = await task.value
+        inFlight[preview.id] = nil
+        if let result { cache[preview.id] = result }
+        return result
+    }
+
+    /// Warm the cache for a title the viewer is about to open (hovered, or on the hero).
+    static func prefetch(_ preview: MetaPreview, app: AppModel) {
+        guard cache[preview.id] == nil, inFlight[preview.id] == nil else { return }
+        Task { _ = await fetch(preview, app: app) }
+    }
+
     func load(_ preview: MetaPreview, app: AppModel) async {
-        guard meta?.id != preview.id else { return }
-        async let extras = app.extras(for: preview)
-        do {
-            let detail = try await app.session.addonService.meta(type: preview.type, id: preview.id, in: app.settings.addons)
-            meta = detail
-            // Open on the season of the episode in progress, else the first real season.
-            let videoID = app.libraryItem(preview.id)?.state.videoID
-            let progressSeason = videoID.flatMap { id in detail.videos.first { $0.id == id }?.season }
-                // Ids from another app may not match this add-on's exactly: "tt…:4:2" still says season 4.
-                ?? videoID.flatMap { id -> Int? in
-                    let parts = id.split(separator: ":")
-                    guard parts.count == 3, let number = Int(parts[1]), detail.seasons.contains(number) else { return nil }
-                    return number
-                }
-            season = progressSeason ?? detail.seasons.first(where: { $0 > 0 }) ?? detail.seasons.first ?? 1
-        } catch {
+        guard meta?.id != preview.id else { ready = true; return }
+        // Give a slow add-on a moment, then show what there is rather than nothing.
+        let timeout = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(2.5))
+            if !Task.isCancelled, !ready { withAnimation(Theme.Motion.content) { ready = true } }
+        }
+        let result = await Self.fetch(preview, app: app)
+        timeout.cancel()
+        if let result {
+            apply(result, preview: preview, app: app)
+        } else {
             failed = true
         }
-        let loaded = await extras
-        withAnimation(Theme.Motion.content) { self.extras = loaded }
+        withAnimation(.easeOut(duration: 0.35)) { ready = true }
+    }
+
+    private func apply(_ result: (meta: MetaDetail, extras: TitleExtras?), preview: MetaPreview, app: AppModel) {
+        let detail = result.meta
+        meta = detail
+        extras = result.extras
+        // Open on the season of the episode in progress, else the first real season.
+        let videoID = app.libraryItem(preview.id)?.state.videoID
+        let progressSeason = videoID.flatMap { id in detail.videos.first { $0.id == id }?.season }
+            // Ids from another app may not match this add-on's exactly: "tt…:4:2" still says season 4.
+            ?? videoID.flatMap { id -> Int? in
+                let parts = id.split(separator: ":")
+                guard parts.count == 3, let number = Int(parts[1]), detail.seasons.contains(number) else { return nil }
+                return number
+            }
+        season = progressSeason ?? detail.seasons.first(where: { $0 > 0 }) ?? detail.seasons.first ?? 1
+        ready = true
     }
 }
 
@@ -97,6 +145,9 @@ struct DetailView: View {
                     if let meta = model.meta { AboutSection(meta: meta, extras: model.extras) }
                 }
                 .padding(.bottom, 90)
+                // The artwork is there from the first frame (it's the one just on screen); the words and
+                // buttons arrive together, once, when everything they need has loaded.
+                .opacity(model.ready ? 1 : 0)
             }
             .scrollClipDisabled()
             .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.y + $0.contentInsets.top } action: { _, offset in
@@ -143,7 +194,16 @@ struct DetailView: View {
     }
 
     private var logoURL: URL? {
-        model.extras?.logo ?? preview.logo ?? model.meta?.logoURL ?? preview.logoURL
+        Self.logo(preview: preview, meta: model.meta, extras: model.extras)
+    }
+
+    /// The logo the Home hero was showing when it's already decoded (the same picture carries over),
+    /// else the sharpest one: TMDB's, then the add-on's.
+    static func logo(preview: MetaPreview, meta: MetaDetail?, extras: TitleExtras?) -> URL? {
+        if let shown = preview.logoURL, ImagePipeline.shared.cached(shown, maxPixel: HeroArtwork.logoPixel) != nil {
+            return shown
+        }
+        return extras?.logo ?? preview.logo ?? meta?.logoURL ?? preview.logoURL
     }
 
     private var cast: [TitleExtras.Person] {
