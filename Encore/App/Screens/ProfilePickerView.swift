@@ -67,15 +67,23 @@ struct ProfileAvatar: View {
     }
 }
 
+/// A profile in "Who's watching?". The one under the pointer (Mac) or the remote's focus (Apple TV)
+/// grows a little and gets a white ring, and its name brightens, so it's plain which one a click picks.
 private struct ProfileAvatarButton: View {
     let profile: Profile
     let action: () -> Void
+    @State private var hovering = false
+    @FocusState private var focused: Bool
 
     #if os(tvOS)
     private let size: CGFloat = 220
+    private let ring: CGFloat = 7
     #else
     private let size: CGFloat = 120
+    private let ring: CGFloat = 4
     #endif
+
+    private var highlighted: Bool { hovering || focused }
 
     var body: some View {
         VStack(spacing: 16) {
@@ -90,13 +98,36 @@ private struct ProfileAvatarButton: View {
                         }
                     }
                     .clipShape(Circle())
+                    .overlay {
+                        Circle()
+                            .strokeBorder(.white, lineWidth: ring)
+                            .padding(-ring * 1.6)
+                            .opacity(highlighted ? 1 : 0)
+                    }
+                    .scaleEffect(highlighted ? 1.1 : 1)
+                    .shadow(color: .black.opacity(highlighted ? 0.55 : 0), radius: size * 0.12, y: size * 0.06)
+                    .contentShape(Circle())
             }
-            .cardButtonStyle()
-            .clipShape(Circle())
+            .buttonStyle(AvatarPressStyle())
+            .focused($focused)
+            #if !os(tvOS)
+            .onHover { hovering = $0 }
+            #endif
             Text(profile.name)
-                .font(Theme.Fonts.cardTitle)
-                .foregroundStyle(Theme.Colors.secondary)
+                .font(Theme.Fonts.cardTitle.weight(highlighted ? .semibold : .regular))
+                .foregroundStyle(highlighted ? Theme.Colors.primary : Theme.Colors.secondary)
+                .offset(y: highlighted ? size * 0.06 : 0)
         }
+        .animation(.spring(response: 0.32, dampingFraction: 0.72), value: highlighted)
+    }
+}
+
+/// Presses in slightly; the hover and focus highlight are drawn by the avatar itself.
+private struct AvatarPressStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.95 : 1)
+            .animation(.spring(response: 0.25, dampingFraction: 0.7), value: configuration.isPressed)
     }
 }
 

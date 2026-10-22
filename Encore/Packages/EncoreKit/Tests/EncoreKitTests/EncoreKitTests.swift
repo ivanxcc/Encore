@@ -380,6 +380,21 @@ final class QualityTraitTests: XCTestCase {
                                         preferences: StreamPreferences(), torrentsPlayable: false)
         XCTAssertEqual(ranked.map(\.stream), [web4k, remux1080, web1080])
     }
+
+    /// On cellular: a cached 1080p beats a 4K file, and the leaner 1080p beats a huge remux.
+    func testCellularPrefersCachedLean1080p() throws {
+        let a = try addon("https://s.test", streamAddonJSON)
+        let remux1080 = AddonStream(url: URL(string: "https://x/r.mkv")!, name: "[RD+] 1080p", title: "Movie.1080p.BluRay.REMUX 💾 32.5 GB")
+        let web1080 = AddonStream(url: URL(string: "https://x/w.mkv")!, name: "[RD+] 1080p", title: "Movie.1080p.WEB-DL 💾 2.1 GB")
+        let uncached1080 = AddonStream(url: URL(string: "https://x/u.mkv")!, name: "[RD download] 1080p", title: "Movie.1080p.WEB-DL 💾 1.4 GB")
+        let web4k = AddonStream(url: URL(string: "https://x/4.mkv")!, name: "[RD+] 4K", title: "Movie.2160p.WEB-DL 💾 14 GB")
+        let ranked = StreamRanking.rank([StreamGroup(addon: a, streams: [web4k, remux1080, uncached1080, web1080])],
+                                        preferences: StreamPreferences(), torrentsPlayable: false,
+                                        limits: NetworkLimits(maxResolution: StreamTraits.Resolution.hd1080.rawValue))
+        XCTAssertEqual(ranked.first?.stream, web1080)
+        XCTAssertLessThan(ranked.firstIndex { $0.stream == remux1080 }!, ranked.firstIndex { $0.stream == web4k }!)
+        XCTAssertEqual(ranked.last?.stream, uncached1080)
+    }
 }
 
 final class SkipAndBindingTests: XCTestCase {

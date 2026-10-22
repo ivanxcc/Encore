@@ -157,6 +157,9 @@ private struct ContinueCard: View {
                 .clipShape(RoundedRectangle(cornerRadius: Theme.Metrics.cornerRadius, style: .continuous))
         }
         .cardLinkStyle()
+        #if os(macOS)
+        .onHover { if $0 { DetailModel.prefetch(item.preview, app: app) } }
+        #endif
         .contextMenu {
             Button("Resume", systemImage: "play.fill") { playback.resume(item, app: app) }
             Button("Mark as Watched", systemImage: "checkmark.circle") {
@@ -233,6 +236,8 @@ struct HeroCarousel: View {
             }
             #elseif os(iOS)
             .gesture(DragGesture(minimumDistance: 30).onEnded { value in
+                // Sideways only: scrolling the page down past the hero must not change the title.
+                guard abs(value.translation.width) > abs(value.translation.height) else { return }
                 step(value.translation.width < 0 ? 1 : -1)
             })
             #elseif os(macOS)
@@ -354,9 +359,22 @@ private struct HeroArt: View {
     let item: MetaPreview
     var centered = false
 
+    #if os(iOS)
+    @State private var opened = false
+    #endif
+
     var body: some View {
         #if os(tvOS)
         art
+        #elseif os(iOS)
+        // A tap, not a button: a button took a swipe across the artwork as a press and opened the title
+        // instead of moving to the next one. A tap gesture gives way as soon as the finger travels.
+        art
+            .contentShape(Rectangle())
+            .onTapGesture { opened = true }
+            .navigationDestination(isPresented: $opened) { DetailView(preview: item) }
+            .accessibilityAddTraits(.isButton)
+            .accessibilityLabel("Open \(item.name)")
         #else
         NavigationLink(value: Route.title(item)) { art.contentShape(Rectangle()) }
             .buttonStyle(.plain)

@@ -127,7 +127,14 @@ final class MacNavigator: ObservableObject {
     private struct Page { let id: UUID; let back: DismissAction }
 
     @Published private(set) var layers: [Layer] = []
+    /// Layers currently faded in. A layer is added invisible and faded in, and on the way back faded out
+    /// before it is removed, so both directions are the same smooth dissolve (removing it outright made
+    /// going back abrupt).
+    @Published private(set) var shown: Set<UUID> = []
     @Published private var pages: [Page] = []
+    /// Gets a route's page ready (its details, logo, and artwork) so it appears complete; set by the app.
+    var prepare: ((Route) async -> Void)?
+    private var opening = false
 
     var canGoBack: Bool { !pages.isEmpty || !layers.isEmpty }
 
@@ -139,8 +146,28 @@ final class MacNavigator: ObservableObject {
         })
     }
 
+    static let fade = Animation.easeInOut(duration: 0.42)
+
+    /// Opens a page once it's ready, or after a second at most, then dissolves it in whole.
     func open(_ route: Route) {
-        withAnimation(.easeInOut(duration: 0.4)) { layers.append(Layer(route: route)) }
+        guard !opening else { return }
+        opening = true
+        Task {
+            if let prepare {
+                await withTaskGroup(of: Void.self) { group in
+                    group.addTask { await prepare(route) }
+                    group.addTask { try? await Task.sleep(for: .seconds(1)) }
+                    await group.next()
+                    group.cancelAll()
+                }
+            }
+            let layer = Layer(route: route)
+            layers.append(layer)
+            opening = false
+            // One frame laid out invisibly at full size, then the dissolve.
+            try? await Task.sleep(for: .milliseconds(16))
+            _ = withAnimation(Self.fade) { shown.insert(layer.id) }
+        }
     }
 
     func appeared(_ id: UUID, back: DismissAction) {
@@ -155,13 +182,18 @@ final class MacNavigator: ObservableObject {
     func goBack() {
         if let page = pages.last {
             page.back()
-        } else if !layers.isEmpty {
-            withAnimation(.easeInOut(duration: 0.35)) { _ = layers.removeLast() }
+        } else if let top = layers.last, shown.contains(top.id) {
+            withAnimation(Self.fade) {
+                _ = shown.remove(top.id)
+            } completion: { [weak self] in
+                self?.layers.removeAll { $0.id == top.id }
+            }
         }
     }
 
     func reset() {
         layers = []
+        shown = []
         pages = []
     }
 }

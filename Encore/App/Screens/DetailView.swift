@@ -35,10 +35,12 @@ final class DetailModel: ObservableObject {
             guard let detail = try? await app.session.addonService.meta(type: preview.type, id: preview.id, in: app.settings.addons)
             else { _ = await extras; return nil }
             let found = await extras
-            // The logo the page will show, decoded before the page appears, so it doesn't pop in after.
-            if let logo = DetailView.logo(preview: preview, meta: detail, extras: found) {
-                _ = await ImagePipeline.shared.image(logo, maxPixel: HeroArtwork.logoPixel)
-            }
+            // The logo and the artwork the page will show, decoded before it appears, so neither pops in.
+            let logoURL = DetailView.logo(preview: preview, meta: detail, extras: found)
+            let backdropURL = DetailView.backdrop(preview: preview, meta: detail, extras: found)
+            async let logo: Void = decode(logoURL, maxPixel: HeroArtwork.logoPixel)
+            async let backdrop: Void = decode(backdropURL, maxPixel: HeroArtwork.maxPixel)
+            _ = await (logo, backdrop)
             return (detail, found)
         }
         inFlight[preview.id] = task
@@ -46,6 +48,10 @@ final class DetailModel: ObservableObject {
         inFlight[preview.id] = nil
         if let result { cache[preview.id] = result }
         return result
+    }
+
+    private nonisolated static func decode(_ url: URL?, maxPixel: Int) async {
+        if let url { _ = await ImagePipeline.shared.image(url, maxPixel: maxPixel) }
     }
 
     /// Warm the cache for a title the viewer is about to open (hovered, or on the hero).
@@ -190,7 +196,16 @@ struct DetailView: View {
     /// a moment later. Otherwise the sharpest available: TMDB's original once it arrives.
     private var backdropURL: URL? {
         if let heroBackdrop { return heroBackdrop }
-        return model.extras?.backdrop ?? preview.backdropURL ?? model.meta?.backdropURL
+        return Self.backdrop(preview: preview, meta: model.meta, extras: model.extras)
+    }
+
+    /// The artwork a page shows once its details are in: the one already decoded at full size if any
+    /// (the Home hero's), else the sharpest, TMDB's original.
+    static func backdrop(preview: MetaPreview, meta: MetaDetail?, extras: TitleExtras?) -> URL? {
+        if let shown = preview.backdropURL, ImagePipeline.shared.cached(shown, maxPixel: HeroArtwork.maxPixel) != nil {
+            return shown
+        }
+        return extras?.backdrop ?? preview.backdropURL ?? meta?.backdropURL
     }
 
     private var logoURL: URL? {

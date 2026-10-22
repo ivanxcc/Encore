@@ -102,6 +102,11 @@ struct RootView: View {
         .ignoresSafeArea(edges: .top)
         .animation(.smooth(duration: 0.38), value: searchExpanded)
         .animation(.smooth(duration: 0.3), value: navigator(for: tab).canGoBack)
+        .onAppear {
+            for navigator in [homeNav, searchNav, libraryNav, settingsNav] {
+                navigator.prepare = { [weak app] route in await app?.prepare(route) }
+            }
+        }
         .onChange(of: app.household.id) { _, _ in
             for navigator in [homeNav, searchNav, libraryNav, settingsNav] { navigator.reset() }
         }
@@ -370,8 +375,8 @@ private struct MacSection<Root: View>: View {
                     }
                     .withRoutes()
                 }
-                .allowsHitTesting(layer.id == navigator.layers.last?.id)
-                .transition(.opacity)
+                .opacity(navigator.shown.contains(layer.id) ? 1 : 0)
+                .allowsHitTesting(layer.id == navigator.layers.last?.id && navigator.shown.contains(layer.id))
             }
         }
     }

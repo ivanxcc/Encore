@@ -44,7 +44,7 @@ struct SourcesView: View {
         }
         .task {
             let id = video?.id ?? meta.id
-            streams = await app.session.rankedStreams(type: meta.type, id: id) { partial in
+            streams = await app.session.rankedStreams(type: meta.type, id: id, limits: NetworkMonitor.shared.limits) { partial in
                 await MainActor.run { if !partial.isEmpty { streams = partial } }
             }
         }
