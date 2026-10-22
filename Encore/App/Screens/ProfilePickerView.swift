@@ -110,7 +110,9 @@ private struct ProfileAvatarButton: View {
             }
             .buttonStyle(AvatarPressStyle())
             .focused($focused)
+            #if !os(tvOS)
             .onHover { hovering = $0 }
+            #endif
             Text(profile.name)
                 .font(Theme.Fonts.cardTitle.weight(highlighted ? .semibold : .regular))
                 .foregroundStyle(highlighted ? Theme.Colors.primary : Theme.Colors.secondary)
