@@ -452,14 +452,14 @@ public final class HouseholdSession: @unchecked Sendable {
 
     // MARK: Streams
 
-    public func rankedStreams(type: String, id: String,
+    public func rankedStreams(type: String, id: String, limits: NetworkLimits? = nil,
                               onPartial: (@Sendable ([RankedStream]) async -> Void)? = nil) async -> [RankedStream] {
         let s = settings
         let torrentsPlayable = s.streamingServer != nil
         let groups = await addonService.streams(type: type, id: id, in: s.addons) { partial in
-            await onPartial?(StreamRanking.rank(partial, preferences: s.preferences, torrentsPlayable: torrentsPlayable))
+            await onPartial?(StreamRanking.rank(partial, preferences: s.preferences, torrentsPlayable: torrentsPlayable, limits: limits))
         }
-        return StreamRanking.rank(groups, preferences: s.preferences, torrentsPlayable: torrentsPlayable)
+        return StreamRanking.rank(groups, preferences: s.preferences, torrentsPlayable: torrentsPlayable, limits: limits)
     }
 
     public func playbackSource(for ranked: RankedStream, title: String) -> PlaybackSource? {

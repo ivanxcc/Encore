@@ -97,6 +97,9 @@ struct SettingsView: View {
                 Toggle("Allow Torrents", isOn: Binding(
                     get: { app.settings.preferences.allowTorrents },
                     set: { value in app.updateSettings { $0.preferences.allowTorrents = value } }))
+                #if os(iOS)
+                CellularQualityPicker()
+                #endif
             }
 
             VideoAudioSection()
@@ -354,3 +357,26 @@ private struct VideoAudioSection: View {
         #endif
     }
 }
+
+#if os(iOS)
+/// This iPhone's own choice (not the household's): on cellular, play instant 1080p sources rather
+/// than pulling a large 4K file over the air.
+private struct CellularQualityPicker: View {
+    @AppStorage(NetworkMonitor.cellularQualityKey) private var quality = NetworkMonitor.defaultCellularQuality
+
+    var body: some View {
+        Picker(selection: $quality) {
+            Text("1080p").tag(StreamTraits.Resolution.hd1080.rawValue)
+            Text("720p").tag(StreamTraits.Resolution.hd720.rawValue)
+            Text("Same as Wi-Fi").tag(0)
+        } label: {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Quality on Cellular")
+                Text("Prefers instant, smaller files on cellular data.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+#endif

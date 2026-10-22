@@ -123,6 +123,13 @@ public struct StreamPreferences: Codable, Hashable, Sendable {
     }
 }
 
+/// Limits for a costly connection (cellular, a personal hotspot): a lower quality cap, and a strong
+/// preference for sources that start at once and don't pull a huge file over the air.
+public struct NetworkLimits: Hashable, Sendable {
+    public var maxResolution: Int
+    public init(maxResolution: Int) { self.maxResolution = maxResolution }
+}
+
 /// A stream with its parsed traits and where it came from.
 public struct RankedStream: Hashable, Identifiable, Sendable {
     public var stream: AddonStream
@@ -144,7 +151,9 @@ public enum StreamRanking {
     /// direct link beats a torrent that has to find peers), it must not be junk (CAM), then quality up
     /// to the user's cap, then size as a proxy for bitrate. Add-on order breaks ties.
     public static func rank(_ groups: [StreamGroup], preferences: StreamPreferences,
-                            torrentsPlayable: Bool) -> [RankedStream] {
+                            torrentsPlayable: Bool, limits: NetworkLimits? = nil) -> [RankedStream] {
+        var preferences = preferences
+        if let limits { preferences.maxResolution = min(preferences.maxResolution, limits.maxResolution) }
         var ranked: [RankedStream] = []
         for (groupIndex, group) in groups.enumerated() {
             for (index, stream) in group.streams.enumerated() {
@@ -154,15 +163,23 @@ public enum StreamRanking {
                 if preferences.hideCam && traits.isCam { continue }
                 let rank = groupIndex * 1000 + index
                 ranked.append(RankedStream(stream: stream, addon: group.addon, traits: traits,
-                                           score: score(traits, isTorrent: isTorrent, preferences: preferences, rank: rank),
+                                           score: score(traits, isTorrent: isTorrent, preferences: preferences, rank: rank,
+                                                        constrained: limits != nil),
                                            addonRank: rank))
             }
         }
         return ranked.sorted { $0.score != $1.score ? $0.score > $1.score : $0.addonRank < $1.addonRank }
     }
 
-    static func score(_ t: StreamTraits, isTorrent: Bool, preferences p: StreamPreferences, rank: Int) -> Double {
+    static func score(_ t: StreamTraits, isTorrent: Bool, preferences p: StreamPreferences, rank: Int,
+                      constrained: Bool = false) -> Double {
         var s = 0.0
+        // On cellular, a source that starts at once matters even more, and a torrent (peers, then the
+        // whole swarm's overhead) or an uncached debrid file is the last resort.
+        if constrained {
+            if t.isCached { s += 2000 }
+            if isTorrent || t.isUncached { s -= 2000 }
+        }
         // Will it start?
         if t.isCached { s += 4000 }
         if t.isUncached { s -= 3000 }
@@ -179,14 +196,18 @@ public enum StreamRanking {
         if p.preferHDR && t.isDolbyVision && res <= p.maxResolution { s += 40 }
         // Home-theater quality inside the same resolution tier: untouched remux, lossless and object audio,
         // full surround. Each bonus is smaller than one resolution step, so a 1080p remux never outranks 4K.
-        if res <= p.maxResolution {
+        if res <= p.maxResolution, !constrained {
             if t.isRemux { s += 90 }
             if t.audio?.isLossless == true { s += 60 } else if t.audio == .eac3 { s += 20 }
             if t.isAtmos { s += 50 }
             if let channels = t.channels { s += channels >= 8 ? 30 : channels >= 6 ? 20 : 0 }
         }
         // Bigger file at the same tier usually means higher bitrate; log-scaled so it never dominates.
-        if let size = t.sizeBytes, size > 0 { s += min(log2(Double(size) / Double(1 << 20)), 18) * 8 }
+        // On cellular the opposite: the smaller file at the same tier plays smoother and costs less data.
+        if let size = t.sizeBytes, size > 0 {
+            let weight = min(log2(Double(size) / Double(1 << 20)), 18)
+            s += constrained ? -weight * 30 : weight * 8
+        }
         // Gentle preference for the add-on's own order.
         s -= Double(rank % 1000) * 0.5
         return s

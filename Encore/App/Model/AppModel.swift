@@ -39,6 +39,7 @@ final class AppModel: ObservableObject {
         // One profile and no PIN: go straight in. Otherwise the launch picker asks who is watching.
         if profiles.count == 1, !profiles[0].hasPin { activeProfile = profiles[0]; profileWasAutoPicked = true }
         if !StorageLocation.isWritable(directory.root) { storageFailure = true }
+        _ = NetworkMonitor.shared   // knows the connection before the first source is chosen
         Task { await refresh() }
     }
 
@@ -385,6 +386,11 @@ final class AppModel: ObservableObject {
         guard let cloud, let extras = await cloud.titleExtras(imdbID: imdb, type: meta.type) else { return nil }
         extrasCache[imdb] = extras
         return extras
+    }
+
+    /// Gets a page ready before it opens: a title's details, logo, and full-size artwork.
+    func prepare(_ route: Route) async {
+        if case let .title(meta) = route { _ = await DetailModel.fetch(meta, app: self) }
     }
 
     private var runtimeCache: [String: [Int: TimeInterval]] = [:]

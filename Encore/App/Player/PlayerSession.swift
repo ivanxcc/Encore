@@ -45,6 +45,9 @@ final class PlayerSession: ObservableObject {
     private var episodes: [Video] = []
     private var countdownTask: Task<Void, Never>?
     private var upNextPolicy = UpNextPolicy()
+    /// "Watch Credits" was chosen: no countdown starts again for this episode (it used to restart on the
+    /// next tick, so the credits had to be declined over and over); Next Episode stays one press away.
+    private var upNextDeclined = false
     /// The duration the current markers were looked up for.
     private var segmentsDuration: TimeInterval = 0
     private var segmentsTask: Task<Void, Never>?
@@ -108,7 +111,8 @@ final class PlayerSession: ObservableObject {
         if let explicit {
             candidates = [explicit]
         } else {
-            candidates = await app.session.rankedStreams(type: meta.type, id: video?.id ?? meta.id)
+            candidates = await app.session.rankedStreams(type: meta.type, id: video?.id ?? meta.id,
+                                                         limits: NetworkMonitor.shared.limits)
         }
         plan = PlaybackPlan(candidates: candidates, explicit: explicit != nil,
                             streamingServer: app.settings.streamingServer, title: title).attempts
@@ -203,7 +207,9 @@ final class PlayerSession: ObservableObject {
             }
             // Up Next starts when the closing credits begin, else in the last 25 s, and only once the
             // duration has settled (see UpNextPolicy).
-            if nextEpisode != nil, upNextCountdown == nil, phase == .playing,
+            // Seeking back well before the end takes back "Watch Credits": the end is new again.
+            if upNextDeclined, self.duration > 0, position < self.duration * 0.75 { upNextDeclined = false }
+            if nextEpisode != nil, upNextCountdown == nil, !upNextDeclined, phase == .playing,
                upNextPolicy.shouldStart(position: position, duration: self.duration, credits: skipSegments.filter { !dismissedSegments.contains($0) }) {
                 startUpNextCountdown()
             }
@@ -253,6 +259,8 @@ final class PlayerSession: ObservableObject {
         let next: PlayerAction?
         if let countdown = upNextCountdown, nextEpisode != nil {
             next = .nextEpisode(countdown: countdown)
+        } else if upNextDeclined, nextEpisode != nil {
+            next = .nextEpisode(countdown: nil)
         } else if let segment = skipSegments.first(where: { $0.isActive(at: position) && !dismissedSegments.contains($0) }) {
             // Closing credits offer the next episode; anything else (opening credits too) offers a skip.
             let closing = segment.kind == .credits && duration > 0 && segment.start >= duration * 0.6
@@ -323,7 +331,9 @@ final class PlayerSession: ObservableObject {
     func cancelUpNext() {
         countdownTask?.cancel()
         upNextCountdown = nil
-        // The viewer said "not now": keep watching the credits, but leave the Next Episode button available.
+        // The viewer said "not now": keep watching the credits (and any scene after them) without being
+        // asked again, with Next Episode still there to press.
+        upNextDeclined = true
         for segment in skipSegments where segment.kind == .credits { dismissedSegments.insert(segment) }
         updateAction()
     }
@@ -334,6 +344,7 @@ final class PlayerSession: ObservableObject {
         countdownTask?.cancel()
         segmentsTask?.cancel()
         upNextCountdown = nil
+        upNextDeclined = false
         upNextPolicy.reset()
         segmentsDuration = 0
         skipSegments = []

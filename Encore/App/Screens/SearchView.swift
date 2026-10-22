@@ -72,7 +72,13 @@ private struct OwnSearchField: ViewModifier {
 
     func body(content: Content) -> some View {
         if enabled {
+            #if os(iOS)
+            // Always showing on the Search tab, not hidden until the page is pulled down.
+            content.searchable(text: $text, placement: .navigationBarDrawer(displayMode: .always),
+                               prompt: "Movies, Shows, and More")
+            #else
             content.searchable(text: $text, prompt: "Movies, Shows, and More")
+            #endif
         } else {
             content
         }
