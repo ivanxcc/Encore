@@ -39,6 +39,11 @@ struct ProfilePickerView: View {
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        #if os(tvOS)
+        // Shown mid-session (Switch Profile, or new profiles arriving): the remote's back button returns to
+        // the profile that was watching. At launch there is none, and back leaves the app as usual.
+        .onExitCommand(perform: app.previousProfile == nil ? nil : { app.returnToPreviousProfile() })
+        #endif
         .sheet(item: $pinTarget) { profile in
             PinEntryView(profile: profile) { app.activeProfile = profile }
         }

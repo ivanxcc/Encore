@@ -5,18 +5,20 @@ name: Encore
 #  - apps:   unsigned iOS, tvOS, and universal macOS builds on a macOS runner. The macOS .app is uploaded
 #            as an artifact, and its executable must contain both arm64 and x86_64.
 
+# Runs once per change, on its pull request. Not on pushes: a push to a branch with an open pull request
+# used to build everything twice (the push and the pull request), and a push to beta builds again in
+# Encore Release anyway. Changes only to the Cloud Worker don't rebuild the apps (encore-cloud.yml).
 on:
-  push:
-    paths: ["Encore/**", ".github/workflows/encore-ci.yml"]
   pull_request:
-    paths: ["Encore/**", ".github/workflows/encore-ci.yml"]
+    paths: ["Encore/**", "!Encore/Cloud/**", ".github/workflows/encore-ci.yml"]
   workflow_dispatch:
 
 permissions:
   contents: read
 
+# A new push to the pull request cancels the build of the one before it.
 concurrency:
-  group: encore-${{ github.ref }}
+  group: encore-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:

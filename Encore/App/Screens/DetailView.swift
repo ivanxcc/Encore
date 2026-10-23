@@ -35,12 +35,12 @@ final class DetailModel: ObservableObject {
             guard let detail = try? await app.session.addonService.meta(type: preview.type, id: preview.id, in: app.settings.addons)
             else { _ = await extras; return nil }
             let found = await extras
-            // The logo and the artwork the page will show, decoded before it appears, so neither pops in.
-            let logoURL = DetailView.logo(preview: preview, meta: detail, extras: found)
+            // The logo is small and part of the page's first look: decoded before the page shows its details.
+            // The full-size artwork is heavy: it starts downloading now and dissolves in when it lands,
+            // never holding the page back.
             let backdropURL = DetailView.backdrop(preview: preview, meta: detail, extras: found)
-            async let logo: Void = decode(logoURL, maxPixel: HeroArtwork.logoPixel)
-            async let backdrop: Void = decode(backdropURL, maxPixel: HeroArtwork.maxPixel)
-            _ = await (logo, backdrop)
+            Task.detached(priority: .utility) { await decode(backdropURL, maxPixel: HeroArtwork.maxPixel) }
+            await decode(DetailView.logo(preview: preview, meta: detail, extras: found), maxPixel: HeroArtwork.logoPixel)
             return (detail, found)
         }
         inFlight[preview.id] = task
@@ -64,7 +64,7 @@ final class DetailModel: ObservableObject {
         guard meta?.id != preview.id else { ready = true; return }
         // Give a slow add-on a moment, then show what there is rather than nothing.
         let timeout = Task { @MainActor in
-            try? await Task.sleep(for: .seconds(2.5))
+            try? await Task.sleep(for: .seconds(1.5))
             if !Task.isCancelled, !ready { withAnimation(Theme.Motion.content) { ready = true } }
         }
         let result = await Self.fetch(preview, app: app)
@@ -194,9 +194,11 @@ struct DetailView: View {
     /// The page keeps the exact picture the Home hero was just showing when it is already decoded at
     /// full size, so opening a title is one continuous image instead of one artwork replaced by another
     /// a moment later. Otherwise the sharpest available: TMDB's original once it arrives.
+    /// The artwork just on screen when there is one; otherwise none until the details are in, so the page
+    /// fades in one picture rather than showing one and swapping it for a sharper one a moment later.
     private var backdropURL: URL? {
         if let heroBackdrop { return heroBackdrop }
-        return Self.backdrop(preview: preview, meta: model.meta, extras: model.extras)
+        return model.ready ? Self.backdrop(preview: preview, meta: model.meta, extras: model.extras) : nil
     }
 
     /// The artwork a page shows once its details are in: the one already decoded at full size if any

@@ -63,6 +63,7 @@ final class AppModel: ObservableObject {
             session = next
             settings = next.settings
             activeProfile = nil
+            previousProfile = nil
             reloadProfiles()
             profileWasAutoPicked = false
             if profiles.count == 1, !profiles[0].hasPin { activeProfile = profiles[0]; profileWasAutoPicked = true }
@@ -101,7 +102,28 @@ final class AppModel: ObservableObject {
 
     func reloadProfiles() {
         profiles = session.profiles()
-        if let active = activeProfile { activeProfile = profiles.first { $0.id == active.id } }
+        if let active = activeProfile {
+            // The same person even if a sync gave their profile another id (the owner is matched by role,
+            // a profile made on two devices by name): never sent back to "Who's watching?" by a sync.
+            activeProfile = profiles.first { $0.id == active.id }
+                ?? profiles.first { $0.isOwner && active.isOwner }
+                ?? profiles.first { !$0.isOwner && $0.name.caseInsensitiveCompare(active.name) == .orderedSame }
+        }
+    }
+
+    /// The profile that was watching before "Who's watching?" was shown again, so the remote's back
+    /// button returns to it instead of leaving the app.
+    @Published private(set) var previousProfile: Profile?
+
+    func showProfilePicker() {
+        previousProfile = activeProfile
+        withAnimation(Theme.Motion.content) { activeProfile = nil }
+    }
+
+    func returnToPreviousProfile() {
+        guard let previous = previousProfile, let profile = profiles.first(where: { $0.id == previous.id }) else { return }
+        previousProfile = nil
+        withAnimation(Theme.Motion.content) { activeProfile = profile }
     }
 
     func saveProfile(_ profile: Profile) {
@@ -121,6 +143,12 @@ final class AppModel: ObservableObject {
     }
 
     // MARK: Account and settings
+
+    /// Settings › Sync Now: refresh and sync without ever leaving the page.
+    func syncNow() async {
+        profileWasAutoPicked = false
+        await refresh()
+    }
 
     func refresh() async {
         do {
@@ -201,7 +229,7 @@ final class AppModel: ObservableObject {
                 // ask who is watching, as the Apple TV app does after signing in.
                 if profileWasAutoPicked, profilesBefore <= 1, profiles.count > 1 {
                     profileWasAutoPicked = false
-                    withAnimation(Theme.Motion.content) { activeProfile = nil }
+                    showProfilePicker()
                 }
             }
             // 2. The list of households: the ones your home account manages appear on every device.
@@ -211,6 +239,9 @@ final class AppModel: ObservableObject {
                 reloadProfiles()   // a household without an account may have just received its profiles
             }
             cloudStatus = session.isSignedIn || directoryOutcome != nil ? .synced(Date()) : .off
+            // Only the first sync after launch or sign-in may ask "Who's watching?"; a later one (Sync Now
+            // in Settings) never takes the viewer away from what they're doing.
+            if session.isSignedIn { profileWasAutoPicked = false }
         } catch CloudClient.CloudError.signedOut {
             cloudStatus = .failed("Sign in to Stremio again to keep this household in sync.")
         } catch let CloudClient.CloudError.server(status) {
@@ -386,11 +417,6 @@ final class AppModel: ObservableObject {
         guard let cloud, let extras = await cloud.titleExtras(imdbID: imdb, type: meta.type) else { return nil }
         extrasCache[imdb] = extras
         return extras
-    }
-
-    /// Gets a page ready before it opens: a title's details, logo, and full-size artwork.
-    func prepare(_ route: Route) async {
-        if case let .title(meta) = route { _ = await DetailModel.fetch(meta, app: self) }
     }
 
     private var runtimeCache: [String: [Int: TimeInterval]] = [:]

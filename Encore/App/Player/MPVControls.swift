@@ -143,6 +143,10 @@ struct MPVControls: View {
                 .background(LinearGradient(colors: [.clear, .black.opacity(0.75)], startPoint: .top, endPoint: .bottom)
                     .ignoresSafeArea())
         }
+        #if os(iOS)
+        // Brightness on the left edge, volume on the right, centered on the picture.
+        .overlay { SideSliders(onInteract: reveal) }
+        #endif
     }
 
     private var topBar: some View {

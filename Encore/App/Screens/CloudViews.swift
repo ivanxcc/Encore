@@ -37,7 +37,7 @@ struct CloudSection: View {
                     Label("Sync", systemImage: "icloud.fill")
                 }
                 Button {
-                    Task { await app.syncCloud() }
+                    Task { await app.syncNow() }
                 } label: {
                     LabeledContent {
                         Text("\(app.profiles.count) profiles · \(app.households.count) households")
