@@ -132,10 +132,6 @@ final class MacNavigator: ObservableObject {
     /// going back abrupt).
     @Published private(set) var shown: Set<UUID> = []
     @Published private var pages: [Page] = []
-    /// Gets a route's page ready (its details, logo, and artwork) so it appears complete; set by the app.
-    var prepare: ((Route) async -> Void)?
-    private var opening = false
-
     var canGoBack: Bool { !pages.isEmpty || !layers.isEmpty }
 
     /// The path a section's navigation stack is bound to: always empty to the stack, so a link to a
@@ -148,22 +144,13 @@ final class MacNavigator: ObservableObject {
 
     static let fade = Animation.easeInOut(duration: 0.42)
 
-    /// Opens a page once it's ready, or after a second at most, then dissolves it in whole.
+    /// Opens a page at once. It dissolves in over the artwork it came from; its own details and artwork
+    /// fill in as they arrive (see DetailModel), so a click never waits on the network.
     func open(_ route: Route) {
-        guard !opening else { return }
-        opening = true
+        guard layers.last?.route != route else { return }   // a double click opens it once
+        let layer = Layer(route: route)
+        layers.append(layer)
         Task {
-            if let prepare {
-                await withTaskGroup(of: Void.self) { group in
-                    group.addTask { await prepare(route) }
-                    group.addTask { try? await Task.sleep(for: .seconds(1)) }
-                    await group.next()
-                    group.cancelAll()
-                }
-            }
-            let layer = Layer(route: route)
-            layers.append(layer)
-            opening = false
             // One frame laid out invisibly at full size, then the dissolve.
             try? await Task.sleep(for: .milliseconds(16))
             _ = withAnimation(Self.fade) { shown.insert(layer.id) }

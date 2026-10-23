@@ -27,7 +27,7 @@ struct SettingsView: View {
                     Label("Home Screen", systemImage: "rectangle.grid.1x2")
                 }
                 Button {
-                    app.activeProfile = nil
+                    app.showProfilePicker()
                 } label: {
                     Label("Switch Profile", systemImage: "arrow.left.arrow.right")
                 }
@@ -40,7 +40,7 @@ struct SettingsView: View {
             Section {
                 if let email = app.settings.accountEmail {
                     LabeledContent("Signed in as", value: email)
-                    Button("Sync Now") { Task { await app.refresh() } }
+                    Button("Sync Now") { Task { await app.syncNow() } }
                     Button("Sign Out", role: .destructive) { Task { await app.signOut() } }
                 } else {
                     NavigationLink { SignInView().pushedPage() } label: {

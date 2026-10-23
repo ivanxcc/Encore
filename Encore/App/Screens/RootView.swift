@@ -102,11 +102,6 @@ struct RootView: View {
         .ignoresSafeArea(edges: .top)
         .animation(.smooth(duration: 0.38), value: searchExpanded)
         .animation(.smooth(duration: 0.3), value: navigator(for: tab).canGoBack)
-        .onAppear {
-            for navigator in [homeNav, searchNav, libraryNav, settingsNav] {
-                navigator.prepare = { [weak app] route in await app?.prepare(route) }
-            }
-        }
         .onChange(of: app.household.id) { _, _ in
             for navigator in [homeNav, searchNav, libraryNav, settingsNav] { navigator.reset() }
         }
@@ -438,7 +433,7 @@ private struct MacSidebar: View {
             }
             Spacer()
             if let profile = app.activeProfile {
-                Button { app.activeProfile = nil } label: {
+                Button { app.showProfilePicker() } label: {
                     HStack(spacing: 10) {
                         ProfileAvatar(profile: profile, size: 30)
                         VStack(alignment: .leading, spacing: 1) {

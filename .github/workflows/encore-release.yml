@@ -18,7 +18,7 @@ name: Encore Release
 on:
   push:
     branches: [beta]
-    paths: ["Encore/**", ".github/workflows/encore-release.yml", ".github/scripts/**"]
+    paths: ["Encore/**", "!Encore/Cloud/**", ".github/workflows/encore-release.yml", ".github/scripts/**"]
     tags: ["v*"]
   workflow_dispatch:
     inputs:
