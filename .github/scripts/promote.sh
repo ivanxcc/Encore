@@ -25,7 +25,12 @@ SHA=$(git rev-list -n 1 "$BETA")
 # Same binaries, stable manifests.
 mkdir -p "$WORK/dist"
 cp "$WORK"/beta/Encore-* "$WORK/dist/"
-gh release view "$BETA" -R "$REPO" --json body --jq .body | sed -n '/^### Changes/,$p' | sed '1d' > "$WORK/notes.txt"
+if [ -n "${NOTES:-}" ]; then
+  # Notes given when promoting (a summary of every beta since the last stable): one change per line.
+  printf '%s\n' "$NOTES" | sed '/^\s*$/d; /^- /!s/^/- /' > "$WORK/notes.txt"
+else
+  gh release view "$BETA" -R "$REPO" --json body --jq .body | sed -n '/^### Changes/,$p' | sed '1d' > "$WORK/notes.txt"
+fi
 [ -s "$WORK/notes.txt" ] || git log -1 --pretty=%B "$SHA" > "$WORK/notes.txt"
 "$(dirname "$0")/write-manifests.sh" "$WORK/dist" "$TAG" "$VERSION" "$BUILD" stable "$WORK/notes.txt"
 
