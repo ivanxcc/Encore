@@ -53,7 +53,10 @@ public struct AddonService: Sendable {
     }
 
     /// Search across every catalog that supports it, results grouped per catalog.
-    public func search(_ query: String, in addons: [Addon]) async -> [(CatalogRef, [MetaPreview])] {
+    /// - Parameter onPartial: called with the results so far each time another add-on answers, so a search
+    ///   shows its first results in a moment instead of waiting for the slowest add-on.
+    public func search(_ query: String, in addons: [Addon],
+                       onPartial: (@Sendable ([(CatalogRef, [MetaPreview])]) async -> Void)? = nil) async -> [(CatalogRef, [MetaPreview])] {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return [] }
         let refs = addons.flatMap { addon in
@@ -71,11 +74,17 @@ public struct AddonService: Sendable {
                 }
             }
             var results: [(Int, CatalogRef, [MetaPreview])] = []
-            for await result in group where !result.2.isEmpty { results.append(result) }
             // Smart search first, then add-on order.
-            return results
-                .sorted { ($0.1.isSmartSearch ? 0 : 1, $0.0) < ($1.1.isSmartSearch ? 0 : 1, $1.0) }
-                .map { ($0.1, Self.dedupe($0.2)) }
+            func ordered() -> [(CatalogRef, [MetaPreview])] {
+                results
+                    .sorted { ($0.1.isSmartSearch ? 0 : 1, $0.0) < ($1.1.isSmartSearch ? 0 : 1, $1.0) }
+                    .map { ($0.1, Self.dedupe($0.2)) }
+            }
+            for await result in group where !result.2.isEmpty {
+                results.append(result)
+                if let onPartial, !Task.isCancelled { await onPartial(ordered()) }
+            }
+            return ordered()
         }
     }
 

@@ -52,6 +52,13 @@ final class PlayerSession: ObservableObject {
     private var segmentsDuration: TimeInterval = 0
     private var segmentsTask: Task<Void, Never>?
     private var pauseObservation: AnyCancellable?
+    /// Closed by the viewer. Work still in flight (a source lookup, a countdown, the end of the episode)
+    /// must not start anything after this: it used to start the next episode in the background, with no
+    /// way to stop it but quitting the app.
+    private var closed = false
+    /// Called when the session ends on its own (the credits were watched to the end, or there is no next
+    /// episode), so the player can close back to the page it was opened from.
+    var onFinished: (() -> Void)?
     /// Segments the viewer already skipped or watched through, so the button does not come back.
     private var dismissedSegments: Set<SkipSegment> = []
 
@@ -86,7 +93,9 @@ final class PlayerSession: ObservableObject {
     }
 
     func close() {
+        guard !closed else { return }
         recordProgress(force: true)
+        closed = true
         segmentsTask?.cancel()
         watchdog?.cancel()
         countdownTask?.cancel()
@@ -105,7 +114,7 @@ final class PlayerSession: ObservableObject {
     }
 
     private func resolveAndPlay() async {
-        guard let app else { return }
+        guard let app, !closed else { return }
         phase = .finding
         let candidates: [RankedStream]
         if let explicit {
@@ -114,6 +123,7 @@ final class PlayerSession: ObservableObject {
             candidates = await app.session.rankedStreams(type: meta.type, id: video?.id ?? meta.id,
                                                          limits: NetworkMonitor.shared.limits)
         }
+        guard !closed else { return }
         plan = PlaybackPlan(candidates: candidates, explicit: explicit != nil,
                             streamingServer: app.settings.streamingServer, title: title).attempts
         attemptIndex = 0
@@ -127,6 +137,7 @@ final class PlayerSession: ObservableObject {
     }
 
     private func runAttempt() {
+        guard !closed else { return }
         guard attemptIndex < plan.count else {
             phase = .failed(explicit != nil
                             ? "This source didn't play. Choose another one from Sources."
@@ -184,6 +195,7 @@ final class PlayerSession: ObservableObject {
     }
 
     private func handle(_ event: PlayerEvent, attempt: PlaybackPlan.Attempt) {
+        guard !closed else { return }
         guard attemptIndex < plan.count, plan[attemptIndex] == attempt else { return }   // a stale engine's event
         switch event {
         case .started:
@@ -218,7 +230,9 @@ final class PlayerSession: ObservableObject {
             isBuffering = buffering
         case .ended:
             recordProgress(force: true, finished: true)
-            if nextEpisode != nil { playNext() }
+            // After "Watch Credits" (or with nothing after this), the end of the episode closes the player
+            // and returns to the page it was opened from; otherwise Up Next carries on.
+            if nextEpisode != nil, !upNextDeclined { playNext() } else { onFinished?() }
         case .failed:
             advance()
         }
@@ -293,7 +307,8 @@ final class PlayerSession: ObservableObject {
         guard let app, duration > 0, phase == .playing || finished else { return }
         guard force || abs(position - lastRecorded) >= 10 else { return }
         lastRecorded = position
-        app.recordProgress(meta, videoID: video?.id, position: finished ? duration : position, duration: duration)
+        app.recordProgress(meta, videoID: video?.id, position: finished ? duration : position, duration: duration,
+                           upNext: nextEpisode?.id)
     }
 
     // MARK: Up Next
@@ -315,7 +330,8 @@ final class PlayerSession: ObservableObject {
     }
 
     private func startUpNextCountdown() {
-        upNextCountdown = 10
+        // Long enough that a scene after the credits isn't cut off before the viewer can say "Watch Credits".
+        upNextCountdown = 15
         countdownTask = Task { [weak self] in
             while let self, let remaining = self.upNextCountdown, remaining > 0, !Task.isCancelled {
                 self.updateAction()
@@ -339,7 +355,7 @@ final class PlayerSession: ObservableObject {
     }
 
     func playNext() {
-        guard let next = nextEpisode else { return }
+        guard !closed, let next = nextEpisode else { return }
         recordProgress(force: true, finished: true)
         countdownTask?.cancel()
         segmentsTask?.cancel()

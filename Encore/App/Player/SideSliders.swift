@@ -3,8 +3,7 @@ import SwiftUI
 import MediaPlayer
 import AVFoundation
 
-/// iPhone and iPad playback: brightness on the left edge and volume on the right, as tall glass
-/// sliders, like Infuse and VLC. Volume is the system volume (the same as the side buttons).
+/// iPhone and iPad playback: brightness on the left edge and volume on the right, as thin sliders. Volume is the system volume (the same as the side buttons).
 struct SideSliders: View {
     /// Called while a slider is being used, so the player keeps its controls on screen.
     let onInteract: () -> Void
@@ -19,7 +18,7 @@ struct SideSliders: View {
             VerticalSlider(value: Binding(get: { volume.level }, set: { volume.set($0) }),
                            systemImage: volumeSymbol, label: "Volume", onInteract: onInteract)
         }
-        .padding(.horizontal, 22)
+        .padding(.horizontal, 30)
         .background(SystemVolume.Host(volume: volume).frame(width: 1, height: 1).opacity(0.01))
         .onReceive(NotificationCenter.default.publisher(for: UIScreen.brightnessDidChangeNotification)) { _ in
             brightness = Double(UIScreen.main.brightness)
@@ -38,7 +37,9 @@ struct SideSliders: View {
     }
 }
 
-/// A tall glass capsule that fills from the bottom; drag anywhere on it to set the level.
+/// A thin line that fills from the bottom with a small knob at the level, its icon underneath, in the
+/// style of the big streaming apps' players. The touch area is much wider than the line, so it's easy to
+/// grab; drag anywhere on it to change the level.
 private struct VerticalSlider: View {
     @Binding var value: Double
     let systemImage: String
@@ -47,28 +48,32 @@ private struct VerticalSlider: View {
     @State private var dragging = false
     @State private var startValue: Double?
 
-    private let height: CGFloat = 170
-    private let width: CGFloat = 44
+    private let height: CGFloat = 150
+    private var lineWidth: CGFloat { dragging ? 5 : 3 }
+    private var knob: CGFloat { dragging ? 16 : 11 }
 
     var body: some View {
-        ZStack(alignment: .bottom) {
-            Capsule().fill(.white.opacity(0.001))
-                .liquidGlass(in: Capsule())
-            Capsule()
-                .fill(.white.opacity(0.9))
-                .frame(height: max(width, height * value))
-                .opacity(value > 0.001 ? 1 : 0)
+        VStack(spacing: 12) {
+            ZStack(alignment: .bottom) {
+                Capsule().fill(.white.opacity(0.28))
+                    .frame(width: lineWidth, height: height)
+                Capsule().fill(.white)
+                    .frame(width: lineWidth, height: height * value)
+                Circle().fill(.white)
+                    .frame(width: knob, height: knob)
+                    .shadow(color: .black.opacity(0.35), radius: 3)
+                    .offset(y: -(height * value) + knob / 2)
+            }
+            .frame(width: 44, height: height)
             Image(systemName: systemImage)
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(value > 0.15 ? Color.black.opacity(0.75) : .white)
-                .frame(height: width)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(.white)
+                .shadow(color: .black.opacity(0.4), radius: 3)
+                .frame(width: 24, height: 18)
                 .contentTransition(.symbolEffect(.replace))
         }
-        .frame(width: width, height: height)
-        .clipShape(Capsule())
-        .scaleEffect(dragging ? 1.06 : 1)
-        .animation(.spring(response: 0.3, dampingFraction: 0.75), value: dragging)
-        .contentShape(Capsule())
+        .animation(.spring(response: 0.25, dampingFraction: 0.8), value: dragging)
+        .contentShape(Rectangle())
         .gesture(DragGesture(minimumDistance: 0)
             .onChanged { drag in
                 let start = startValue ?? value

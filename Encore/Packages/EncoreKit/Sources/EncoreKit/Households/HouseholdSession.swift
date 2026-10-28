@@ -275,11 +275,18 @@ public final class HouseholdSession: @unchecked Sendable {
         }
     }
 
+    /// - Parameter upNext: the episode after this one, if any. Finishing an episode then keeps the show in
+    ///   Continue Watching, pointing at that next episode, instead of dropping it (a finished episode has no
+    ///   position left to resume, which used to empty Continue Watching of every show watched to the end).
     public func recordProgress(_ meta: MetaPreview, videoID: String?, position: TimeInterval,
-                               duration: TimeInterval, for profile: Profile) {
+                               duration: TimeInterval, upNext: String? = nil, for profile: Profile) {
         mutate(meta, profile) { $0.recordProgress(videoID: videoID, position: position, duration: duration) }
-        // Finishing something marks it watched, like the Apple TV app's checkmark.
-        if duration > 0, position / duration >= 0.92 { setWatched([videoID ?? meta.id], true, for: profile) }
+        // Finishing something marks it watched.
+        guard duration > 0, position / duration >= 0.92 else { return }
+        setWatched([videoID ?? meta.id], true, for: profile)
+        if let upNext, upNext != videoID {
+            mutate(meta, profile) { $0.pointToNextEpisode(upNext) }
+        }
     }
 
     /// Remove from Continue Watching without touching My List.

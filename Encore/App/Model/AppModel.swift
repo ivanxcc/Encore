@@ -476,9 +476,10 @@ final class AppModel: ObservableObject {
         pushSoon()
     }
 
-    func recordProgress(_ meta: MetaPreview, videoID: String?, position: TimeInterval, duration: TimeInterval) {
+    func recordProgress(_ meta: MetaPreview, videoID: String?, position: TimeInterval, duration: TimeInterval,
+                        upNext: String? = nil) {
         guard let profile = activeProfile, duration > 0 else { return }
-        session.recordProgress(meta, videoID: videoID, position: position, duration: duration, for: profile)
+        session.recordProgress(meta, videoID: videoID, position: position, duration: duration, upNext: upNext, for: profile)
         libraryRevision += 1
     }
 

@@ -5,7 +5,7 @@
 <h1 align="center">Encore</h1>
 
 <p align="center">
-  <strong>Your Stremio add-ons, presented like the Apple TV app.</strong><br>
+  <strong>A native, cinematic home for your Stremio add-ons.</strong><br>
   Native on Apple TV, iPhone, iPad, and Mac (Apple silicon and Intel).
 </p>
 
@@ -17,14 +17,15 @@
 
 ---
 
-Encore is a personal fork of [VortX](https://github.com/VortXTV/VortX), rebuilt around three ideas:
+Encore began as a fork of [VortX](https://github.com/VortXTV/VortX) and has since been rebuilt with its own
+design and engine, around three ideas:
 
 1. **It builds from public code only.** VortX depends on a private engine. Encore talks to Stremio add-ons
    and the Stremio account directly with a small Swift package (`EncoreKit`), and plays video with the
    public [MPVKit](https://github.com/mpvkit/MPVKit). Anyone can build it, and every release is produced
    by GitHub Actions from this repository.
-2. **It looks and feels like the Apple TV app.** Full-bleed artwork, shelves, a featured hero, the real
-   tvOS focus engine, and one design system that adapts to the TV, the phone, and the Mac.
+2. **It feels at home on Apple devices.** Full-bleed artwork, shelves, a featured hero, Liquid Glass, and the
+   real tvOS focus engine, in Encore's own design that adapts to the TV, the phone, and the Mac.
 3. **It plays at full quality, and gives up gracefully.** Match frame rate and dynamic range on Apple TV
    4K, HDR10 / HLG output, lossless audio decoded to up to 7.1, and a bounded source failover that ends on a
    clear message instead of retrying forever.

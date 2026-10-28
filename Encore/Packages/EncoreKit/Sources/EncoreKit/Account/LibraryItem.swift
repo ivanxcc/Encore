@@ -135,4 +135,19 @@ public struct StremioLibraryItem: Codable, Hashable, Identifiable, Sendable {
         removed = false
         modified = now
     }
+
+    /// The episode after the one just finished is what to watch next: Continue Watching shows it from the
+    /// start. Stored the way Stremio's apps read it (that episode, a position of 1 ms, no length yet), so
+    /// it shows up as "next" there too.
+    public mutating func pointToNextEpisode(_ videoID: String, now: Date = Date()) {
+        state.videoID = videoID
+        state.timeOffset = 1
+        state.duration = 0
+        state.lastWatched = now
+        removed = false
+        modified = now
+    }
+
+    /// Continue Watching is offering the next episode, not one partly watched.
+    public var isUpNext: Bool { state.timeOffset > 0 && state.duration == 0 }
 }

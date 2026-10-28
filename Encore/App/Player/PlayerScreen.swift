@@ -68,7 +68,10 @@ struct PlayerScreen: View {
         #if os(tvOS) || os(macOS)
         .onExitCommand { close() }
         #endif
-        .onAppear { session.start(app: app) }
+        .onAppear {
+            session.onFinished = { close() }
+            session.start(app: app)
+        }
         .onDisappear { session.close() }
         #if os(iOS)
         .persistentSystemOverlays(.hidden)

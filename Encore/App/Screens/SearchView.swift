@@ -9,6 +9,8 @@ struct SearchView: View {
     @State private var ownQuery = ""
     @State private var results: [(CatalogRef, [MetaPreview])] = []
     @State private var searching = false
+    /// This session's searches, by query.
+    @MainActor private static var recent: [String: [(CatalogRef, [MetaPreview])]] = [:]
 
     init(query: Binding<String>? = nil) {
         externalQuery = query
@@ -40,12 +42,22 @@ struct SearchView: View {
         .modifier(OwnSearchField(enabled: externalQuery == nil, text: $ownQuery))
         .task(id: query) {
             let trimmed = query.trimmingCharacters(in: .whitespaces)
-            guard trimmed.count >= 2 else { results = []; return }
-            try? await Task.sleep(for: .milliseconds(350))
+            guard trimmed.count >= 2 else { results = []; searching = false; return }
+            // A search already made this session (typing back over it) is instant.
+            if let hit = Self.recent[trimmed.lowercased()] { results = hit; searching = false; return }
+            // Just long enough not to search for every letter of a word typed quickly.
+            try? await Task.sleep(for: .milliseconds(220))
             guard !Task.isCancelled else { return }
             searching = true
-            let found = await app.session.addonService.search(trimmed, in: app.settings.addons)
+            // Results appear as each add-on answers, rather than after the slowest one.
+            let found = await app.session.addonService.search(trimmed, in: app.settings.addons) { partial in
+                await MainActor.run {
+                    guard !Task.isCancelled else { return }
+                    withAnimation(Theme.Motion.content) { results = partial }
+                }
+            }
             guard !Task.isCancelled else { return }
+            Self.recent[trimmed.lowercased()] = found
             withAnimation(Theme.Motion.content) { results = found }
             searching = false
         }

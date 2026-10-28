@@ -1,7 +1,7 @@
 # Encore
 
-A native Apple TV, iPhone, iPad, and Mac app for the Stremio add-on ecosystem, designed after the
-Apple TV app. User-facing docs and install steps are in the [repository README](../README.md).
+A native Apple TV, iPhone, iPad, and Mac app for the Stremio add-on ecosystem, in its own design
+language built on Apple's platform conventions. User-facing docs and install steps are in the [repository README](../README.md).
 
 ## Why it builds without anything private
 

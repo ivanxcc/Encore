@@ -216,11 +216,40 @@ final class MPVEngine: ObservableObject, PlayerEngine {
     /// Zoomed to fill the screen (cropping) rather than fitting the whole picture with black bars.
     @Published private(set) var fillsScreen = false
 
-    func toggleFill() {
+    /// How far the picture is zoomed toward filling: 0 fits it inside, 1 crops it to fill (mpv's panscan).
+    private(set) var zoom: Double = 0
+    private var zoomTask: Task<Void, Never>?
+
+    func toggleFill() { setFill(!fillsScreen) }
+
+    /// Glides to fill or fit, rather than jumping between them.
+    func setFill(_ fill: Bool) {
+        fillsScreen = fill
+        zoomTask?.cancel()
+        let start = zoom, target: Double = fill ? 1 : 0
+        guard abs(target - start) > 0.001 else { return }
+        let frames = max(8, Int(abs(target - start) * 22))   // about a third of a second for the full way
+        zoomTask = Task { @MainActor [weak self] in
+            for frame in 1...frames {
+                guard !Task.isCancelled, let self else { return }
+                let t = Double(frame) / Double(frames)
+                let eased = t < 0.5 ? 4 * t * t * t : 1 - pow(-2 * t + 2, 3) / 2   // ease in and out
+                self.applyZoom(start + (target - start) * eased)
+                try? await Task.sleep(for: .milliseconds(16))
+            }
+        }
+    }
+
+    /// Follows a pinch as it happens (0 fit ... 1 fill); `setFill` settles it when the fingers lift.
+    func previewZoom(_ value: Double) {
+        zoomTask?.cancel()
+        applyZoom(min(1, max(0, value)))
+    }
+
+    private func applyZoom(_ value: Double) {
         guard let mpv = handle else { return }
-        fillsScreen.toggle()
-        // panscan 1 crops the picture to fill the output exactly; 0 fits it inside.
-        mpv_set_property_string(mpv, "panscan", fillsScreen ? "1.0" : "0.0")
+        zoom = value
+        mpv_set_property_string(mpv, "panscan", String(format: "%.3f", value))
     }
 
     func play() { setPaused(false) }

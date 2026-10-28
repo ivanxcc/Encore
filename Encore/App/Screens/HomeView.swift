@@ -148,9 +148,11 @@ private struct ContinueCard: View {
                     VStack(alignment: .leading, spacing: 8) {
                         Text(item.name).font(Theme.Fonts.cardTitle).foregroundStyle(.white).lineLimit(1)
                         if let episode = Self.episodeLabel(item.state.videoID) {
-                            Text(episode).font(Theme.Fonts.cardSubtitle).foregroundStyle(Theme.Colors.secondary)
+                            // A finished episode's show stays here, offering the next one.
+                            Text(item.isUpNext ? "Next · \(episode)" : episode)
+                                .font(Theme.Fonts.cardSubtitle).foregroundStyle(Theme.Colors.secondary)
                         }
-                        ProgressBar(value: item.progress)
+                        if !item.isUpNext { ProgressBar(value: item.progress) }
                     }
                     .padding(14)
                 }

@@ -23,7 +23,8 @@ extension View {
         modifier(RevealWhenLaidOut())
     }
 
-    /// Marks a page pushed onto a navigation stack, so the Mac's back button can return from it.
+    /// Marks a page pushed onto a navigation stack, so the Mac's back button, and the Apple TV remote's,
+    /// return from it.
     func pushedPage() -> some View {
         modifier(PushedPage())
     }
@@ -94,14 +95,20 @@ private struct RevealWhenLaidOut: ViewModifier {
 }
 
 private struct PushedPage: ViewModifier {
-    #if os(macOS)
+    #if os(macOS) || os(tvOS)
     @Environment(\.dismiss) private var dismiss
+    #endif
+    #if os(macOS)
     @Environment(\.macNavigator) private var navigator
     @State private var id = UUID()
     #endif
 
     func body(content: Content) -> some View {
-        #if os(macOS)
+        #if os(tvOS)
+        // The remote's back button goes back one page. In a tab with a sidebar, tvOS otherwise gave it to
+        // the sidebar, which opened instead of returning to the page this one came from.
+        content.onExitCommand { dismiss() }
+        #elseif os(macOS)
         content
             // The floating back button replaces the toolbar's, which would bring a toolbar back.
             .navigationBarBackButtonHidden(true)

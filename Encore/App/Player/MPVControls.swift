@@ -115,11 +115,14 @@ struct MPVControls: View {
             .contentShape(Rectangle())
             .onTapGesture(count: 2) { togglePause() }
             .onTapGesture { toggleVisibility() }
-            // Pinch out to fill the screen, pinch in to see the whole picture, as in the system player.
-            .gesture(MagnifyGesture().onEnded { value in
-                if value.magnification > 1.1, !engine.fillsScreen { engine.toggleFill() }
-                if value.magnification < 0.9, engine.fillsScreen { engine.toggleFill() }
-            })
+            // Pinch out to fill the screen, pinch in to see the whole picture. The picture follows the
+            // fingers, then settles on whichever it's nearer when they lift.
+            .gesture(MagnifyGesture()
+                .onChanged { value in
+                    let base: Double = engine.fillsScreen ? 1 : 0
+                    engine.previewZoom(base + (value.magnification - 1) * 2.5)
+                }
+                .onEnded { _ in engine.setFill(engine.zoom >= 0.5) })
         #endif
     }
 

@@ -196,6 +196,18 @@ final class LibraryTests: XCTestCase {
         XCTAssertFalse(item.isInProgress)
         XCTAssertEqual(item.state.timesWatched, 1)
     }
+
+    /// A finished episode keeps its show in Continue Watching, offering the next episode from the start.
+    func testFinishedEpisodePointsToTheNextOne() {
+        var item = StremioLibraryItem(meta: MetaPreview(id: "tt3", type: "series", name: "S"))
+        item.recordProgress(videoID: "tt3:1:4", position: 1290, duration: 1320)
+        XCTAssertFalse(item.isInProgress)
+        item.pointToNextEpisode("tt3:1:5")
+        XCTAssertTrue(item.isInProgress)
+        XCTAssertTrue(item.isUpNext)
+        XCTAssertEqual(item.state.videoID, "tt3:1:5")
+        XCTAssertEqual(item.progress, 0)
+    }
 }
 
 final class HouseholdTests: XCTestCase {
