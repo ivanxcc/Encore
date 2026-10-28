@@ -19,7 +19,11 @@ NEW=$(printf '%s\n' "$BODY" | awk '/^#+ / { on = (tolower($0) ~ /what.?s new/); 
 NOTES=$(printf '%s\n' "$BODY" | clean || true)
 if [ -z "$NOTES" ] && [ -n "$TITLE" ]; then NOTES="- ${TITLE}"; fi
 if [ -z "$NOTES" ]; then
-  # No pull request: the commit's own subject (or, for a merge, the line after the merge subject).
+  # No pull request (a commit straight to beta): the bullet points in its message, if it has any.
+  NOTES=$(git log -1 --pretty=%B "$SHA" | clean || true)
+fi
+if [ -z "$NOTES" ]; then
+  # Else the commit's own subject (or, for a merge, the line after the merge subject).
   NOTES=$(git log -1 --pretty=%B "$SHA" | grep -vE '^(Merge (pull request|branch)|Co-Authored-By|Claude-Session)' \
     | sed '/^\s*$/d' | head -1 | sed 's/^/- /')
 fi

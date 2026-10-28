@@ -37,9 +37,9 @@ struct SideSliders: View {
     }
 }
 
-/// A thin line that fills from the bottom with a small knob at the level, its icon underneath, in the
-/// style of the big streaming apps' players. The touch area is much wider than the line, so it's easy to
-/// grab; drag anywhere on it to change the level.
+/// A slim rounded bar that fills white from the bottom over a grey track, its icon above it, as in
+/// Netflix's player. The touch area is much wider than the bar, so it's easy to grab; drag anywhere on it
+/// to change the level.
 private struct VerticalSlider: View {
     @Binding var value: Double
     let systemImage: String
@@ -49,28 +49,24 @@ private struct VerticalSlider: View {
     @State private var startValue: Double?
 
     private let height: CGFloat = 150
-    private var lineWidth: CGFloat { dragging ? 5 : 3 }
-    private var knob: CGFloat { dragging ? 16 : 11 }
+    private var barWidth: CGFloat { dragging ? 8 : 6 }
 
     var body: some View {
-        VStack(spacing: 12) {
-            ZStack(alignment: .bottom) {
-                Capsule().fill(.white.opacity(0.28))
-                    .frame(width: lineWidth, height: height)
-                Capsule().fill(.white)
-                    .frame(width: lineWidth, height: height * value)
-                Circle().fill(.white)
-                    .frame(width: knob, height: knob)
-                    .shadow(color: .black.opacity(0.35), radius: 3)
-                    .offset(y: -(height * value) + knob / 2)
-            }
-            .frame(width: 44, height: height)
+        VStack(spacing: 18) {
             Image(systemName: systemImage)
-                .font(.system(size: 14, weight: .semibold))
+                .font(.system(size: 17, weight: .medium))
                 .foregroundStyle(.white)
                 .shadow(color: .black.opacity(0.4), radius: 3)
-                .frame(width: 24, height: 18)
+                .frame(width: 28, height: 22)
                 .contentTransition(.symbolEffect(.replace))
+            ZStack(alignment: .bottom) {
+                Capsule().fill(Color(white: 0.35))
+                    .frame(width: barWidth, height: height)
+                Rectangle().fill(.white)
+                    .frame(width: barWidth, height: height * value)
+            }
+            .clipShape(Capsule())
+            .frame(width: 44, height: height)
         }
         .animation(.spring(response: 0.25, dampingFraction: 0.8), value: dragging)
         .contentShape(Rectangle())
