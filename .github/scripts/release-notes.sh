@@ -19,8 +19,13 @@ NEW=$(printf '%s\n' "$BODY" | awk '/^#+ / { on = (tolower($0) ~ /what.?s new/); 
 NOTES=$(printf '%s\n' "$BODY" | clean || true)
 if [ -z "$NOTES" ] && [ -n "$TITLE" ]; then NOTES="- ${TITLE}"; fi
 if [ -z "$NOTES" ]; then
-  # No pull request (a commit straight to beta): the bullet points in its message, if it has any.
-  NOTES=$(git log -1 --pretty=%B "$SHA" | clean || true)
+  # No pull request (commits straight to beta): the bullet points of every commit since the last
+  # release, so a follow-up fix doesn't replace the notes of the change it fixed.
+  git fetch --tags --force origin >/dev/null 2>&1 || true
+  LAST=$(git describe --tags --abbrev=0 --match 'v*' "${SHA}^" 2>/dev/null || true)
+  RANGE="${LAST:+${LAST}..}${SHA}"
+  NOTES=$(git log --no-merges --reverse --pretty=%B $RANGE | clean || true)
+  [ -n "$LAST" ] || NOTES=$(git log -1 --pretty=%B "$SHA" | clean || true)
 fi
 if [ -z "$NOTES" ]; then
   # Else the commit's own subject (or, for a merge, the line after the merge subject).
