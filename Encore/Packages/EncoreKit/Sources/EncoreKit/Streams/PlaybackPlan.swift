@@ -21,6 +21,14 @@ public struct PlaybackPlan: Sendable {
 
     public let attempts: [Attempt]
 
+    /// A downloaded file: libmpv plays any container straight from disk (AVFoundation first for MP4).
+    public init(localFile: URL, title: String) {
+        let engine = PlaybackSource.engine(forFilename: localFile.lastPathComponent, isTorrent: false)
+        let source = PlaybackSource(url: localFile, preferredEngine: engine, title: title)
+        attempts = (engine == .native ? [Attempt(candidate: 0, source: source, engine: .native)] : [])
+            + [Attempt(candidate: 0, source: source, engine: .mpv)]
+    }
+
     public init(candidates: [RankedStream], explicit: Bool, streamingServer: URL?, title: String) {
         var attempts: [Attempt] = []
         var sourcesUsed = 0

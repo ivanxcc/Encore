@@ -698,3 +698,59 @@ final class StorageTests: XCTestCase {
         XCTAssertFalse(StorageLocation.isWritable(URL(fileURLWithPath: "/proc/encore-cannot-write-here")))
     }
 }
+
+final class DownloadTests: XCTestCase {
+    private func ranked(_ streams: [AddonStream]) throws -> [RankedStream] {
+        let addon = try addon("https://s.test", streamAddonJSON)
+        return StreamRanking.rank([StreamGroup(addon: addon, streams: streams)], preferences: StreamPreferences(), torrentsPlayable: true)
+    }
+
+    private func stream(_ name: String, _ title: String) -> AddonStream {
+        AddonStream(url: URL(string: "https://x/\(title.hashValue).mkv")!, name: name, title: title)
+    }
+
+    /// Standard: the sharpest release within about 1 GB an hour, HEVC preferred; never 4K, a remux, or
+    /// something that isn't ready.
+    func testStandardPicksTheLean1080pRelease() throws {
+        let uhd = stream("[RD+] 4K", "Show.S01E01.2160p.WEB-DL.HEVC 💾 6.2 GB")
+        let remux = stream("[RD+] 1080p", "Show.S01E01.1080p.BluRay.REMUX 💾 9 GB")
+        let fat1080 = stream("[RD+] 1080p", "Show.S01E01.1080p.WEB-DL.H264 💾 2.8 GB")
+        let lean1080 = stream("[RD+] 1080p", "Show.S01E01.1080p.WEB-DL.x265 💾 620 MB")
+        let small720 = stream("[RD+] 720p", "Show.S01E01.720p.WEB-DL.x264 💾 410 MB")
+        let uncached = stream("[RD download] 1080p", "Show.S01E01.1080p.x265 💾 500 MB")
+        let choice = DownloadPicker.choose(from: try ranked([uhd, remux, fat1080, lean1080, small720, uncached]),
+                                           runtime: 44 * 60, isEpisode: true, quality: .standard)
+        XCTAssertEqual(choice?.stream.stream, lean1080)
+        XCTAssertEqual(choice?.overBudget, false)
+    }
+
+    /// Higher allows the bigger 1080p; nothing fitting falls back to the smallest suitable release.
+    func testHigherAndOverBudgetFallback() throws {
+        let fat1080 = stream("[RD+] 1080p", "Film.1080p.WEB-DL.H264 💾 4.6 GB")
+        let lean1080 = stream("[RD+] 1080p", "Film.1080p.WEB-DL.x265 💾 1.9 GB")
+        let streams = try ranked([fat1080, lean1080])
+        // The efficient release wins whenever it's there: as sharp, half the space.
+        XCTAssertEqual(DownloadPicker.choose(from: streams, runtime: 7200, isEpisode: false, quality: .high)?.stream.stream, lean1080)
+        // Only the big one: Higher takes it within its budget; Standard says it's over.
+        let onlyFat = try ranked([fat1080])
+        XCTAssertEqual(DownloadPicker.choose(from: onlyFat, runtime: 7200, isEpisode: false, quality: .high)?.overBudget, false)
+        XCTAssertEqual(DownloadPicker.choose(from: onlyFat, runtime: 7200, isEpisode: false, quality: .standard)?.overBudget, true)
+        let tight = DownloadPicker.choose(from: streams, runtime: 3000, isEpisode: false, quality: .standard)
+        XCTAssertEqual(tight?.stream.stream, lean1080)
+        XCTAssertEqual(tight?.overBudget, true)
+    }
+
+    func testRecordRoundTripsAndNamesItsFile() throws {
+        var video = Video(id: "tt1:2:5", title: "Pilot", season: 2, episode: 5)
+        video.released = Date(timeIntervalSince1970: 1_700_000_000)
+        let record = DownloadRecord(meta: MetaPreview(id: "tt1", type: "series", name: "Show"), video: video,
+                                    quality: .standard, sourceURL: URL(string: "https://x/a.mkv")!, expectedBytes: 1000,
+                                    addedAt: Date(timeIntervalSince1970: 1_800_000_000))
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let index = DownloadIndex(folder: folder)
+        index.save([record])
+        XCTAssertEqual(index.load(), [record])
+        XCTAssertEqual(DownloadIndex.fileName(for: record, sourceExtension: "MKV"), "tt1-2-5.mkv")
+        XCTAssertEqual(record.displayTitle, "S2, E5 · Pilot")
+    }
+}

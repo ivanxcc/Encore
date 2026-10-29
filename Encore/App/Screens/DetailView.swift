@@ -378,6 +378,14 @@ struct DetailView: View {
             .pillButtonStyle(.icon)
             .accessibilityLabel("Choose Source")
 
+            #if !os(tvOS)
+            // Save for offline: the film, or the episode the Play button would play.
+            if model.meta != nil {
+                DownloadButton(meta: model.meta?.preview ?? preview, video: model.meta?.type == "series" ? video : nil,
+                               runtime: downloadRuntime(video))
+            }
+            #endif
+
             if let trailer = Trailers.youTubeID(extras: model.extras, meta: model.meta), trailerAvailable {
                 Button {
                     #if os(tvOS)
@@ -399,6 +407,13 @@ struct DetailView: View {
                 Text(remaining(libraryItem)).font(Theme.Fonts.meta).foregroundStyle(Theme.Colors.secondary)
             }
         }
+    }
+
+    /// The length to size a download by: the episode's exact one, else the title's.
+    private func downloadRuntime(_ video: Video?) -> TimeInterval? {
+        if model.meta?.type == "series", let episode = video?.episode, let exact = model.runtimes[episode] { return exact }
+        if model.meta?.type != "series", let minutes = model.extras?.runtime { return TimeInterval(minutes * 60) }
+        return EpisodeCard<EmptyView>.runtime(model.meta?.runtime)
     }
 
     private func playLabel(resuming: Bool, video: Video?) -> String {
@@ -512,6 +527,10 @@ private struct EpisodesSection: View {
                                         : Label("Mark as Watched", systemImage: "checkmark.circle")
                                 }
                                 Button { showDetails(video) } label: { Label("View Details", systemImage: "info.circle") }
+                                #if !os(tvOS)
+                                EpisodeDownloadMenu(meta: meta.preview, video: video,
+                                                    runtime: video.episode.flatMap { runtimes[$0] } ?? EpisodeCard<EmptyView>.runtime(meta.runtime))
+                                #endif
                             }
                             .id(video.id)
                         }
@@ -579,6 +598,9 @@ private struct EpisodeCard<Menu: View>: View {
                         if !isUpcoming { EpisodeStatus(watched: watched, progress: progress, remaining: remaining,
                                                        runtime: runtime ?? Self.runtime(meta.runtime)) }
                     }
+                    #if !os(tvOS)
+                    .overlay(alignment: .topTrailing) { EpisodeDownloadBadge(videoID: video.id).padding(10) }
+                    #endif
                     .overlay {
                         if isUpcoming {
                             Text(comingText).font(Theme.Fonts.cardSubtitle.weight(.semibold))
@@ -840,3 +862,59 @@ private struct AboutSection: View {
         #endif
     }
 }
+
+#if !os(tvOS)
+/// An episode's download, from its hold-down menu.
+private struct EpisodeDownloadMenu: View {
+    let meta: MetaPreview
+    let video: Video
+    let runtime: TimeInterval?
+    @ObservedObject private var downloads = DownloadManager.shared
+    @EnvironmentObject private var app: AppModel
+
+    var body: some View {
+        if let record = downloads.record(video.id) {
+            switch record.state {
+            case .downloading, .queued:
+                Button("Pause Download", systemImage: "pause.fill") { downloads.pause(video.id) }
+            case .paused:
+                Button("Resume Download", systemImage: "arrow.down") { downloads.resume(video.id) }
+            case .failed:
+                Button("Try Download Again", systemImage: "arrow.clockwise") { Task { try? await downloads.retry(video.id, app: app) } }
+            case .finished:
+                EmptyView()
+            }
+            Button(record.state == .finished ? "Delete Download" : "Cancel Download", systemImage: "trash", role: .destructive) {
+                downloads.remove(video.id)
+            }
+        } else {
+            Button("Download Episode", systemImage: "arrow.down.to.line") {
+                Task { try? await downloads.download(meta: meta, video: video, runtime: runtime, app: app) }
+            }
+        }
+    }
+}
+
+/// On an episode's still: a filled arrow once downloaded, a progress ring while downloading.
+private struct EpisodeDownloadBadge: View {
+    let videoID: String
+    @ObservedObject private var downloads = DownloadManager.shared
+
+    var body: some View {
+        if let record = downloads.record(videoID) {
+            Group {
+                switch record.state {
+                case .finished: Image(systemName: "arrow.down.circle.fill").font(.system(size: 14, weight: .semibold))
+                case .downloading, .queued: ProgressRing(progress: record.progress, symbol: "arrow.down")
+                case .paused: Image(systemName: "pause.circle").font(.system(size: 14, weight: .semibold))
+                case .failed: Image(systemName: "exclamationmark.circle").font(.system(size: 14, weight: .semibold))
+                }
+            }
+            .frame(width: 26, height: 26)
+            .foregroundStyle(.white)
+            .liquidGlass(in: Circle())
+            .accessibilityLabel(record.state == .finished ? "Downloaded" : "Downloading")
+        }
+    }
+}
+#endif

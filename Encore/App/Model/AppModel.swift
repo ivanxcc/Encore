@@ -40,6 +40,9 @@ final class AppModel: ObservableObject {
         if profiles.count == 1, !profiles[0].hasPin { activeProfile = profiles[0]; profileWasAutoPicked = true }
         if !StorageLocation.isWritable(directory.root) { storageFailure = true }
         _ = NetworkMonitor.shared   // knows the connection before the first source is chosen
+        #if !os(tvOS)
+        _ = DownloadManager.shared   // reconnects to downloads still running from before
+        #endif
         Task { await refresh() }
     }
 

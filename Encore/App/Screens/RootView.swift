@@ -22,10 +22,11 @@ struct RootView: View {
     @StateObject private var homeNav = MacNavigator()
     @StateObject private var searchNav = MacNavigator()
     @StateObject private var libraryNav = MacNavigator()
+    @StateObject private var downloadsNav = MacNavigator()
     @StateObject private var settingsNav = MacNavigator()
     #endif
 
-    enum AppTab: Hashable { case home, search, library, settings }
+    enum AppTab: Hashable { case home, search, library, downloads, settings }
 
     var body: some View {
         ZStack {
@@ -74,6 +75,7 @@ struct RootView: View {
                 section(.home, homeNav) { HomeView() }
                 section(.search, searchNav) { SearchView(query: $searchQuery) }
                 section(.library, libraryNav) { LibraryView() }
+                section(.downloads, downloadsNav) { DownloadsView() }
                 section(.settings, settingsNav) { SettingsView() }
             }
             // A click anywhere on the page takes the focus out of the search field (the Mac doesn't do
@@ -103,7 +105,7 @@ struct RootView: View {
         .animation(.smooth(duration: 0.38), value: searchExpanded)
         .animation(.smooth(duration: 0.3), value: navigator(for: tab).canGoBack)
         .onChange(of: app.household.id) { _, _ in
-            for navigator in [homeNav, searchNav, libraryNav, settingsNav] { navigator.reset() }
+            for navigator in [homeNav, searchNav, libraryNav, downloadsNav, settingsNav] { navigator.reset() }
         }
         .onChange(of: searchQuery) { _, query in
             if !query.isEmpty, tab != .search { tab = .search }
@@ -212,6 +214,7 @@ struct RootView: View {
         case .home: homeNav
         case .search: searchNav
         case .library: libraryNav
+        case .downloads: downloadsNav
         case .settings: settingsNav
         }
     }
@@ -238,6 +241,12 @@ struct RootView: View {
             Tab("Library", systemImage: "rectangle.stack", value: AppTab.library) {
                 NavigationStack { LibraryView().withRoutes() }
             }
+            #if !os(tvOS)
+            // Offline viewing: not on Apple TV, which streams.
+            Tab("Downloads", systemImage: "arrow.down.circle", value: AppTab.downloads) {
+                NavigationStack { DownloadsView().withRoutes() }
+            }
+            #endif
             Tab("Settings", systemImage: "gearshape", value: AppTab.settings) {
                 NavigationStack { SettingsView().withRoutes() }
             }
@@ -423,6 +432,7 @@ private struct MacSidebar: View {
         (.home, "Home", "house"),
         (.search, "Search", "magnifyingglass"),
         (.library, "Library", "rectangle.stack"),
+        (.downloads, "Downloads", "arrow.down.circle"),
         (.settings, "Settings", "gearshape"),
     ]
 

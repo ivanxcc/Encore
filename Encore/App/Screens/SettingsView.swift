@@ -102,6 +102,10 @@ struct SettingsView: View {
                 #endif
             }
 
+            #if !os(tvOS)
+            DownloadSettingsSection()
+            #endif
+
             VideoAudioSection()
 
             Section("About") {

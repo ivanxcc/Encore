@@ -33,6 +33,8 @@ final class PlayerSession: ObservableObject {
 
     let meta: MetaPreview
     private let explicit: RankedStream?
+    private let localFile: URL?
+    private let initialVideoID: String?
     private var resumeAt: TimeInterval
     private weak var app: AppModel?
 
@@ -66,6 +68,8 @@ final class PlayerSession: ObservableObject {
         meta = request.meta
         video = request.video
         explicit = request.explicit
+        localFile = request.localFile
+        initialVideoID = request.video?.id
         resumeAt = request.resumeAt
     }
 
@@ -116,6 +120,13 @@ final class PlayerSession: ObservableObject {
     private func resolveAndPlay() async {
         guard let app, !closed else { return }
         phase = .finding
+        // Downloaded: straight from disk, no add-ons, no network (the next episode too, if it's downloaded).
+        if let file = downloadedFile {
+            plan = PlaybackPlan(localFile: file, title: title).attempts
+            attemptIndex = 0
+            runAttempt()
+            return
+        }
         let candidates: [RankedStream]
         if let explicit {
             candidates = [explicit]
@@ -236,6 +247,17 @@ final class PlayerSession: ObservableObject {
         case .failed:
             advance()
         }
+    }
+
+    /// The downloaded copy of what's about to play, if there is one.
+    private var downloadedFile: URL? {
+        guard explicit == nil else { return nil }
+        if let localFile, video?.id == initialVideoID { return localFile }
+        #if os(tvOS)
+        return nil
+        #else
+        return DownloadManager.shared.localFile(video?.id ?? meta.id)
+        #endif
     }
 
     // MARK: Screen

@@ -10,6 +10,8 @@ struct PlaybackRequest: Identifiable {
     let resumeAt: TimeInterval
     /// A source the viewer picked by hand. When set, only it is tried (engines may still fall back).
     let explicit: RankedStream?
+    /// A downloaded copy on this device: played from disk, no network needed.
+    var localFile: URL? = nil
 
     var videoID: String { video?.id ?? meta.id }
     var displayTitle: String {
@@ -37,7 +39,9 @@ final class PlaybackCenter: ObservableObject {
         } else {
             resume = 0
         }
-        let next = PlaybackRequest(meta: meta, video: video, resumeAt: resume, explicit: explicit)
+        var next = PlaybackRequest(meta: meta, video: video, resumeAt: resume, explicit: explicit)
+        // A downloaded copy plays instead of streaming (unless a source was picked by hand).
+        if explicit == nil { next.localFile = Self.downloaded(next.videoID) }
         guard afterDismissal else { request = next; return }
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(650))
@@ -53,8 +57,23 @@ final class PlaybackCenter: ObservableObject {
                          season: parts.count == 3 ? Int(parts[1]) : nil,
                          episode: parts.count == 3 ? Int(parts[2]) : nil)
         }
-        request = PlaybackRequest(meta: item.preview, video: video,
-                                  resumeAt: TimeInterval(item.state.timeOffset) / 1000, explicit: nil)
+        var next = PlaybackRequest(meta: item.preview, video: video,
+                                   resumeAt: TimeInterval(item.state.timeOffset) / 1000, explicit: nil)
+        next.localFile = Self.downloaded(next.videoID)
+        request = next
+    }
+
+    /// Play a download from the Downloads page.
+    func playDownload(_ record: DownloadRecord, app: AppModel) {
+        play(meta: record.meta, video: record.video, app: app)
+    }
+
+    private static func downloaded(_ videoID: String) -> URL? {
+        #if os(tvOS)
+        return nil
+        #else
+        return DownloadManager.shared.localFile(videoID)
+        #endif
     }
 }
 

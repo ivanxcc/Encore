@@ -3,6 +3,9 @@ import EncoreKit
 
 @main
 struct EncoreApp: App {
+    #if os(iOS)
+    @UIApplicationDelegateAdaptor(EncoreAppDelegate.self) private var appDelegate
+    #endif
     @StateObject private var app = AppModel()
     @StateObject private var playback = PlaybackCenter()
     @Environment(\.scenePhase) private var scenePhase
@@ -41,3 +44,13 @@ struct EncoreApp: App {
         #endif
     }
 }
+
+#if os(iOS)
+/// Hands the system's "finish your downloads" relaunch to the download manager.
+final class EncoreAppDelegate: NSObject, UIApplicationDelegate {
+    func application(_ application: UIApplication, handleEventsForBackgroundURLSession identifier: String,
+                     completionHandler: @escaping () -> Void) {
+        MainActor.assumeIsolated { DownloadManager.shared.backgroundCompletion = completionHandler }
+    }
+}
+#endif
