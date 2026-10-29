@@ -60,12 +60,23 @@ struct DownloadsView: View {
 
     /// Downloads grouped by title, most recently added first.
     private var groups: [TitleGroup] {
-        Dictionary(grouping: downloads.records, by: \.meta.id).values
-            .map { records in
-                TitleGroup(meta: records[0].meta,
-                      records: records.sorted { ($0.video?.season ?? 0, $0.video?.episode ?? 0) < ($1.video?.season ?? 0, $1.video?.episode ?? 0) })
-            }
-            .sorted { ($0.records.map(\.addedAt).max() ?? .distantPast) > ($1.records.map(\.addedAt).max() ?? .distantPast) }
+        let byTitle: [String: [DownloadRecord]] = Dictionary(grouping: downloads.records) { $0.meta.id }
+        var result: [TitleGroup] = []
+        for records in byTitle.values {
+            result.append(TitleGroup(meta: records[0].meta, records: records.sorted(by: Self.episodeOrder)))
+        }
+        return result.sorted { Self.latest($0.records) > Self.latest($1.records) }
+    }
+
+    /// Season, then episode.
+    static func episodeOrder(_ a: DownloadRecord, _ b: DownloadRecord) -> Bool {
+        let first = (a.video?.season ?? 0, a.video?.episode ?? 0)
+        let second = (b.video?.season ?? 0, b.video?.episode ?? 0)
+        return first < second
+    }
+
+    private static func latest(_ records: [DownloadRecord]) -> Date {
+        records.map(\.addedAt).max() ?? .distantPast
     }
 
     static func size(_ bytes: Int64) -> String { ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file) }
@@ -77,8 +88,7 @@ private struct ShowDownloadsView: View {
     @ObservedObject private var downloads = DownloadManager.shared
 
     var body: some View {
-        let records = downloads.records.filter { $0.meta.id == metaID }
-            .sorted { ($0.video?.season ?? 0, $0.video?.episode ?? 0) < ($1.video?.season ?? 0, $1.video?.episode ?? 0) }
+        let records = downloads.records.filter { $0.meta.id == metaID }.sorted(by: DownloadsView.episodeOrder)
         List {
             ForEach(records) { DownloadRow(record: $0) }
                 .onDelete { offsets in for offset in offsets { downloads.remove(records[offset].id) } }
