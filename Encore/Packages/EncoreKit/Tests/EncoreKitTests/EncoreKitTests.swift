@@ -740,6 +740,19 @@ final class DownloadTests: XCTestCase {
         XCTAssertEqual(tight?.overBudget, true)
     }
 
+    /// Data Saver: a 22-minute episode takes the ~280 MB SD release (labeled only "SD" on its own line)
+    /// over 720p and 1080p files two or three times the size.
+    func testDataSaverTakesTheSmallSDRelease() throws {
+        let sd = stream("[RD+] Torrentio\nSD", "Modern.Family.S01E19.DVDRip 💾 280 MB")
+        let hd720 = stream("[RD+] 720p", "Modern.Family.S01E19.720p.WEB-DL 💾 790 MB")
+        let hd1080 = stream("[RD+] 1080p", "Modern.Family.S01E19.1080p.WEB-DL.x265 💾 640 MB")
+        let choice = DownloadPicker.choose(from: try ranked([hd1080, hd720, sd]), runtime: 22 * 60, isEpisode: true, quality: .dataSaver)
+        XCTAssertEqual(choice?.stream.stream, sd)
+        XCTAssertEqual(choice?.overBudget, false)
+        XCTAssertEqual(StreamTraits(sd).resolution, .sd)
+        XCTAssertNotEqual(StreamTraits(stream("x", "Show.1080p.HDR.x265")).resolution, .sd)   // "hdr" is not "sd"
+    }
+
     func testRecordRoundTripsAndNamesItsFile() throws {
         var video = Video(id: "tt1:2:5", title: "Pilot", season: 2, episode: 5)
         video.released = Date(timeIntervalSince1970: 1_700_000_000)

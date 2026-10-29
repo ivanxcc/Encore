@@ -357,7 +357,7 @@ struct DownloadButton: View {
 
 /// Settings › Downloads: the quality and, on iPhone and iPad, whether cellular may be used.
 struct DownloadSettingsSection: View {
-    @AppStorage(DownloadManager.qualityKey) private var quality = DownloadQuality.standard.rawValue
+    @AppStorage(DownloadManager.qualityKey) private var quality = DownloadQuality.dataSaver.rawValue
     #if os(iOS)
     @AppStorage(DownloadManager.cellularKey) private var overCellular = false
     #endif
@@ -381,7 +381,7 @@ struct DownloadSettingsSection: View {
         } header: {
             Text("Downloads")
         } footer: {
-            Text("Encore picks a release that fits the quality you choose: Standard is about 1 GB an hour of video, Higher about 2.5 GB. New downloads use the new setting.")
+            Text("Encore picks a release that fits the quality you choose: Data Saver is about 0.9 GB an hour of video (a 22-minute episode is around 300 MB), Standard about 1.6 GB, Higher about 3 GB. New downloads use the new setting.")
         }
     }
 }

@@ -9,15 +9,19 @@ import Foundation
 /// 1080p, never 4K or an untouched remux) that fits the budget, preferring HEVC and AV1, which are about
 /// half the size of H.264 at the same quality.
 public enum DownloadQuality: String, Codable, CaseIterable, Identifiable, Sendable {
-    /// About 1 GB an hour: a 45-minute episode around 400–700 MB, a film around 1.5–2 GB.
+    /// About 0.9 GB an hour, up to 720p (SD when that's what fits): a 22-minute episode around
+    /// 300 MB, a film around 1.5 GB. Plenty for a phone screen. The default.
+    case dataSaver
+    /// About 1.6 GB an hour, up to 1080p.
     case standard
-    /// About 2.5 GB an hour: sharper on a big screen, roughly twice the space.
+    /// About 3 GB an hour: sharper on a big screen, roughly twice Standard's space.
     case high
 
     public var id: String { rawValue }
 
     public var label: String {
         switch self {
+        case .dataSaver: "Data Saver"
         case .standard: "Standard"
         case .high: "Higher"
         }
@@ -25,20 +29,22 @@ public enum DownloadQuality: String, Codable, CaseIterable, Identifiable, Sendab
 
     public var detail: String {
         switch self {
-        case .standard: "Downloads faster and uses less space."
-        case .high: "Sharper picture; uses about twice the space."
+        case .dataSaver: "Smallest files; great on a phone."
+        case .standard: "Sharper, at about twice the space."
+        case .high: "Sharpest; about twice Standard's space."
         }
     }
 
     /// The most a download may take per hour of video.
     public var bytesPerHour: Double {
         switch self {
-        case .standard: 1.1 * 1_073_741_824
-        case .high: 2.6 * 1_073_741_824
+        case .dataSaver: 0.9 * 1_073_741_824
+        case .standard: 1.6 * 1_073_741_824
+        case .high: 3.0 * 1_073_741_824
         }
     }
 
-    public var maxResolution: StreamTraits.Resolution { .hd1080 }
+    public var maxResolution: StreamTraits.Resolution { self == .dataSaver ? .hd720 : .hd1080 }
 }
 
 /// Picks what to download from the ranked sources of a title or episode.
@@ -62,8 +68,10 @@ public enum DownloadPicker {
         // untouched Blu-ray copies (tens of gigabytes for no visible gain on a phone or laptop).
         let usable = ranked.filter { candidate in
             let t = candidate.traits
-            return candidate.stream.url != nil && !t.isUncached && !t.isCam && !t.isRemux
-                && t.resolution <= quality.maxResolution && t.resolution >= .sd
+            // A release that doesn't say its resolution counts when it says its size: a small file is
+            // what's wanted here (SD releases often aren't labeled the way HD ones are).
+            let resolutionOK = t.resolution == .unknown ? t.sizeBytes != nil : t.resolution <= quality.maxResolution
+            return candidate.stream.url != nil && !t.isUncached && !t.isCam && !t.isRemux && resolutionOK
         }
         guard !usable.isEmpty else { return nil }
 

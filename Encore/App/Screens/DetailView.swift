@@ -348,56 +348,19 @@ struct DetailView: View {
     private func actions(_ libraryItem: StremioLibraryItem?) -> some View {
         let resuming = libraryItem?.isInProgress == true
         let video = currentVideo(libraryItem)
-        HStack(spacing: 18) {
-            Button {
-                let target = model.meta?.preview ?? preview
-                if resuming, let libraryItem {
-                    playback.resume(libraryItem, app: app)
-                } else {
-                    playback.play(meta: target, video: video, app: app)
+        Group {
+            if isCompact {
+                // iPhone: Play across the width, the round buttons centered beneath it, so the row never
+                // runs off the screen and pulls the page off-center.
+                VStack(spacing: 16) {
+                    playButton(libraryItem, resuming: resuming, video: video)
+                    HStack(spacing: 22) { iconButtons(libraryItem, video: video) }
                 }
-            } label: {
-                Label(playLabel(resuming: resuming, video: video), systemImage: "play.fill")
-                    .frame(maxWidth: isCompact ? 220 : nil)
-            }
-            .pillButtonStyle(.primary)
-            .focused($focus, equals: .play)
-            .disabled(model.meta == nil && preview.type == "series")
-
-            Button {
-                app.setInList(model.meta?.preview ?? preview, !(libraryItem?.isInLibrary ?? false))
-            } label: {
-                Image(systemName: libraryItem?.isInLibrary == true ? "checkmark" : "plus")
-            }
-            .pillButtonStyle(.icon)
-            .accessibilityLabel(libraryItem?.isInLibrary == true ? "Remove from My List" : "Add to My List")
-
-            Button { sourcesFor = SourcesTarget(video: video) } label: {
-                Image(systemName: "list.bullet")
-            }
-            .pillButtonStyle(.icon)
-            .accessibilityLabel("Choose Source")
-
-            #if !os(tvOS)
-            // Save for offline: the film, or the episode the Play button would play.
-            if model.meta != nil {
-                DownloadButton(meta: model.meta?.preview ?? preview, video: model.meta?.type == "series" ? video : nil,
-                               runtime: downloadRuntime(video))
-            }
-            #endif
-
-            if let trailer = Trailers.youTubeID(extras: model.extras, meta: model.meta), trailerAvailable {
-                Button {
-                    #if os(tvOS)
-                    Trailers.open(trailer)
-                    #else
-                    trailerID = TrailerID(id: trailer)
-                    #endif
-                } label: {
-                    Image(systemName: "film")
+            } else {
+                HStack(spacing: 18) {
+                    playButton(libraryItem, resuming: resuming, video: video)
+                    iconButtons(libraryItem, video: video)
                 }
-                .pillButtonStyle(.icon)
-                .accessibilityLabel("Play Trailer")
             }
         }
         .tvFocusSection()
@@ -408,6 +371,64 @@ struct DetailView: View {
             }
         }
     }
+    @ViewBuilder
+    private func playButton(_ libraryItem: StremioLibraryItem?, resuming: Bool, video: Video?) -> some View {
+        Button {
+            let target = model.meta?.preview ?? preview
+            if resuming, let libraryItem {
+                playback.resume(libraryItem, app: app)
+            } else {
+                playback.play(meta: target, video: video, app: app)
+            }
+        } label: {
+            Label(playLabel(resuming: resuming, video: video), systemImage: "play.fill")
+                .frame(maxWidth: isCompact ? .infinity : nil)
+        }
+        .pillButtonStyle(.primary)
+        .focused($focus, equals: .play)
+        .disabled(model.meta == nil && preview.type == "series")
+    }
+
+    @ViewBuilder
+    private func iconButtons(_ libraryItem: StremioLibraryItem?, video: Video?) -> some View {
+
+        Button {
+            app.setInList(model.meta?.preview ?? preview, !(libraryItem?.isInLibrary ?? false))
+        } label: {
+            Image(systemName: libraryItem?.isInLibrary == true ? "checkmark" : "plus")
+        }
+        .pillButtonStyle(.icon)
+        .accessibilityLabel(libraryItem?.isInLibrary == true ? "Remove from My List" : "Add to My List")
+
+        Button { sourcesFor = SourcesTarget(video: video) } label: {
+            Image(systemName: "list.bullet")
+        }
+        .pillButtonStyle(.icon)
+        .accessibilityLabel("Choose Source")
+
+        #if !os(tvOS)
+        // Save for offline: the film, or the episode the Play button would play.
+        if model.meta != nil {
+            DownloadButton(meta: model.meta?.preview ?? preview, video: model.meta?.type == "series" ? video : nil,
+                           runtime: downloadRuntime(video))
+        }
+        #endif
+
+        if let trailer = Trailers.youTubeID(extras: model.extras, meta: model.meta), trailerAvailable {
+            Button {
+                #if os(tvOS)
+                Trailers.open(trailer)
+                #else
+                trailerID = TrailerID(id: trailer)
+                #endif
+            } label: {
+                Image(systemName: "film")
+            }
+            .pillButtonStyle(.icon)
+            .accessibilityLabel("Play Trailer")
+        }
+    }
+
 
     /// The length to size a download by: the episode's exact one, else the title's.
     private func downloadRuntime(_ video: Video?) -> TimeInterval? {

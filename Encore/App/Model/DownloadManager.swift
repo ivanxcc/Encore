@@ -54,7 +54,7 @@ final class DownloadManager: NSObject, ObservableObject {
     }
 
     var quality: DownloadQuality {
-        DownloadQuality(rawValue: UserDefaults.standard.string(forKey: Self.qualityKey) ?? "") ?? .standard
+        DownloadQuality(rawValue: UserDefaults.standard.string(forKey: Self.qualityKey) ?? "") ?? .dataSaver
     }
 
     private var allowsCellular: Bool {

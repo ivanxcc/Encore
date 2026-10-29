@@ -58,7 +58,7 @@ public struct StreamTraits: Hashable, Sendable {
         if has(["2160p", "4k", "uhd"]) { resolution = .uhd4k }
         else if has(["1080p", "1080i", "fhd"]) { resolution = .hd1080 }
         else if has(["720p"]) { resolution = .hd720 }
-        else if has(["480p", "576p", "360p", " sd "]) { resolution = .sd }
+        else if has(["480p", "576p", "360p", "sdtv", "dvdrip", "dvd-rip", "xvid", "divx", "pdtv"]) || Self.saysSD(lower) { resolution = .sd }
         else { resolution = .unknown }
 
         isDolbyVision = has(["dolby vision", "dovi", " dv ", ".dv.", "[dv]", "dv hdr", "hdr dv"])
@@ -83,6 +83,11 @@ public struct StreamTraits: Hashable, Sendable {
         else { channels = nil }
         sizeBytes = stream.behaviorHints?.videoSize ?? Self.parseSize(text)
         seeders = Self.parseSeeders(text)
+    }
+
+    /// "SD" as a word on its own (a line of an add-on's name, "[SD]", "| SD |"), not inside another word.
+    static func saysSD(_ lower: String) -> Bool {
+        lower.range(of: #"(?<![a-z0-9])sd(?![a-z0-9])"#, options: .regularExpression) != nil
     }
 
     /// "💾 12.4 GB", "Size: 900 MB", "12.4GB".
