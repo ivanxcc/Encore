@@ -298,3 +298,12 @@ test("a TV's QR code opens a page that hands the code to the Encore app", async 
   assert.ok(html.includes('href="encore://pair?code=ABCDEFGH"'));
   assert.ok(html.includes("ABCD-EFGH"));
 });
+
+test("browsers may call the API: preflight is answered and every response allows any origin", async () => {
+  const w = makeWorld();
+  const preflight = await handle(new Request("https://cloud.test/v1/pair/start", { method: "OPTIONS" }), w.env, w.deps);
+  assert.equal(preflight.status, 204);
+  assert.match(preflight.headers.get("access-control-allow-headers"), /authorization/);
+  const health = await handle(new Request("https://cloud.test/v1/health"), w.env, w.deps);
+  assert.equal(health.headers.get("access-control-allow-origin"), "*");
+});

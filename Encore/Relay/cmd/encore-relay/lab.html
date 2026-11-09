@@ -1,0 +1,453 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex">
+<title>Encore Relay Lab</title>
+<style>
+  :root { color-scheme: dark; --bg: #000; --card: #121214; --line: #26262b; --text: #f5f5f7; --dim: #98989f; --accent: #fff; --good: #32d74b; --warn: #ffd60a; --bad: #ff453a; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 17px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif; -webkit-font-smoothing: antialiased; }
+  main { max-width: 1100px; margin: 0 auto; padding: 28px 20px 80px; }
+  h1 { font-size: 34px; letter-spacing: -0.02em; margin: 0 0 4px; }
+  h2 { font-size: 20px; margin: 0 0 12px; }
+  p { margin: 0 0 12px; color: var(--dim); }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 18px; padding: 20px; margin-top: 18px; }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+  input { flex: 1; min-width: 200px; background: #1c1c1f; border: 1px solid var(--line); color: var(--text); border-radius: 12px; padding: 14px 16px; font: inherit; }
+  button { background: var(--accent); color: #000; border: 0; border-radius: 999px; padding: 14px 24px; font: inherit; font-weight: 600; cursor: pointer; min-height: 52px; }
+  button.quiet { background: #2a2a2e; color: var(--text); }
+  button:disabled { opacity: 0.45; }
+  .code { font: 600 44px/1 ui-monospace, "SF Mono", Menlo, monospace; letter-spacing: 0.08em; margin: 10px 0; }
+  .titles { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 14px; }
+  .title { background: none; border: 0; padding: 0; color: var(--text); text-align: left; border-radius: 12px; min-height: 0; font-weight: 400; }
+  .title img { width: 100%; aspect-ratio: 2/3; object-fit: cover; border-radius: 12px; background: #1c1c1f; display: block; }
+  .title span { display: block; font-size: 14px; margin-top: 6px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  video { width: 100%; background: #000; border-radius: 14px; aspect-ratio: 16/9; display: block; }
+  table { width: 100%; border-collapse: collapse; font-size: 15px; }
+  td, th { text-align: left; padding: 7px 10px 7px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--dim); font-weight: 500; }
+  .good { color: var(--good); } .warn { color: var(--warn); } .bad { color: var(--bad); }
+  .big { font-size: 30px; font-weight: 700; letter-spacing: -0.02em; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-top: 14px; }
+  .stat { background: #1a1a1d; border-radius: 14px; padding: 14px 16px; }
+  .stat small { color: var(--dim); display: block; }
+  pre { white-space: pre-wrap; word-break: break-word; background: #0b0b0c; border: 1px solid var(--line); border-radius: 12px; padding: 14px; font-size: 13px; max-height: 320px; overflow: auto; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Encore Relay Lab</h1>
+  <p>Measures how fast this device starts and seeks real titles through your relay. Open it on the Tesla, play something, run the seek test, and send the report.</p>
+
+  <section class="card" id="step-code">
+    <h2>1. Lab code</h2>
+    <p>The code the installer printed on your server.</p>
+    <div class="row"><input id="code" placeholder="ABCD-EFGH" autocapitalize="characters" autocomplete="off" spellcheck="false"><button id="code-go">Continue</button></div>
+    <p id="code-error" class="bad" hidden></p>
+  </section>
+
+  <section class="card" id="step-signin" hidden>
+    <h2>2. Sign in</h2>
+    <div id="signin-start">
+      <p>Uses your Encore pairing: no typing a password here.</p>
+      <div class="row"><button id="pair-go">Sign In with Encore</button><button class="quiet" id="url-mode">Use a video address instead</button></div>
+    </div>
+    <div id="signin-wait" hidden>
+      <p>On your iPhone, open Encore › Settings › Encore Cloud › Sign In an Apple TV and enter:</p>
+      <div class="code" id="pair-code">· · · ·</div>
+      <p id="pair-status">Waiting for approval…</p>
+    </div>
+    <div id="signin-url" hidden>
+      <p>A direct link to a video file (MKV or MP4).</p>
+      <div class="row"><input id="url" placeholder="https://…" autocomplete="off" spellcheck="false"><button id="url-go">Play</button></div>
+    </div>
+    <p id="signin-error" class="bad" hidden></p>
+  </section>
+
+  <section class="card" id="step-titles" hidden>
+    <div class="row" style="justify-content: space-between"><h2 style="margin:0">3. Choose something to play</h2><button class="quiet" id="signout">Sign Out</button></div>
+    <p id="titles-note" style="margin-top:10px">Loading Continue Watching…</p>
+    <div class="titles" id="titles"></div>
+  </section>
+
+  <section class="card" id="step-player" hidden>
+    <h2 id="now-title">Player</h2>
+    <video id="video" controls playsinline></video>
+    <div class="stats">
+      <div class="stat"><small>Press to first frame</small><span class="big" id="s-start">–</span></div>
+      <div class="stat"><small>Seek (median)</small><span class="big" id="s-seek">–</span></div>
+      <div class="stat"><small>How it plays</small><span class="big" id="s-mode">–</span></div>
+      <div class="stat"><small>Stalls</small><span class="big" id="s-stalls">0</span></div>
+    </div>
+    <div class="row" style="margin-top:16px">
+      <button id="seek-test">Run Seek Test</button>
+      <button class="quiet" id="fullscreen">Full Screen</button>
+      <button class="quiet" id="copy">Copy Report</button>
+    </div>
+    <h2 style="margin-top:22px">Sources tried</h2>
+    <table id="tries"><tr><th>Source</th><th>Result</th><th>Time</th></tr></table>
+  </section>
+
+  <section class="card">
+    <h2>This device</h2>
+    <table id="device"></table>
+  </section>
+
+  <section class="card">
+    <h2>Report</h2>
+    <p>Everything measured on this page. Copy it and send it back.</p>
+    <pre id="report">{}</pre>
+  </section>
+</main>
+
+<script src="/lab/hls.min.js"></script>
+<script>
+"use strict";
+const CLOUD = "__ENCORE_CLOUD_URL__";
+const $ = (id) => document.getElementById(id);
+const store = {
+  get: (k) => { try { return JSON.parse(localStorage.getItem("lab." + k)); } catch { return null; } },
+  set: (k, v) => { try { localStorage.setItem("lab." + k, JSON.stringify(v)); } catch {} },
+  del: (k) => { try { localStorage.removeItem("lab." + k); } catch {} },
+};
+const report = { at: new Date().toISOString(), device: {}, plays: [] };
+let current = null;   // the play being measured
+let hls = null;
+
+// MARK: This device
+
+function capabilities() {
+  const v = document.createElement("video");
+  const MS = window.ManagedMediaSource || window.MediaSource;
+  const can = (mime) => !!(MS && MS.isTypeSupported && MS.isTypeSupported(mime)) || v.canPlayType(mime) !== "";
+  const video = [], audio = [];
+  if (can('video/mp4; codecs="avc1.640028"')) video.push("h264");
+  if (can('video/mp4; codecs="hvc1.1.6.L120.90"')) video.push("hevc");
+  if (can('video/mp4; codecs="av01.0.08M.08"')) video.push("av1");
+  if (can('audio/mp4; codecs="mp4a.40.2"')) audio.push("aac");
+  if (can('audio/mp4; codecs="ac-3"')) audio.push("ac3");
+  if (can('audio/mp4; codecs="ec-3"')) audio.push("eac3");
+  if (can('audio/mp4; codecs="opus"')) audio.push("opus");
+  return {
+    video, audio,
+    hlsJs: !!(window.Hls && Hls.isSupported()),
+    nativeHls: v.canPlayType("application/vnd.apple.mpegurl") !== "",
+    fullscreen: !!(document.fullscreenEnabled || document.webkitFullscreenEnabled || v.webkitEnterFullscreen),
+    pictureInPicture: !!document.pictureInPictureEnabled,
+    mediaSession: "mediaSession" in navigator,
+    wakeLock: "wakeLock" in navigator,
+    viewTransitions: !!document.startViewTransition,
+    backdropFilter: CSS.supports("backdrop-filter", "blur(10px)") || CSS.supports("-webkit-backdrop-filter", "blur(10px)"),
+    screen: `${screen.width}×${screen.height} @${window.devicePixelRatio}x`,
+    window: `${innerWidth}×${innerHeight}`,
+    cores: navigator.hardwareConcurrency || null,
+    memoryGB: navigator.deviceMemory || null,
+    connection: navigator.connection ? { type: navigator.connection.effectiveType, downlinkMbps: navigator.connection.downlink, rttMs: navigator.connection.rtt } : null,
+    touch: navigator.maxTouchPoints || 0,
+    userAgent: navigator.userAgent,
+  };
+}
+
+function showDevice() {
+  const c = report.device = capabilities();
+  const rows = [
+    ["Video it decodes", c.video.join(", ") || "none"],
+    ["Audio it decodes", c.audio.join(", ") || "none"],
+    ["Streaming", [c.hlsJs && "hls.js (MSE)", c.nativeHls && "native HLS"].filter(Boolean).join(", ") || "neither"],
+    ["Full screen", c.fullscreen ? "yes" : "no"],
+    ["Screen", `${c.screen}, window ${c.window}`],
+    ["Processor", `${c.cores || "?"} cores${c.memoryGB ? ", " + c.memoryGB + " GB" : ""}`],
+    ["Connection", c.connection ? `${c.connection.type}, ${c.connection.downlinkMbps} Mbps, ${c.connection.rttMs} ms` : "not reported"],
+    ["Glass blur / page transitions", `${c.backdropFilter ? "yes" : "no"} / ${c.viewTransitions ? "yes" : "no"}`],
+    ["Browser", c.userAgent],
+  ];
+  $("device").innerHTML = rows.map(([k, v]) => `<tr><th>${k}</th><td>${escapeHTML(String(v))}</td></tr>`).join("");
+  showReport();
+}
+
+function showReport() { $("report").textContent = JSON.stringify(report, null, 2); }
+function escapeHTML(s) { return s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+function ms(n) { return n == null ? "–" : n < 1000 ? `${Math.round(n)} ms` : `${(n / 1000).toFixed(2)} s`; }
+function grade(n, good, ok) { return n <= good ? "good" : n <= ok ? "warn" : "bad"; }
+
+// MARK: Steps
+
+function show() {
+  const token = store.get("token");
+  const fresh = token && Date.now() - token.at < 23 * 3600 * 1000;
+  $("step-code").hidden = !!fresh;
+  $("step-signin").hidden = !fresh || !!store.get("auth");
+  $("step-titles").hidden = !fresh || !store.get("auth");
+  if (fresh && store.get("auth")) loadTitles();
+}
+
+$("code-go").onclick = async () => {
+  $("code-error").hidden = true;
+  try {
+    const r = await fetch("/v1/lab/token", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ code: $("code").value }) });
+    const body = await r.json();
+    if (!r.ok) throw new Error(body.error || "That didn't work.");
+    store.set("token", { value: body.token, at: Date.now() });
+    show();
+  } catch (e) { $("code-error").textContent = e.message; $("code-error").hidden = false; }
+};
+
+$("pair-go").onclick = async () => {
+  $("signin-error").hidden = true;
+  if (!CLOUD) return fail("This relay wasn't given your Encore Cloud address (ENCORE_CLOUD_URL). Use a video address instead.");
+  try {
+    const start = await (await fetch(CLOUD + "/v1/pair/start", { method: "POST" })).json();
+    $("pair-code").textContent = start.code;
+    $("signin-start").hidden = true; $("signin-wait").hidden = false;
+    for (;;) {
+      await new Promise((r) => setTimeout(r, 2000));
+      const r = await fetch(CLOUD + "/v1/pair/poll?token=" + encodeURIComponent(start.pollToken));
+      if (r.status === 202) continue;
+      if (!r.ok) throw new Error("The code expired. Try again.");
+      const body = await r.json();
+      store.set("auth", { key: body.authKey, email: body.email });
+      break;
+    }
+    $("signin-wait").hidden = true; $("signin-start").hidden = false;
+    show();
+  } catch (e) { $("signin-wait").hidden = true; $("signin-start").hidden = false; fail(e.message); }
+  function fail(m) { $("signin-error").textContent = m; $("signin-error").hidden = false; }
+};
+
+$("url-mode").onclick = () => { $("signin-url").hidden = false; };
+$("url-go").onclick = () => play("Video address", [{ label: $("url").value.trim(), url: $("url").value.trim() }], 0);
+$("signout").onclick = () => { store.del("auth"); show(); };
+
+// MARK: Stremio
+
+async function stremio(method, body) {
+  const r = await fetch("https://api.strem.io/api/" + method, { method: "POST", body: JSON.stringify(body) });
+  const json = await r.json();
+  if (json.error) throw new Error(json.error.message || "Stremio refused the request.");
+  return json.result;
+}
+
+let addons = null;
+
+async function loadTitles() {
+  const auth = store.get("auth");
+  try {
+    const [collection, library] = await Promise.all([
+      stremio("addonCollectionGet", { type: "AddonCollectionGet", authKey: auth.key, update: true }),
+      stremio("datastoreGet", { authKey: auth.key, collection: "libraryItem", ids: [], all: true }),
+    ]);
+    addons = collection.addons || [];
+    const items = (library || [])
+      .filter((i) => i && !i.removed && i.state && i.state.timeOffset > 0)
+      .sort((a, b) => String(b.state.lastWatched || "").localeCompare(String(a.state.lastWatched || "")))
+      .slice(0, 24);
+    $("titles-note").textContent = items.length ? `Signed in as ${auth.email}. Tap a title to play it where you left off.` : "Nothing in Continue Watching on this account.";
+    $("titles").innerHTML = "";
+    for (const item of items) {
+      const b = document.createElement("button");
+      b.className = "title";
+      const id = item._id.split(":")[0];
+      b.innerHTML = `<img alt="" loading="lazy" src="${escapeHTML(item.poster || `https://images.metahub.space/poster/medium/${id}/img`)}"><span>${escapeHTML(item.name || id)}</span>`;
+      b.onclick = () => playItem(item);
+      $("titles").appendChild(b);
+    }
+  } catch (e) {
+    $("titles-note").textContent = "Couldn't load your account: " + e.message;
+  }
+}
+
+function supports(addon, resource, type, id) {
+  const m = addon.manifest || {};
+  for (const r of m.resources || []) {
+    const name = typeof r === "string" ? r : r.name;
+    if (name !== resource) continue;
+    const types = (typeof r === "object" && r.types) || m.types || [];
+    const prefixes = (typeof r === "object" && r.idPrefixes) || m.idPrefixes;
+    if (types.includes(type) && (!prefixes || prefixes.some((p) => id.startsWith(p)))) return true;
+  }
+  return false;
+}
+
+// What the relay can repackage without converting video: H.264, not HDR, not 4K, ready now.
+function rank(streams) {
+  return streams.map((s, order) => {
+    const text = [s.name, s.title, s.description, s.behaviorHints && s.behaviorHints.filename].filter(Boolean).join(" ");
+    const t = " " + text.toLowerCase() + " ";
+    const has = (...words) => words.some((w) => t.includes(w));
+    let score = -order * 0.5;
+    if (has("uncached", "download]", "⏳")) score -= 3000; else if (has("+]", "⚡", "cached", "instant") || t.includes("rd+")) score += 4000;
+    if (has("x265", "hevc", "h265", "h.265", "av1")) score -= 1500; else if (has("x264", "h264", "h.264", "avc")) score += 600; else score += 150;
+    if (has("hdr", "dolby vision", "dovi", ".dv.", " dv ", "10bit", "10-bit")) score -= 1200;
+    if (has("2160p", "4k", "uhd")) score -= 900; else if (has("1080p")) score += 300; else if (has("720p")) score += 240; else score += 60;
+    if (has("remux", "bdremux")) score -= 500;
+    if (has("cam", "hdcam", "telesync", " ts ")) score -= 5000;
+    if (/\.mp4\b/.test(t)) score += 120;
+    return { label: text.replace(/\s+/g, " ").slice(0, 110), url: s.url, headers: s.behaviorHints && s.behaviorHints.proxyHeaders && s.behaviorHints.proxyHeaders.request, score };
+  }).filter((s) => s.url).sort((a, b) => b.score - a.score);
+}
+
+async function playItem(item) {
+  const videoId = (item.state && item.state.video_id) || item._id;
+  $("titles-note").textContent = `Finding sources for ${item.name}…`;
+  const began = performance.now();
+  const lists = await Promise.all((addons || []).filter((a) => supports(a, "stream", item.type, videoId)).map(async (a) => {
+    try {
+      const base = a.transportUrl.replace(/\/manifest\.json$/, "");
+      const r = await fetch(`${base}/stream/${item.type}/${encodeURIComponent(videoId)}.json`);
+      return (await r.json()).streams || [];
+    } catch { return []; }
+  }));
+  const candidates = rank(lists.flat());
+  $("titles-note").textContent = `${candidates.length} playable sources found in ${ms(performance.now() - began)}.`;
+  const resume = item.state.duration > 0 && item.state.timeOffset / item.state.duration < 0.92 ? item.state.timeOffset / 1000 : 0;
+  play(item.name, candidates.slice(0, 8), resume, performance.now() - began);
+}
+
+// MARK: Playing and measuring
+
+async function play(title, candidates, startAt, sourcesMs) {
+  const video = $("video");
+  const pressed = performance.now();
+  if (hls) { hls.destroy(); hls = null; }
+  video.removeAttribute("src"); video.load();
+  current = { title, startAt: Math.round(startAt), sourcesMs: sourcesMs == null ? null : Math.round(sourcesMs), tries: [], seeks: [], stalls: 0 };
+  report.plays.push(current);
+  $("step-player").hidden = false;
+  $("now-title").textContent = title;
+  $("tries").innerHTML = "<tr><th>Source</th><th>Result</th><th>Time</th></tr>";
+  for (const id of ["s-start", "s-seek", "s-mode"]) { $(id).textContent = "–"; $(id).className = "big"; }
+  $("s-stalls").textContent = "0";
+  $("step-player").scrollIntoView({ behavior: "smooth" });
+
+  const caps = report.device;
+  const useHlsJs = caps.hlsJs;
+  const token = store.get("token").value;
+  for (const c of candidates) {
+    const t0 = performance.now();
+    let decision;
+    try {
+      const r = await fetch("/v1/session", {
+        method: "POST", headers: { "content-type": "application/json", authorization: "Bearer " + token },
+        // Dolby audio passes through only where the browser's own HLS plays it (Safari).
+        body: JSON.stringify({ url: c.url, headers: c.headers, start: startAt, caps: { video: caps.video, audio: useHlsJs ? caps.audio.filter((a) => a === "aac") : caps.audio } }),
+      });
+      decision = await r.json();
+      if (!r.ok) decision = { mode: "error", reason: decision.error };
+    } catch (e) { decision = { mode: "error", reason: e.message }; }
+    const took = performance.now() - t0;
+    const attempt = { source: c.label, mode: decision.mode, reason: decision.reason || null, decisionMs: Math.round(took), video: decision.video, audio: decision.audio, audioCopied: decision.audioCopied, timings: decision.timings };
+    current.tries.push(attempt);
+    const row = $("tries").insertRow();
+    row.innerHTML = `<td>${escapeHTML(c.label)}</td><td class="${decision.mode === "remux" || decision.mode === "direct" ? "good" : "warn"}">${decision.mode}${decision.reason ? " (" + escapeHTML(decision.reason) + ")" : ""}</td><td>${ms(took)}</td>`;
+    showReport();
+    if (decision.mode !== "remux" && decision.mode !== "direct") continue;
+
+    current.mode = decision.mode;
+    current.player = decision.mode === "direct" ? "direct" : useHlsJs ? "hls.js" : "native HLS";
+    $("s-mode").textContent = decision.mode === "direct" ? "Direct" : decision.audioCopied ? "Repackaged" : "Repackaged + audio";
+    const firstFrame = () => {
+      if (current.startMs != null) return;
+      current.startMs = Math.round(performance.now() - pressed);
+      $("s-start").textContent = ms(current.startMs);
+      $("s-start").className = "big " + grade(current.startMs, 1500, 3000);
+      showReport();
+    };
+    if (video.requestVideoFrameCallback) video.requestVideoFrameCallback(firstFrame); else video.addEventListener("playing", firstFrame, { once: true });
+
+    if (decision.mode === "direct") {
+      video.src = decision.url;
+      if (startAt > 0) video.addEventListener("loadedmetadata", () => { video.currentTime = startAt; }, { once: true });
+    } else if (useHlsJs) {
+      hls = new Hls({ startPosition: startAt > 0 ? startAt : -1, maxBufferLength: 30, backBufferLength: 60 });
+      hls.on(Hls.Events.ERROR, (_, data) => {
+        (current.errors = current.errors || []).push(`${data.type}/${data.details}${data.fatal ? " (fatal)" : ""}`);
+        if (data.fatal && data.type === Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError();
+        showReport();
+      });
+      hls.on(Hls.Events.FRAG_LOADED, (_, data) => {
+        const s = data.frag.stats;
+        (current.segments = current.segments || []).push({ n: data.frag.sn, waitMs: Math.round(s.loading.first - s.loading.start), loadMs: Math.round(s.loading.end - s.loading.start), kb: Math.round(s.total / 1024) });
+        if (current.segments.length > 40) current.segments.shift();
+      });
+      hls.loadSource(decision.playlist);
+      hls.attachMedia(video);
+    } else {
+      video.src = decision.playlist;
+      if (startAt > 0) video.addEventListener("loadedmetadata", () => { video.currentTime = startAt; }, { once: true });
+    }
+    video.play().catch(() => {});
+    return;
+  }
+  $("s-mode").textContent = "No source";
+  $("s-mode").className = "big bad";
+}
+
+// A stall is the picture stopping for want of data while playing (not the wait right after a seek).
+let lastSeekAt = 0;
+$("video").addEventListener("waiting", () => {
+  if (!current || current.startMs == null || performance.now() - lastSeekAt < 4000) return;
+  current.stalls++;
+  $("s-stalls").textContent = current.stalls;
+  showReport();
+});
+
+function seekOnce(to) {
+  const video = $("video");
+  return new Promise((resolve) => {
+    const began = performance.now();
+    lastSeekAt = began;
+    let finished = false;
+    const done = (ok) => { if (finished) return; finished = true; resolve({ to: Math.round(to), ms: Math.round(performance.now() - began), ok }); };
+    const timer = setTimeout(() => done(false), 20000);
+    video.addEventListener("seeked", () => {
+      // Seeked says the position changed; the frame callback says a picture from there is on screen.
+      const shown = () => { clearTimeout(timer); done(true); };
+      if (video.requestVideoFrameCallback) video.requestVideoFrameCallback(shown); else shown();
+    }, { once: true });
+    video.currentTime = to;
+    video.play().catch(() => {});
+  });
+}
+
+$("seek-test").onclick = async () => {
+  const video = $("video");
+  if (!current || !isFinite(video.duration) || video.duration < 60) return;
+  $("seek-test").disabled = true;
+  // Far jumps both ways (nothing buffered there), then a short hop back.
+  const d = video.duration;
+  const targets = [0.6, 0.15, 0.85, 0.4, 0.75, 0.05].map((f) => f * d).concat([0.05 * d + 45]);
+  for (const to of targets) {
+    const result = await seekOnce(to);
+    current.seeks.push(result);
+    const sorted = current.seeks.filter((s) => s.ok).map((s) => s.ms).sort((a, b) => a - b);
+    if (sorted.length) {
+      const median = sorted[Math.floor(sorted.length / 2)];
+      current.seekMedianMs = median;
+      $("s-seek").textContent = ms(median);
+      $("s-seek").className = "big " + grade(median, 1000, 2500);
+    }
+    showReport();
+    await new Promise((r) => setTimeout(r, 1500));
+  }
+  $("seek-test").disabled = false;
+};
+
+$("fullscreen").onclick = () => {
+  const v = $("video");
+  (v.requestFullscreen || v.webkitRequestFullscreen || v.webkitEnterFullscreen || (() => {})).call(v);
+};
+
+$("copy").onclick = async () => {
+  const text = JSON.stringify(report, null, 2);
+  try { await navigator.clipboard.writeText(text); $("copy").textContent = "Copied"; }
+  catch { const r = document.createRange(); r.selectNodeContents($("report")); getSelection().removeAllRanges(); getSelection().addRange(r); $("copy").textContent = "Selected: copy it"; }
+};
+
+showDevice();
+show();
+</script>
+</body>
+</html>

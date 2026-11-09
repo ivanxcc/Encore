@@ -42,8 +42,24 @@ export default {
   },
 };
 
+/** Browsers (Encore Web) may call every route: requests carry a Stremio key, never cookies. */
+const CORS = {
+  "access-control-allow-origin": "*",
+  "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+  "access-control-allow-headers": "authorization, content-type, if-match",
+  "access-control-max-age": "86400",
+};
+
 /** The request handler, with its outside world injected so tests can run it without the network. */
 export async function handle(request, env, deps) {
+  if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
+  const response = await route(request, env, deps);
+  const headers = new Headers(response.headers);
+  for (const [name, value] of Object.entries(CORS)) headers.set(name, value);
+  return new Response(response.body, { status: response.status, headers });
+}
+
+async function route(request, env, deps) {
   const url = new URL(request.url);
   const route = `${request.method} ${url.pathname}`;
   try {
