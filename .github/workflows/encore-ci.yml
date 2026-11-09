@@ -10,7 +10,7 @@ name: Encore
 # Encore Release anyway. Changes only to the Cloud Worker don't rebuild the apps (encore-cloud.yml).
 on:
   pull_request:
-    paths: ["Encore/**", "!Encore/Cloud/**", ".github/workflows/encore-ci.yml"]
+    paths: ["Encore/**", "!Encore/Cloud/**", "!Encore/Relay/**", "!Encore/Web/**", ".github/workflows/encore-ci.yml"]
   workflow_dispatch:
 
 permissions:
