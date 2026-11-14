@@ -43,22 +43,30 @@ and DNS tricks are covered. It keeps no logs of what is played.
 
 ## Install on a server
 
-On Ubuntu (Oracle Cloud free tier works, x86 or Arm):
+On Ubuntu or Debian (Oracle Cloud free tier works, x86 or Arm):
 
 ```sh
-curl -fsSL https://github.com/ivanxcc/Encore/releases/download/relay-latest/install.sh \
-  | sudo ENCORE_CLOUD_URL=https://your-encore-cloud.workers.dev bash
+curl -fsSL https://github.com/ivanxcc/Encore/releases/download/relay-latest/install.sh | sudo bash
 ```
 
-It installs ffmpeg, the relay as a service, and Caddy for HTTPS, then prints the lab page's address
-and a short lab code. Open the lab page on the device you want to test (a Tesla, a TV browser), enter
-the code, sign in with Encore pairing, play something from Continue Watching, run the seek test, and
-copy the report.
+It fits in beside what the server already runs, and keeps everything in `/opt/encore-relay`:
+
+| The server has | The relay installs as |
+| --- | --- |
+| Docker and Pangolin | A container on Pangolin's network with no ports of its own. Publish it as a Pangolin resource (target `encore-relay`, port `8089`, authentication off: the relay checks its own tokens). |
+| Docker and another proxy on 80/443 | A container on `127.0.0.1:8089` for that proxy. |
+| Nothing on 80/443 | A service plus Caddy for HTTPS on a free `sslip.io` name. |
+
+It prints the next steps and a short lab code. Run the same command to update; add `-s status` or
+`-s uninstall` after `bash` to check on it or remove it (uninstalling touches nothing else).
+
+Open the lab page on the device you want to test (a Tesla, a TV browser), enter the code, sign in with
+Encore pairing, play something from Continue Watching, run the seek test, and copy the report.
 
 To time a file from the server itself, with no browser:
 
 ```sh
-sudo -u encore-relay encore-relay bench -url 'https://…/file.mkv'
+docker exec encore-relay encore-relay bench -url 'https://…/file.mkv'
 ```
 
 ## Develop
