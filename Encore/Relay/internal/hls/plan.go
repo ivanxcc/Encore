@@ -18,8 +18,10 @@ type Plan struct {
 	Duration float64
 }
 
-// TargetSeconds is the shortest a segment may be; segments end on the next keyframe after it.
-const TargetSeconds = 4.0
+// TargetSeconds is the shortest a segment may be; segments end on the next keyframe after it. Short
+// segments make a seek quick (the picture is back after one small segment); much shorter would cost
+// more requests than it saves.
+const TargetSeconds = 2.0
 
 func NewPlan(f *mkv.File) Plan {
 	var p Plan

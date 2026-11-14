@@ -39,7 +39,6 @@ const (
 	// A run already writing the segment before a wanted one reaches it about as soon as a new run would
 	// (a new run's first segment costs one ranged read and ffmpeg's start); further back, a new run wins.
 	nearSegments = 1
-	maxRuns      = 2
 	keepBehind   = 30
 	keepAhead    = 60
 )
@@ -177,29 +176,17 @@ func (s *Session) runFor(n int) *run {
 	return nil
 }
 
+// startRun stops any other run first: debrid hosts slow a file down sharply when it is read over two
+// connections at once, so a seek must not leave the old position still downloading beside the new.
 func (s *Session) startRun(n int) {
-	live := 0
-	var farthest *run
-	for _, r := range s.runs {
-		if r.dead {
-			continue
-		}
-		live++
-		if farthest == nil || abs(r.cur-n) > abs(farthest.cur-n) {
-			farthest = r
-		}
-	}
-	if live >= maxRuns && farthest != nil {
-		farthest.cancel()
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	r := &run{first: n, cur: n, cancel: cancel}
 	kept := s.runs[:0]
 	for _, old := range s.runs {
 		if !old.dead {
-			kept = append(kept, old)
+			old.cancel()
 		}
 	}
+	ctx, cancel := context.WithCancel(context.Background())
+	r := &run{first: n, cur: n, cancel: cancel}
 	s.runs = append(kept, r)
 	go s.work(ctx, r)
 }

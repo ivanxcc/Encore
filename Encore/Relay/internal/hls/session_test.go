@@ -119,11 +119,11 @@ func TestIndexMatchesTheFilesKeyframes(t *testing.T) {
 	}
 }
 
-func TestPlanCutsOnKeyframesAtLeastFourSecondsApart(t *testing.T) {
+func TestPlanCutsOnKeyframesAtLeastTwoSecondsApart(t *testing.T) {
 	s, file := open(t)
 	p := s.Plan
 	// Keyframes at 12.2 and 13, and 44 and 45: the second of each pair is too close to start a segment.
-	want := []float64{0, 7, 12.2, 19, 26, 31.5, 38, 44, 52, 58.5}
+	want := []float64{0, 2.5, 7, 12.2, 19, 26, 31.5, 38, 44, 52, 58.5, 61}
 	if len(p.Starts) != len(want) {
 		t.Fatalf("segments start at %v", p.Starts)
 	}
@@ -179,12 +179,12 @@ func TestStraightThroughKeepsEveryFrame(t *testing.T) {
 func TestSeekMakesTheSameSegment(t *testing.T) {
 	a, _ := open(t)
 	b, _ := open(t)
-	for n := 0; n <= 6; n++ {
+	for n := 0; n <= 8; n++ {
 		if _, _, err := a.Segment(context.Background(), n); err != nil {
 			t.Fatal(err)
 		}
 	}
-	for _, n := range []int{6, 3} { // forward past everything, then back
+	for _, n := range []int{8, 4} { // forward past everything, then back
 		seekPath, took, err := b.Segment(context.Background(), n)
 		if err != nil {
 			t.Fatalf("seek to %d: %v", n, err)
@@ -268,3 +268,19 @@ func TestAudioIsContinuousAcrossSegments(t *testing.T) {
 }
 
 var _ = io.EOF
+
+// A seek leaves at most one run reading the file: the one for the new position.
+func TestSeekStopsTheOldRun(t *testing.T) {
+	s, _ := open(t)
+	if _, _, err := s.Segment(context.Background(), 0); err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []int{6, 2, 9} {
+		if _, _, err := s.Segment(context.Background(), n); err != nil {
+			t.Fatal(err)
+		}
+		if runs := s.Runs(); runs > 1 {
+			t.Fatalf("%d runs reading the file after seeking to %d, want at most 1", runs, n)
+		}
+	}
+}

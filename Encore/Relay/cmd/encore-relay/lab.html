@@ -433,7 +433,7 @@ async function play(title, candidates, startAt, sourcesMs, context) {
       $("breakdown").textContent = `Finding sources ${ms(current.sourcesMs)} · relay ${ms(current.decisionMs)} · video ${ms(current.videoMs)}${current.startedMuted ? " (started muted)" : ""}`;
       showReport();
     };
-    if (video.requestVideoFrameCallback) video.requestVideoFrameCallback(firstFrame); else video.addEventListener("playing", firstFrame, { once: true });
+    whenPictureMoves(video, firstFrame);
 
     if (decision.mode === "direct") {
       video.src = decision.url;
@@ -492,6 +492,23 @@ $("video").addEventListener("waiting", () => {
   showReport();
 });
 
+// Calls back once when the picture is visibly playing: a new frame painted (where the browser reports
+// frames), or the playback clock advancing while playing (always). Safari sometimes stops reporting
+// frames after a video has been reloaded a few times, so either one counts.
+function whenPictureMoves(video, callback) {
+  let fired = false;
+  const fire = () => {
+    if (fired) return;
+    fired = true;
+    video.removeEventListener("timeupdate", onTime);
+    callback();
+  };
+  // The clock only ticks while frames are being shown; Safari reports it every quarter second or so.
+  const onTime = () => { if (!video.paused && video.readyState >= 3) fire(); };
+  video.addEventListener("timeupdate", onTime);
+  if (video.requestVideoFrameCallback) video.requestVideoFrameCallback(fire);
+}
+
 function seekOnce(to) {
   const video = $("video");
   return new Promise((resolve) => {
@@ -501,9 +518,8 @@ function seekOnce(to) {
     const done = (ok) => { if (finished) return; finished = true; resolve({ to: Math.round(to), ms: Math.round(performance.now() - began), ok }); };
     const timer = setTimeout(() => done(false), 20000);
     video.addEventListener("seeked", () => {
-      // Seeked says the position changed; the frame callback says a picture from there is on screen.
-      const shown = () => { clearTimeout(timer); done(true); };
-      if (video.requestVideoFrameCallback) video.requestVideoFrameCallback(shown); else shown();
+      // Seeked says the position changed; the picture moving again says playback is back.
+      whenPictureMoves(video, () => { clearTimeout(timer); done(true); });
     }, { once: true });
     video.currentTime = to;
     if (video.paused) start(video);
