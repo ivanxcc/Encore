@@ -52,8 +52,14 @@
   <section class="card" id="step-signin" hidden>
     <h2>2. Sign in</h2>
     <div id="signin-start">
-      <p>Uses your Encore pairing: no typing a password here.</p>
-      <div class="row"><button id="pair-go">Sign In with Encore</button><button class="quiet" id="url-mode">Use a video address instead</button></div>
+      <p>With the email and password of the Stremio account you use in Encore.</p>
+      <form id="login" class="row" style="flex-direction: column; align-items: stretch; gap: 10px; max-width: 460px">
+        <input id="email" type="email" placeholder="Email" autocomplete="username" autocapitalize="off" spellcheck="false" required>
+        <input id="password" type="password" placeholder="Password" autocomplete="current-password" required>
+        <button id="login-go" type="submit">Sign In</button>
+      </form>
+      <p style="margin-top: 14px">Your password goes only to Stremio, as in the Encore apps; this page keeps just the sign-in.</p>
+      <div class="row"><button class="quiet" id="pair-go">Sign In with a Code from the Encore App</button><button class="quiet" id="url-mode">Use a video address instead</button></div>
     </div>
     <div id="signin-wait" hidden>
       <p>On your iPhone, open Encore › Settings › Encore Cloud › Sign In an Apple TV and enter:</p>
@@ -215,6 +221,26 @@ $("pair-go").onclick = async () => {
     show();
   } catch (e) { $("signin-wait").hidden = true; $("signin-start").hidden = false; fail(e.message); }
   function fail(m) { $("signin-error").textContent = m; $("signin-error").hidden = false; }
+};
+
+$("login").onsubmit = async (event) => {
+  event.preventDefault();
+  $("signin-error").hidden = true;
+  $("login-go").disabled = true;
+  $("login-go").textContent = "Signing In…";
+  try {
+    const result = await stremio("login", { type: "Login", email: $("email").value.trim(), password: $("password").value, facebook: false });
+    if (!result || !result.authKey) throw new Error("Stremio didn't sign you in. Check the email and password.");
+    $("password").value = "";
+    store.set("auth", { key: result.authKey, email: (result.user && result.user.email) || $("email").value.trim() });
+    show();
+  } catch (e) {
+    $("signin-error").textContent = e.message;
+    $("signin-error").hidden = false;
+  } finally {
+    $("login-go").disabled = false;
+    $("login-go").textContent = "Sign In";
+  }
 };
 
 $("url-mode").onclick = () => { $("signin-url").hidden = false; };
