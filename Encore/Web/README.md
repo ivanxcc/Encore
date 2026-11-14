@@ -56,16 +56,44 @@ Video never passes through Cloudflare.
 
 ## Phases
 
-1. **Prove it**: relay + lab page on the server; numbers from the Tesla. *(built; awaiting numbers)*
+1. **Prove it**: relay + lab page on the server. *(done: see Measured; the Tesla run is still to come)*
 2. **Relay, complete**: subtitles as WebVTT, audio track switching, segments streamed while being
    made, tokens minted by Encore Cloud.
 3. **The web app**: browse, title pages, player, sign-in, sync.
 4. **Conversion fallback** on the home server; HEVC and Dolby passthrough for Safari.
 5. **Polish**: scrub thumbnails, source-level quality adaptation, PWA install.
 
-## Open questions the lab answers
+## Measured (phase 1, iPad Safari, relay on Oracle Cloud, TorBox sources)
 
-- Does the debrid service serve the Oracle server's address, and does streaming from it while a phone
-  streams elsewhere trip the service's one-address rule?
-- What the Tesla's browser decodes, whether it allows full screen, and how fast it starts and seeks.
-- How often the best sources are H.264 (how rare the conversion fallback really is).
+Lab reports from 2026-11-14, after four rounds of relay fixes:
+
+| | Target | Measured |
+| --- | --- | --- |
+| Video start once a source is chosen | under 1.5 s | 1.0–3.1 s |
+| Stalls | none | 0–1 per title |
+| Seek, median | under 1 s | 2.2–3.6 s (outliers 6–13 s when the source itself slowed) |
+| Direct play (MP4), seek median | | 1.5 s |
+| Add-on source lookup (AIOStreams) | | 1.4–6.4 s |
+| Add-on handing over the debrid link | | 0.4–2.1 s |
+
+What the rounds established:
+
+- **One connection per file.** TorBox gives one connection 12–70 Mbps to the Oracle server and
+  slows a file read over several at once (to 1–3 Mbps over six). Parallel reads are off by default;
+  a seek must stop the previous run, never run beside it.
+- **The server reaches the debrid host fine.** Only one Torrentio link was refused from the
+  datacenter (HTTP 403); trying the next source handled it.
+- **Safari**: video must be started on the tap (or muted, with a sound button); native HLS is used
+  on Safari (it passes Dolby audio through); `requestVideoFrameCallback` stops firing after a few
+  reloads, so playback detection also watches the clock.
+- **Ranking**: prefer H.264, AAC, and about 8 Mbps or less; add-on text needs Unicode folding (NFKC)
+  to read their styled numbers.
+
+## Next relay work (before or alongside the app)
+
+1. **Serve a segment while it's being made** (chunked response that follows the growing part file):
+   expected to cut about a second from every seek and from the first frame.
+2. **Remember each file's index** (keyed by the source URL without its token): repeat plays skip the
+   index read (0.6–4.4 s measured).
+3. **Prepare from the title page**: resolve sources and open a relay session at the resume point as
+   soon as a title page opens; near the end of an episode, prepare the next.
