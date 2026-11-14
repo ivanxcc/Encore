@@ -16,9 +16,10 @@ The relay instead reads the file's keyframe index (Matroska Cues, a few hundred 
 range) and lays out the whole stream before reading any media: every segment starts on a known
 keyframe at a known byte offset. Any segment can then be made on its own:
 
-1. Fetch the file from that segment's cluster offset: ranged requests, six at a time over separate
-   connections, small at first (so the first segment's few megabytes arrive together) then larger.
-   Debrid hosts often cap each connection's speed; parallel requests add up.
+1. Fetch the file from that segment's cluster offset, over one ranged connection. (Debrid hosts seen
+   so far give one connection 45–70 Mbps to a datacenter and slow down sharply when a file is read
+   over several. For a host that caps each connection instead, `RELAY_CONNECTIONS=6` reads over
+   several in parallel; `/v1/speed` measures both.)
 2. Pipe a small synthesized header plus those bytes through `ffmpeg -c:v copy`.
 3. Cut ffmpeg's transport stream at the planned keyframes into segments.
 

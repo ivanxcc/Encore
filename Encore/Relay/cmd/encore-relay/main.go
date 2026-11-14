@@ -12,8 +12,11 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
+
+	"encore/relay/internal/source"
 )
 
 func main() {
@@ -62,6 +65,9 @@ func serve(args []string) {
 	}
 	if len(cfg.Secret) < 24 {
 		log.Fatal("RELAY_SECRET must be set to at least 24 random characters")
+	}
+	if n, err := strconv.Atoi(os.Getenv("RELAY_CONNECTIONS")); err == nil && n >= 1 && n <= 8 {
+		source.Connections = n
 	}
 	os.RemoveAll(cfg.CacheDir) // segments from a previous run are of no use
 	relay := NewRelay(cfg)

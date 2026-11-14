@@ -87,7 +87,7 @@ func TestParallelStreamIsExactAndFasterOnThrottledHosts(t *testing.T) {
 	}
 
 	began := time.Now()
-	stream := s.Stream(context.Background(), 1234567)
+	stream := s.streamParallel(context.Background(), 1234567, Parallel)
 	got, err := io.ReadAll(stream)
 	stream.Close()
 	parallelTook := time.Since(began)
@@ -117,7 +117,7 @@ func TestStreamStopsWhenClosed(t *testing.T) {
 	}))
 	defer server.Close()
 	s, _ := Open(context.Background(), server.URL, nil, true)
-	stream := s.Stream(context.Background(), 0)
+	stream := s.streamParallel(context.Background(), 0, Parallel)
 	buf := make([]byte, 1000)
 	stream.Read(buf)
 	stream.Close()
@@ -150,4 +150,29 @@ func (w *throttled) Write(p []byte) (int, error) {
 		p = p[n:]
 	}
 	return written, nil
+}
+
+// The default stream is one connection, exact from any offset.
+func TestSingleConnectionStream(t *testing.T) {
+	data := make([]byte, 3<<20)
+	for i := range data {
+		data[i] = byte(i * 13)
+	}
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		http.ServeContent(w, r, "a.mkv", serverTime, bytes.NewReader(data))
+	}))
+	defer server.Close()
+	s, _ := Open(context.Background(), server.URL, nil, true)
+	opened := requests.Load()
+	stream := s.Stream(context.Background(), 777)
+	got, err := io.ReadAll(stream)
+	stream.Close()
+	if err != nil || !bytes.Equal(got, data[777:]) {
+		t.Fatalf("got %d bytes, err %v", len(got), err)
+	}
+	if n := requests.Load() - opened; n != 1 {
+		t.Fatalf("the default stream made %d requests, want 1", n)
+	}
 }

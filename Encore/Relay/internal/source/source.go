@@ -121,18 +121,95 @@ func (s *HTTP) ReadAt(ctx context.Context, off int64, n int) ([]byte, error) {
 	return io.ReadAll(io.LimitReader(resp.Body, end-off+1))
 }
 
-// Parallel is how many ranged requests a stream keeps in flight. Debrid hosts often cap the speed of
-// each connection well below what the server's link can take; several connections add up.
+// Connections is how many connections a stream reads a source over. One long connection is the
+// default: debrid hosts seen so far give a single connection all the speed the relay needs (TorBox:
+// 45–70 Mbps to a datacenter) and slow down sharply when a file is read over several at once
+// (1–3 Mbps over six). A host that caps each connection instead would want several
+// (RELAY_CONNECTIONS); /v1/speed measures both.
+var Connections = 1
+
+// Parallel is how many requests a parallel stream keeps in flight.
 const Parallel = 6
 
-// Stream reads from off to the end of the file, in order, fetching ahead in chunks over several
-// connections at once. It fetches only as far ahead as its window: a reader that pauses (the relay
-// holds back when it is far ahead of the viewer) pauses the downloads too, with no connection left
-// open in the meantime.
+// Stream reads from off to the end of the file, in order.
 func (s *HTTP) Stream(ctx context.Context, off int64) io.ReadCloser {
+	if Connections > 1 {
+		return s.streamParallel(ctx, off, Connections)
+	}
+	return &stream{s: s, ctx: ctx, off: off}
+}
+
+// stream is one long ranged request. A dropped connection is reopened where it stopped, so a paused
+// reader (the relay holds back when it is far ahead of the viewer) can carry on later.
+type stream struct {
+	s       *HTTP
+	ctx     context.Context
+	off     int64
+	body    io.ReadCloser
+	retries int
+}
+
+func (r *stream) Read(p []byte) (int, error) {
+	for {
+		if r.off >= r.s.Size {
+			return 0, io.EOF
+		}
+		if r.body == nil {
+			resp, err := r.s.get(r.ctx, r.off, -1)
+			if err != nil {
+				if r.ctx.Err() != nil || r.retries >= 4 {
+					return 0, err
+				}
+				r.retries++
+				select {
+				case <-time.After(time.Duration(r.retries) * 300 * time.Millisecond):
+				case <-r.ctx.Done():
+					return 0, r.ctx.Err()
+				}
+				continue
+			}
+			if resp.StatusCode != http.StatusPartialContent {
+				resp.Body.Close()
+				return 0, fmt.Errorf("source answered HTTP %d", resp.StatusCode)
+			}
+			r.body = resp.Body
+		}
+		n, err := r.body.Read(p)
+		r.off += int64(n)
+		if n > 0 {
+			r.retries = 0
+			return n, nil
+		}
+		if err == nil {
+			continue
+		}
+		r.body.Close()
+		r.body = nil
+		if err == io.EOF && r.off >= r.s.Size {
+			return 0, io.EOF
+		}
+		if r.ctx.Err() != nil {
+			return 0, r.ctx.Err()
+		}
+		if r.retries >= 4 {
+			return 0, err
+		}
+		r.retries++
+	}
+}
+
+func (r *stream) Close() error {
+	if r.body != nil {
+		return r.body.Close()
+	}
+	return nil
+}
+
+// streamParallel reads ahead in chunks over several connections at once, in order. It fetches only
+// as far ahead as its window: a reader that pauses pauses the downloads too.
+func (s *HTTP) streamParallel(ctx context.Context, off int64, connections int) io.ReadCloser {
 	ctx, cancel := context.WithCancel(ctx)
-	p := &parallel{s: s, ctx: ctx, cancel: cancel, next: off, slots: make(chan struct{}, Parallel)}
-	return p
+	return &parallel{s: s, ctx: ctx, cancel: cancel, next: off, slots: make(chan struct{}, connections)}
 }
 
 type chunk struct {
@@ -156,7 +233,7 @@ type parallel struct {
 // chunkSize starts small, so the first segment's few megabytes arrive over all connections at once,
 // then grows so later chunks cost fewer requests.
 func (p *parallel) chunkSize() int64 {
-	if p.count < Parallel*2 {
+	if p.count < 2*cap(p.slots) {
 		return 1 << 20
 	}
 	return 4 << 20
@@ -270,7 +347,7 @@ func (s *HTTP) Measure(ctx context.Context) Speed {
 		sp.OneConnMbps = mbps(len(b), time.Since(began))
 	}
 	began = time.Now()
-	stream := s.Stream(ctx, s.Size/2)
+	stream := s.streamParallel(ctx, s.Size/2, Parallel)
 	n, _ := io.CopyN(io.Discard, stream, 3*size)
 	stream.Close()
 	sp.ParallelMbps = mbps(int(n), time.Since(began))

@@ -209,7 +209,9 @@ func (r *Relay) Decide(ctx context.Context, req Request) (*Decision, error) {
 	r.count(func(s *Stats) { s.Decisions++ })
 
 	if errors.Is(err, mkv.ErrNotMatroska) {
-		return r.decideOther(ctx, req, src, d), nil
+		d = r.decideOther(ctx, req, src, d)
+		d.Timings.IndexMs = time.Since(began).Milliseconds() // reading the MP4's movie box
+		return d, nil
 	}
 	if file == nil {
 		return nil, err
