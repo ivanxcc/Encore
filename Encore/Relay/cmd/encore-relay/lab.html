@@ -88,7 +88,10 @@
       <div class="stat"><small>How it plays</small><span class="big" id="s-mode">–</span></div>
       <div class="stat"><small>Stalls</small><span class="big" id="s-stalls">0</span></div>
     </div>
+    <p id="breakdown" style="margin-top:12px"></p>
+    <p id="speed"></p>
     <div class="row" style="margin-top:16px">
+      <button id="unmute" hidden>Turn Sound On</button>
       <button id="seek-test">Run Seek Test</button>
       <button class="quiet" id="fullscreen">Full Screen</button>
       <button class="quiet" id="copy">Copy Report</button>
@@ -244,7 +247,7 @@ $("login").onsubmit = async (event) => {
 };
 
 $("url-mode").onclick = () => { $("signin-url").hidden = false; };
-$("url-go").onclick = () => play("Video address", [{ label: $("url").value.trim(), url: $("url").value.trim() }], 0);
+$("url-go").onclick = () => bless() || play("Video address", [{ label: $("url").value.trim(), url: $("url").value.trim() }], 0);
 $("signout").onclick = () => { store.del("auth"); show(); };
 
 // MARK: Stremio
@@ -298,10 +301,13 @@ function supports(addon, resource, type, id) {
 }
 
 // What the relay can repackage without converting video: H.264, not HDR, not 4K, ready now.
+// What the relay can repackage without converting video, best first: ready now, H.264, not HDR or 4K,
+// and light (a lower bitrate starts and seeks faster; AAC audio needs no conversion).
 function rank(streams) {
   return streams.map((s, order) => {
-    const text = [s.name, s.title, s.description, s.behaviorHints && s.behaviorHints.filename].filter(Boolean).join(" ");
-    const t = " " + text.toLowerCase() + " ";
+    // Add-ons style their text with look-alike characters (ᴹᵇᵖˢ, s₀₁·ᴇ₂₁); fold them to plain letters.
+    const text = [s.name, s.title, s.description, s.behaviorHints && s.behaviorHints.filename].filter(Boolean).join(" ").normalize("NFKC");
+    const t = " " + text.toLowerCase().replace(/[\u200b-\u200d]/g, "") + " ";
     const has = (...words) => words.some((w) => t.includes(w));
     let score = -order * 0.5;
     if (has("uncached", "download]", "⏳")) score -= 3000; else if (has("+]", "⚡", "cached", "instant") || t.includes("rd+")) score += 4000;
@@ -310,36 +316,78 @@ function rank(streams) {
     if (has("2160p", "4k", "uhd")) score -= 900; else if (has("1080p")) score += 300; else if (has("720p")) score += 240; else score += 60;
     if (has("remux", "bdremux")) score -= 500;
     if (has("cam", "hdcam", "telesync", " ts ")) score -= 5000;
+    if (has("aac")) score += 250;
+    if (has("web-dl", "webdl", "webrip", "web ")) score += 120;
     if (/\.mp4\b/.test(t)) score += 120;
-    return { label: text.replace(/\s+/g, " ").slice(0, 110), url: s.url, headers: s.behaviorHints && s.behaviorHints.proxyHeaders && s.behaviorHints.proxyHeaders.request, score };
+    // Lighter is faster to start and seek: up to about 8 Mbps is plenty for 1080p.
+    const rate = /(\d+(?:\.\d+)?)\s*mbps/.exec(t);
+    const mbps = rate ? parseFloat(rate[1]) : null;
+    if (mbps != null) score -= Math.max(0, mbps - 8) * 60;
+    return { label: text.replace(/[\u200b-\u200d]/g, "").replace(/\s+/g, " ").slice(0, 110), url: s.url, headers: s.behaviorHints && s.behaviorHints.proxyHeaders && s.behaviorHints.proxyHeaders.request, score, mbps };
   }).filter((s) => s.url).sort((a, b) => b.score - a.score);
 }
 
 async function playItem(item) {
+  bless();
   const videoId = (item.state && item.state.video_id) || item._id;
   $("titles-note").textContent = `Finding sources for ${item.name}…`;
   const began = performance.now();
-  const lists = await Promise.all((addons || []).filter((a) => supports(a, "stream", item.type, videoId)).map(async (a) => {
+  const relevant = (addons || []).filter((a) => supports(a, "stream", item.type, videoId));
+  const lists = await Promise.all(relevant.map(async (a) => {
     try {
       const base = a.transportUrl.replace(/\/manifest\.json$/, "");
       const r = await fetch(`${base}/stream/${item.type}/${encodeURIComponent(videoId)}.json`);
-      return (await r.json()).streams || [];
-    } catch { return []; }
+      return { name: (a.manifest && a.manifest.name) || base, streams: (await r.json()).streams || [] };
+    } catch (e) { return { name: (a.manifest && a.manifest.name) || a.transportUrl, streams: [], error: e.message }; }
   }));
-  const candidates = rank(lists.flat());
-  $("titles-note").textContent = `${candidates.length} playable sources found in ${ms(performance.now() - began)}.`;
+  const sourcesMs = performance.now() - began;
+  const all = lists.flatMap((l) => l.streams);
+  const candidates = rank(all);
+  const perAddon = lists.map((l) => `${l.name}: ${l.error ? "failed (" + l.error + ")" : l.streams.length}`).join(", ");
+  $("titles-note").textContent = candidates.length
+    ? `${candidates.length} playable sources in ${ms(sourcesMs)} (${perAddon}).`
+    : relevant.length
+      ? `No playable source after ${ms(sourcesMs)}: ${perAddon}. Add-ons are sometimes slow the first time; try again.`
+      : "None of your add-ons offers streams for this title.";
   const resume = item.state.duration > 0 && item.state.timeOffset / item.state.duration < 0.92 ? item.state.timeOffset / 1000 : 0;
-  play(item.name, candidates.slice(0, 8), resume, performance.now() - began);
+  play(item.name, candidates.slice(0, 8), resume, sourcesMs, { addons: perAddon, streams: all.length, began });
+}
+
+// Safari only lets a video start with sound right after a tap. The tap is long gone by the time sources
+// are found, so the video element is unlocked during the tap itself.
+function bless() {
+  const video = $("video");
+  try { video.muted = false; const p = video.play(); if (p) p.catch(() => {}); } catch {}
+}
+
+async function start(video) {
+  try {
+    await video.play();
+    $("unmute").hidden = true;
+  } catch (e) {
+    // Still not allowed with sound: play muted (always allowed) and offer sound with one tap.
+    video.muted = true;
+    try { await video.play(); } catch {}
+    $("unmute").hidden = false;
+    if (current) current.startedMuted = true;
+  }
 }
 
 // MARK: Playing and measuring
 
-async function play(title, candidates, startAt, sourcesMs) {
+// Safari (iPad, iPhone, Mac) plays HLS itself, more efficiently than hls.js, and decodes Dolby audio.
+function useNativeHls(caps) {
+  const ua = navigator.userAgent;
+  const safari = /Safari/.test(ua) && !/Chrome|Chromium|CriOS|Android|Edg\//.test(ua);
+  return caps.nativeHls && (safari || !caps.hlsJs);
+}
+
+async function play(title, candidates, startAt, sourcesMs, context) {
   const video = $("video");
-  const pressed = performance.now();
+  const pressed = context && context.began != null ? context.began : performance.now();
   if (hls) { hls.destroy(); hls = null; }
   video.removeAttribute("src"); video.load();
-  current = { title, startAt: Math.round(startAt), sourcesMs: sourcesMs == null ? null : Math.round(sourcesMs), tries: [], seeks: [], stalls: 0 };
+  current = { title, startAt: Math.round(startAt), sourcesMs: sourcesMs == null ? null : Math.round(sourcesMs), addons: context && context.addons, tries: [], seeks: [], stalls: 0 };
   report.plays.push(current);
   $("step-player").hidden = false;
   $("now-title").textContent = title;
@@ -349,7 +397,7 @@ async function play(title, candidates, startAt, sourcesMs) {
   $("step-player").scrollIntoView({ behavior: "smooth" });
 
   const caps = report.device;
-  const useHlsJs = caps.hlsJs;
+  const useHlsJs = caps.hlsJs && !useNativeHls(caps);
   const token = store.get("token").value;
   for (const c of candidates) {
     const t0 = performance.now();
@@ -372,13 +420,17 @@ async function play(title, candidates, startAt, sourcesMs) {
     if (decision.mode !== "remux" && decision.mode !== "direct") continue;
 
     current.mode = decision.mode;
+    current.decisionMs = Math.round(took);
+    const decided = performance.now();
     current.player = decision.mode === "direct" ? "direct" : useHlsJs ? "hls.js" : "native HLS";
     $("s-mode").textContent = decision.mode === "direct" ? "Direct" : decision.audioCopied ? "Repackaged" : "Repackaged + audio";
     const firstFrame = () => {
       if (current.startMs != null) return;
       current.startMs = Math.round(performance.now() - pressed);
+      current.videoMs = Math.round(performance.now() - decided);
       $("s-start").textContent = ms(current.startMs);
       $("s-start").className = "big " + grade(current.startMs, 1500, 3000);
+      $("breakdown").textContent = `Finding sources ${ms(current.sourcesMs)} · relay ${ms(current.decisionMs)} · video ${ms(current.videoMs)}${current.startedMuted ? " (started muted)" : ""}`;
       showReport();
     };
     if (video.requestVideoFrameCallback) video.requestVideoFrameCallback(firstFrame); else video.addEventListener("playing", firstFrame, { once: true });
@@ -387,7 +439,8 @@ async function play(title, candidates, startAt, sourcesMs) {
       video.src = decision.url;
       if (startAt > 0) video.addEventListener("loadedmetadata", () => { video.currentTime = startAt; }, { once: true });
     } else if (useHlsJs) {
-      hls = new Hls({ startPosition: startAt > 0 ? startAt : -1, maxBufferLength: 30, backBufferLength: 60 });
+      const patient = { maxTimeToFirstByteMs: 30000, maxLoadTimeMs: 120000, timeoutRetry: { maxNumRetry: 3, retryDelayMs: 0, maxRetryDelayMs: 0 }, errorRetry: { maxNumRetry: 6, retryDelayMs: 1000, maxRetryDelayMs: 8000 } };
+      hls = new Hls({ startPosition: startAt > 0 ? startAt : -1, maxBufferLength: 30, backBufferLength: 60, fragLoadPolicy: { default: patient } });
       hls.on(Hls.Events.ERROR, (_, data) => {
         (current.errors = current.errors || []).push(`${data.type}/${data.details}${data.fatal ? " (fatal)" : ""}`);
         if (data.fatal && data.type === Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError();
@@ -404,11 +457,30 @@ async function play(title, candidates, startAt, sourcesMs) {
       video.src = decision.playlist;
       if (startAt > 0) video.addEventListener("loadedmetadata", () => { video.currentTime = startAt; }, { once: true });
     }
-    video.play().catch(() => {});
+    start(video);
+    current.source = c;
+    // Nothing on screen after 15 seconds: measure the relay's link to the source, the likely reason.
+    const thisPlay = current;
+    setTimeout(() => { if (thisPlay === current && current.startMs == null) measureSpeed(c); }, 15000);
     return;
   }
   $("s-mode").textContent = "No source";
   $("s-mode").className = "big bad";
+}
+
+async function measureSpeed(c) {
+  if (!current || current.relaySpeed) return;
+  const play = current;
+  play.relaySpeed = { pending: true };
+  try {
+    const r = await fetch("/v1/speed", { method: "POST", headers: { "content-type": "application/json", authorization: "Bearer " + store.get("token").value }, body: JSON.stringify({ url: c.url, headers: c.headers }) });
+    play.relaySpeed = await r.json();
+  } catch (e) { play.relaySpeed = { error: e.message }; }
+  const sp = play.relaySpeed.speed;
+  if (sp && play === current) {
+    $("speed").textContent = `Relay ↔ source: first byte ${ms(sp.firstByteMs)}, ${sp.oneConnectionMbps} Mbps on one connection, ${sp.parallelMbps} Mbps on ${sp.parallelConnections}`;
+  }
+  showReport();
 }
 
 // A stall is the picture stopping for want of data while playing (not the wait right after a seek).
@@ -434,7 +506,7 @@ function seekOnce(to) {
       if (video.requestVideoFrameCallback) video.requestVideoFrameCallback(shown); else shown();
     }, { once: true });
     video.currentTime = to;
-    video.play().catch(() => {});
+    if (video.paused) start(video);
   });
 }
 
@@ -459,7 +531,11 @@ $("seek-test").onclick = async () => {
     await new Promise((r) => setTimeout(r, 1500));
   }
   $("seek-test").disabled = false;
+  // How fast the relay itself gets this source: run after the seeks so it can't cause a stall.
+  if (current.source) measureSpeed(current.source);
 };
+
+$("unmute").onclick = () => { const v = $("video"); v.muted = false; v.play().catch(() => {}); $("unmute").hidden = true; };
 
 $("fullscreen").onclick = () => {
   const v = $("video");

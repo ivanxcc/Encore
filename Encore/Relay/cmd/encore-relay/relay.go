@@ -16,7 +16,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -26,6 +25,7 @@ import (
 
 	"encore/relay/internal/hls"
 	"encore/relay/internal/mkv"
+	"encore/relay/internal/mp4"
 	"encore/relay/internal/source"
 )
 
@@ -42,7 +42,7 @@ type Config struct {
 	CloudURL     string
 	AllowPrivate bool
 	FFmpeg       string
-	FFprobe      string
+	FFprobe      string // unused: kept so older settings still parse
 }
 
 type Relay struct {
@@ -311,53 +311,33 @@ func pickAudio(tracks []mkv.Track, req Request) int {
 	return best
 }
 
-// decideOther handles files that are not Matroska: MP4 plays directly when its codecs do.
+// decideOther handles files that are not Matroska: an MP4 plays straight from the source when this
+// browser decodes its codecs. Its movie box is read directly (one to three ranged reads).
 func (r *Relay) decideOther(ctx context.Context, req Request, src *source.HTTP, d *Decision) *Decision {
-	head, err := src.ReadAt(ctx, 0, 16)
-	if err != nil || len(head) < 12 || string(head[4:8]) != "ftyp" {
+	file, err := mp4.Parse(ctx, src, src.Size)
+	if err != nil {
 		return unsupported(r, d, "container", "Only MP4 and Matroska files are supported.")
 	}
-	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-	args := []string{"-v", "error", "-print_format", "json", "-show_streams", "-show_format"}
-	if len(req.Headers) > 0 {
-		var h strings.Builder
-		for k, v := range req.Headers {
-			h.WriteString(k + ": " + v + "\r\n")
-		}
-		args = append(args, "-headers", h.String())
-	}
-	out, err := exec.CommandContext(ctx, r.cfg.FFprobe, append(args, src.URL())...).Output()
-	if err != nil {
-		return unsupported(r, d, "probe", "The file could not be read.")
-	}
-	var probe struct {
-		Streams []struct {
-			Type    string `json:"codec_type"`
-			Codec   string `json:"codec_name"`
-			Profile string `json:"profile"`
-			PixFmt  string `json:"pix_fmt"`
-			Width   int    `json:"width"`
-			Height  int    `json:"height"`
-		} `json:"streams"`
-		Format struct {
-			Duration string `json:"duration"`
-		} `json:"format"`
-	}
-	json.Unmarshal(out, &probe)
-	d.Duration, _ = strconv.ParseFloat(probe.Format.Duration, 64)
+	d.Duration = file.Duration
 	videoOK, audioOK, sawAudio := false, false, false
-	for _, s := range probe.Streams {
-		switch s.Type {
+	for _, t := range file.Tracks {
+		switch t.Kind {
 		case "video":
-			if d.Video.Codec == "" {
-				d.Video.Codec, d.Video.Width, d.Video.Height = s.Codec, s.Width, s.Height
-				videoOK = s.Codec == "h264" && s.PixFmt == "yuv420p" || has(req.Caps.Video, s.Codec) && s.Codec != "h264"
+			if d.Video.Codec != "" {
+				continue
+			}
+			d.Video.Codec = t.Codec
+			switch t.Codec {
+			case "h264":
+				// 8-bit profiles only: browsers don't decode High 10 and above.
+				videoOK = t.Profile == 0 || t.Profile == 66 || t.Profile == 77 || t.Profile == 88 || t.Profile == 100
+			default:
+				videoOK = has(req.Caps.Video, t.Codec)
 			}
 		case "audio":
 			if !sawAudio {
 				sawAudio = true
-				audioOK = s.Codec == "aac" || s.Codec == "mp3" || has(req.Caps.Audio, s.Codec)
+				audioOK = t.Codec == "aac" || t.Codec == "mp3" || has(req.Caps.Audio, t.Codec)
 			}
 		}
 	}
@@ -442,6 +422,7 @@ func (r *Relay) Handler() http.Handler {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, map[string]any{"ok": true}) })
 	mux.HandleFunc("POST /v1/session", r.authed(r.handleSession))
 	mux.HandleFunc("GET /v1/stats", r.authed(r.handleStats))
+	mux.HandleFunc("POST /v1/speed", r.authed(r.handleSpeed))
 	mux.HandleFunc("GET /v1/s/{id}/index.m3u8", r.handlePlaylist)
 	mux.HandleFunc("GET /v1/s/{id}/seg/{file}", r.handleSegment)
 	mux.HandleFunc("DELETE /v1/s/{id}", r.handleClose)
@@ -498,6 +479,27 @@ func (r *Relay) handleSession(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, d)
+}
+
+// handleSpeed measures a source from the relay: first-byte time, and throughput over one connection
+// and over several. It answers "is the server's link to the debrid host the bottleneck?".
+func (r *Relay) handleSpeed(w http.ResponseWriter, req *http.Request) {
+	var body Request
+	if err := json.NewDecoder(http.MaxBytesReader(w, req.Body, 64<<10)).Decode(&body); err != nil || body.URL == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Expected a JSON body with a url."})
+		return
+	}
+	ctx, cancel := context.WithTimeout(req.Context(), 60*time.Second)
+	defer cancel()
+	began := time.Now()
+	src, err := source.Open(ctx, body.URL, body.Headers, r.cfg.AllowPrivate)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	opened := time.Since(began).Milliseconds()
+	speed := src.Measure(ctx)
+	writeJSON(w, 200, map[string]any{"openMs": opened, "speed": speed, "sizeMB": src.Size >> 20})
 }
 
 func (r *Relay) handleStats(w http.ResponseWriter, _ *http.Request) {

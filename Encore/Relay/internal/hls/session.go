@@ -36,8 +36,9 @@ const (
 	audioPID = 0x101
 	// How far ahead of the viewer a run may get before it is held back.
 	aheadSegments = 24
-	// A run this close behind a wanted segment will reach it sooner than a new run would start.
-	nearSegments = 2
+	// A run already writing the segment before a wanted one reaches it about as soon as a new run would
+	// (a new run's first segment costs one ranged read and ffmpeg's start); further back, a new run wins.
+	nearSegments = 1
 	maxRuns      = 2
 	keepBehind   = 30
 	keepAhead    = 60

@@ -5,7 +5,7 @@ video. For each file a browser wants to play, it answers one of:
 
 | Answer | When | What plays |
 | --- | --- | --- |
-| `direct` | MP4 with H.264 and AAC | The browser streams the source itself; the relay is not involved |
+| `direct` | MP4 whose codecs the browser decodes (read from its movie box in a few ranged reads) | The browser streams the source itself; the relay is not involved |
 | `remux` | Matroska with H.264 | An HLS stream from the relay: video copied untouched, audio converted to AAC only if the browser can't decode it |
 | `unsupported` | HEVC, AV1, HDR, 10-bit, no keyframe index | Nothing: the player picks another source (most titles have an H.264 release) |
 
@@ -16,7 +16,9 @@ The relay instead reads the file's keyframe index (Matroska Cues, a few hundred 
 range) and lays out the whole stream before reading any media: every segment starts on a known
 keyframe at a known byte offset. Any segment can then be made on its own:
 
-1. Fetch the file from that segment's cluster offset (one ranged request).
+1. Fetch the file from that segment's cluster offset: ranged requests, six at a time over separate
+   connections, small at first (so the first segment's few megabytes arrive together) then larger.
+   Debrid hosts often cap each connection's speed; parallel requests add up.
 2. Pipe a small synthesized header plus those bytes through `ffmpeg -c:v copy`.
 3. Cut ffmpeg's transport stream at the planned keyframes into segments.
 
@@ -33,6 +35,8 @@ POST   /v1/session            {url, headers?, start?, audio?, language?, caps: {
 GET    /v1/s/{id}/index.m3u8  the complete VOD playlist
 GET    /v1/s/{id}/seg/{n}.ts  a segment (Server-Timing says how long it took to prepare)
 DELETE /v1/s/{id}             close a stream early (idle streams close after 15 minutes)
+POST   /v1/speed              {url, headers?}  -> the relay's own link to that source: first byte time,
+                              one connection's throughput, and six connections'
 GET    /v1/stats              counters (token required)
 GET    /lab                   the lab page: time real titles on any device
 ```
