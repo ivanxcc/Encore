@@ -362,3 +362,32 @@ h1, h2, h3, p { margin: 0; }
 .fine { color: var(--faint); font-size: 0.8rem; text-align: center; margin-top: 2.4rem; }
 @media (max-width: 640px) { .setting.invite { flex-direction: column; align-items: center; text-align: center; } .setting.invite .actions { justify-content: center; } }
 .offer .note { display: inline-flex; align-items: center; height: 3rem; padding: 0 1.3rem; border-radius: 99rem; font-weight: 600; animation: rise 0.3s var(--ease); }
+
+/* Subtitles, drawn by Encore: clear type with a soft backing, lifted above the controls when they show. */
+.captions { position: absolute; z-index: 3; left: 6%; right: 6%; bottom: 7%; display: grid; justify-items: center; gap: 0.15em; pointer-events: none; text-align: center;
+  font-size: clamp(1.05rem, 3.4vh, 2.5rem); font-weight: 600; line-height: 1.28; transition: bottom 0.3s var(--ease); }
+.captions.raised { bottom: max(7%, 8.6rem); }
+.captions p span { background: rgba(0, 0, 0, 0.5); padding: 0.06em 0.38em; border-radius: 0.22em; -webkit-box-decoration-break: clone; box-decoration-break: clone;
+  text-shadow: 0 0.04em 0.2em rgba(0, 0, 0, 0.6); }
+.captions i { font-style: italic; }
+video::cue { background: rgba(0, 0, 0, 0.5); color: #fff; font-family: system-ui, -apple-system, sans-serif; }
+.icon.lit { color: #fff; background: rgba(255, 255, 255, 0.18); }
+
+/* Audio and subtitles panel */
+.tracks-scrim { position: absolute; inset: 0; z-index: 7; }
+.tracks { position: absolute; z-index: 8; right: max(1.4rem, env(safe-area-inset-right)); bottom: 6.4rem; display: flex; gap: 0.4rem; padding: 0.6rem; border-radius: 1.2rem;
+  max-height: min(70vh, 30rem); box-shadow: 0 1.2rem 3rem rgba(0, 0, 0, 0.55); animation: rise 0.22s var(--ease); }
+.tracks section { min-width: 13.5rem; max-width: 17rem; overflow-y: auto; scrollbar-width: none; display: grid; align-content: start; gap: 0.1rem; }
+.tracks section + section { border-left: 1px solid var(--line); padding-left: 0.4rem; }
+.tracks h3 { font-size: 0.78rem; font-weight: 650; letter-spacing: 0.06em; text-transform: uppercase; color: var(--faint); padding: 0.45rem 0.75rem 0.35rem; }
+.tracks button { display: flex; align-items: center; gap: 0.6rem; padding: 0.55rem 0.75rem; border-radius: 0.7rem; text-align: left; font-weight: 550; font-size: 0.95rem; }
+.tracks button svg { width: 1rem; height: 1rem; flex: none; opacity: 0; }
+.tracks button.on svg { opacity: 1; }
+.tracks button small { display: block; color: var(--dim); font-size: 0.78rem; font-weight: 450; }
+.tracks .quiet { padding: 0.3rem 0.75rem; font-size: 0.85rem; }
+@media (hover: hover) { .tracks button:hover { background: rgba(255, 255, 255, 0.12); } }
+@media (max-width: 640px) {
+  .tracks { left: 0.6rem; right: 0.6rem; bottom: max(0.6rem, env(safe-area-inset-bottom)); flex-direction: column; max-height: 65vh; overflow-y: auto; }
+  .tracks section { max-width: none; overflow: visible; }
+  .tracks section + section { border-left: 0; padding-left: 0; border-top: 1px solid var(--line); padding-top: 0.3rem; }
+}

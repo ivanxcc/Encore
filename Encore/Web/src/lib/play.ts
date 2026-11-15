@@ -59,6 +59,13 @@ export function rank(list: Stream[]): Candidate[] {
   }).filter((c) => c.url && /^https?:/.test(c.url)).sort((a, b) => b.score - a.score);
 }
 
+/** What the relay is asked for a source: from where, in which language, for what this browser plays.
+ * Dolby audio passes through only where the browser's own HLS plays it. */
+export function sessionRequest(candidate: Candidate, start: number, extra: { audio?: number } = {}) {
+  return { url: candidate.url, headers: candidate.headers, start, language: audioLanguage(), ...extra,
+    caps: { video: caps.video, audio: caps.audio, stream: useNativeHls ? caps.audio : caps.audio.filter((a) => a === "aac") } };
+}
+
 export interface Prepared {
   decision: Decision | null;
   candidate: Candidate | null;
@@ -86,8 +93,7 @@ export function prepare(meta: Meta, video: Video | undefined, startAt: number): 
     let tried = 0, lastReason = "";
     for (const candidate of found.slice(0, 6)) {
       tried++;
-      // Dolby audio passes through only where the browser's own HLS plays it.
-      const decision = await relaySession({ url: candidate.url, headers: candidate.headers, start: startAt, language: audioLanguage(), caps: { video: caps.video, audio: caps.audio, stream: useNativeHls ? caps.audio : caps.audio.filter((a) => a === "aac") } });
+      const decision = await relaySession(sessionRequest(candidate, startAt));
       if (decision.mode === "direct" || decision.mode === "remux") {
         return { decision, candidate, startAt, timings: { sourcesMs, relayMs: performance.now() - relayBegan, tried } };
       }

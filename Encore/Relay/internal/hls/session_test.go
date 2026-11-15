@@ -378,3 +378,83 @@ func TestAbandonedSegmentEndsItsFollowers(t *testing.T) {
 		t.Fatalf("the follower ended with %v, want ErrAbandoned", err)
 	}
 }
+
+// Text subtitles come out of the same pass as the video, on the video's own timeline, from wherever
+// a run starts; cues a second run finds again are not repeated.
+func TestSubtitlesFollowTheStream(t *testing.T) {
+	dir := t.TempDir()
+	srt := filepath.Join(dir, "a.srt")
+	var b strings.Builder
+	stamp := func(s float64) string {
+		return fmt.Sprintf("00:%02d:%02d,%03d", int(s)/60, int(s)%60, int((s-float64(int(s)))*1000+0.5))
+	}
+	for i := 0; i < 30; i++ {
+		start := float64(i)*2 + 0.5
+		fmt.Fprintf(&b, "%d\n%s --> %s\nLine %d <i>here</i>\n\n", i+1, stamp(start), stamp(start+1.5), i+1)
+	}
+	os.WriteFile(srt, []byte(b.String()), 0o600)
+	withSubs := filepath.Join(dir, "subs.mkv")
+	if out, err := exec.Command("ffmpeg", "-v", "error", "-y", "-i", sample, "-i", srt, "-map", "0", "-map", "1",
+		"-c", "copy", "-c:s", "srt", "-metadata:s:s:0", "language=spa", withSubs).CombinedOutput(); err != nil {
+		t.Fatal(err, string(out))
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.ServeFile(w, r, withSubs) }))
+	defer server.Close()
+	src, err := source.Open(context.Background(), server.URL+"/subs.mkv", nil, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, err := mkv.Parse(context.Background(), src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := NewSession("subs", file, src, Audio{Index: 0}, t.TempDir(), "ffmpeg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	s.SetSubtitles([]int{0})
+
+	// Start in the middle, as after a seek.
+	mid := s.Plan.Count() / 2
+	if _, _, err := s.Segment(context.Background(), mid); err != nil {
+		t.Fatal(err)
+	}
+	from := s.Plan.Starts[mid]
+	deadline := time.Now().Add(10 * time.Second)
+	var cues []Cue
+	for time.Now().Before(deadline) {
+		if cues, _, _ = s.Cues(0, 0); len(cues) > 3 {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if len(cues) < 3 {
+		t.Fatalf("only %d cues after a seek", len(cues))
+	}
+	for _, c := range cues {
+		n := int((c.Start-0.5)/2) + 1
+		if want := fmt.Sprintf("Line %d <i>here</i>", n); c.Text != want || c.End-c.Start < 1.4 || c.Start < from-2.5 {
+			t.Fatalf("cue %+v: expected %q from about %.1f s on", c, want, from)
+		}
+	}
+	// Back to the start: the earlier cues are added, none twice.
+	if _, _, err := s.Segment(context.Background(), 0); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(1500 * time.Millisecond)
+	all, total, _ := s.Cues(0, 0)
+	seen := map[string]bool{}
+	for _, c := range all {
+		if seen[c.Text+fmt.Sprint(c.Start)] {
+			t.Fatalf("cue %+v twice", c)
+		}
+		seen[c.Text+fmt.Sprint(c.Start)] = true
+	}
+	if total <= len(cues) || all[0].Start != cues[0].Start {
+		t.Fatalf("after going back: %d cues (had %d)", total, len(cues))
+	}
+	if newer, n, _ := s.Cues(0, total-1); len(newer) != 1 || n != total {
+		t.Fatalf("cues after %d: %d", total-1, len(newer))
+	}
+}

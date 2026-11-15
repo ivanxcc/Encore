@@ -4,16 +4,9 @@ import { auth, prefs, profileId, relayToken, setPref, type Prefs } from "../lib/
 import { relayInvite, relayPeople, relayRemove, type RelayPerson } from "../lib/api";
 import { profile, profiles } from "../lib/library";
 import { Avatar } from "./shared";
+import { LANGUAGES } from "../lib/lang";
 import { QR } from "./gates";
 import { Check, Close, Exit, Swap } from "./icons";
-
-const LANGUAGES: [string, string][] = [
-  ["en", "English"], ["es", "Spanish"], ["fr", "French"], ["de", "German"], ["it", "Italian"], ["pt", "Portuguese"],
-  ["nl", "Dutch"], ["sv", "Swedish"], ["no", "Norwegian"], ["da", "Danish"], ["fi", "Finnish"], ["pl", "Polish"],
-  ["ru", "Russian"], ["uk", "Ukrainian"], ["tr", "Turkish"], ["ar", "Arabic"], ["he", "Hebrew"], ["hi", "Hindi"],
-  ["ja", "Japanese"], ["ko", "Korean"], ["zh", "Chinese"], ["vi", "Vietnamese"], ["th", "Thai"], ["id", "Indonesian"],
-];
-export const languageName = (code: string) => LANGUAGES.find(([c]) => c === code)?.[1] || code.toUpperCase();
 
 function Toggle({ on, label, onChange }: { on: boolean; label: string; onChange: (v: boolean) => void }) {
   return <button role="switch" aria-checked={on} aria-label={label} class={"switch" + (on ? " on" : "")} onClick={() => onChange(!on)}><i /></button>;

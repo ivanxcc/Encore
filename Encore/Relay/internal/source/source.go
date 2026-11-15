@@ -38,34 +38,7 @@ func Open(ctx context.Context, raw string, headers map[string]string, allowPriva
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return nil, errors.New("the source must be an http or https address")
 	}
-	dialer := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
-	if !allowPrivate {
-		// Checked at connect time, so redirects and DNS answers that point inward are refused too.
-		dialer.Control = func(network, address string, _ syscall.RawConn) error {
-			host, _, err := net.SplitHostPort(address)
-			if err != nil {
-				return err
-			}
-			ip := net.ParseIP(host)
-			if ip == nil || !public(ip) {
-				return ErrBlocked
-			}
-			return nil
-		}
-	}
-	transport := &http.Transport{
-		DialContext: dialer.DialContext,
-		// HTTP/1.1 on purpose: each parallel range request gets its own connection. Over HTTP/2 they
-		// would share one, and a host that limits speed per connection would limit them all together.
-		TLSNextProto:          map[string]func(string, *tls.Conn) http.RoundTripper{},
-		MaxIdleConnsPerHost:   Parallel + 2,
-		MaxConnsPerHost:       Parallel + 2,
-		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ResponseHeaderTimeout: 20 * time.Second,
-		DisableCompression:    true,
-	}
-	s := &HTTP{client: &http.Client{Transport: transport}, url: raw, headers: headers}
+	s := &HTTP{client: &http.Client{Transport: transport(allowPrivate)}, url: raw, headers: headers}
 	resp, err := s.get(ctx, 0, HeadSize-1)
 	if err != nil {
 		return nil, err
@@ -87,6 +60,42 @@ func Open(ctx context.Context, raw string, headers map[string]string, allowPriva
 		return nil, err
 	}
 	return s, nil
+}
+
+// Client fetches small files (subtitles) with the same guard as sources: private addresses are refused
+// at connect time unless allowed.
+func Client(allowPrivate bool) *http.Client {
+	return &http.Client{Transport: transport(allowPrivate), Timeout: 20 * time.Second}
+}
+
+func transport(allowPrivate bool) *http.Transport {
+	dialer := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
+	if !allowPrivate {
+		// Checked at connect time, so redirects and DNS answers that point inward are refused too.
+		dialer.Control = func(network, address string, _ syscall.RawConn) error {
+			host, _, err := net.SplitHostPort(address)
+			if err != nil {
+				return err
+			}
+			ip := net.ParseIP(host)
+			if ip == nil || !public(ip) {
+				return ErrBlocked
+			}
+			return nil
+		}
+	}
+	return &http.Transport{
+		DialContext: dialer.DialContext,
+		// HTTP/1.1 on purpose: each parallel range request gets its own connection. Over HTTP/2 they
+		// would share one, and a host that limits speed per connection would limit them all together.
+		TLSNextProto:          map[string]func(string, *tls.Conn) http.RoundTripper{},
+		MaxIdleConnsPerHost:   Parallel + 2,
+		MaxConnsPerHost:       Parallel + 2,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: 20 * time.Second,
+		DisableCompression:    true,
+	}
 }
 
 // URL is where the file really is, after redirects.

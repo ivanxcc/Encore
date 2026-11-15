@@ -191,6 +191,19 @@ export async function streams(type: string, videoId: string): Promise<Stream[]> 
   return lists.flat();
 }
 
+export interface AddonSubtitle { id: string; url: string; lang: string; source: string }
+
+/** Subtitles the account's subtitle add-ons (OpenSubtitles and the like) offer for a film or episode. */
+export async function addonSubtitles(type: string, videoId: string): Promise<AddonSubtitle[]> {
+  const lists = await Promise.all((await addons()).filter((a) => supports(a, "subtitles", type, videoId)).map(async (a) => {
+    try {
+      const body = await json<{ subtitles?: { id?: string; url: string; lang: string }[] }>(`${base(a)}/subtitles/${type}/${encodeURIComponent(videoId)}.json`, undefined, 12000);
+      return (body.subtitles || []).filter((x) => x.url && /^https?:/.test(x.url)).map((x, i) => ({ id: x.id || `${a.manifest.id}:${i}`, url: x.url, lang: x.lang, source: a.manifest.name }));
+    } catch { return []; }
+  }));
+  return lists.flat();
+}
+
 // MARK: Artwork
 
 const hub = (kind: string, size: string, id: string) => { const tt = imdbOf(id); return tt ? `https://images.metahub.space/${kind}/${size}/${tt}/img` : undefined; };
@@ -270,7 +283,17 @@ export const encore = {
 
 // MARK: Relay (this site)
 
-export interface Decision { mode: "direct" | "remux" | "unsupported" | "error"; reason?: string; url?: string; id?: string; playlist?: string; duration?: number; audioCopied?: boolean; video?: { codec?: string; width?: number; height?: number }; timings?: { openMs: number; indexMs: number } }
+export interface TrackInfo { index: number; codec: string; language?: string; name?: string; channels?: number; default?: boolean; forced?: boolean; text?: boolean }
+export interface Decision { mode: "direct" | "remux" | "unsupported" | "error"; reason?: string; url?: string; id?: string; playlist?: string; duration?: number; audioCopied?: boolean; audio?: TrackInfo; audioTracks?: TrackInfo[]; subtitles?: TrackInfo[]; video?: { codec?: string; width?: number; height?: number }; timings?: { openMs: number; indexMs: number } }
+export interface Cue { start: number; end: number; text: string }
+
+/** A subtitle track's cues the relay has found so far, after the first `after`. */
+export async function relayCues(sessionId: string, track: number, after: number): Promise<{ cues: Cue[]; total: number }> {
+  return json(`/v1/s/${sessionId}/subs/${track}?after=${after}`, undefined, 10000);
+}
+
+/** An add-on's subtitle file, read and converted by the relay. */
+export const subtitleFile = (url: string) => relayCall<{ cues: Cue[] }>(`/v1/subtitle?url=${encodeURIComponent(url)}`).then((b) => b.cues);
 
 export class NeedsCode extends Error {}
 

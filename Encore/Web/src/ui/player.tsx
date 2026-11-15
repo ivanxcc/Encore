@@ -1,13 +1,15 @@
 // The player: Encore's own controls over one long-lived <video>. Sources are prepared before this
 // screen opens (see lib/play.ts), so its work is to attach, start, and stay out of the way.
 import { useEffect, useRef, useState } from "preact/hooks";
-import { back, clock, go, prefs } from "../lib/core";
-import { art, encore, meta as loadMeta, NeedsCode, type Meta, type Video } from "../lib/api";
+import { back, clock, go, prefs, setPref } from "../lib/core";
+import { art, encore, meta as loadMeta, NeedsCode, relayClose, relaySession, type Decision, type Meta, type TrackInfo, type Video } from "../lib/api";
 import { flush, recordProgress } from "../lib/library";
-import { prepare, used, useNativeHls, type Prepared } from "../lib/play";
+import { prepare, sessionRequest, used, useNativeHls, type Prepared } from "../lib/play";
+import { lang2, languageName } from "../lib/lang";
+import { Captions, subtitleOptions, useAddonSubtitles, useCues, useSystemCaptions, type SubOption } from "./captions";
 import { currentVideo, episodes, episodeTag, resumeAt, videoTitle } from "./detail";
 import { Logo } from "./shared";
-import { Back10, Cast, Full, Fwd10, Left, Muted, Next, Pause, Pip, Play, Small, Sound } from "./icons";
+import { Back10, Bubble, Cast, Check, Full, Fwd10, Left, Muted, Next, Pause, Pip, Play, Small, Sound } from "./icons";
 
 // One element for the life of the page. Browsers only let a video start with sound from a tap; the
 // tap that leads here (Play, an episode, a Continue Watching card) unlocks this element at once,
@@ -19,6 +21,8 @@ video.setAttribute("x-webkit-airplay", "allow");
 addEventListener("click", () => {
   if (!video.currentSrc && !video.src) { video.muted = false; video.play().catch(() => {}); }
 }, { capture: true });
+
+const codecLabel = (c: string) => ({ aac: "AAC", ac3: "Dolby Digital", eac3: "Dolby Digital Plus", dts: "DTS", truehd: "Dolby TrueHD", opus: "Opus", flac: "FLAC", mp3: "MP3", vorbis: "Vorbis" } as Record<string, string>)[c] || c.toUpperCase();
 
 type Segment = { kind: "intro" | "recap" | "credits"; start: number; end: number };
 type HlsType = import("hls.js").default;
@@ -48,6 +52,14 @@ export function Player({ type, id, videoId }: { type: string; id: string; videoI
   const [count, setCount] = useState<number | null>(null);
   const [declined, setDeclined] = useState(false);
   const [stats, setStats] = useState(false);
+  const [decision, setDecision] = useState<Decision | null>(null);
+  const [subKey, setSubKey] = useState<string | null>(null);
+  const [tracksOpen, setTracksOpen] = useState(false);
+  const tracksRef = useRef(false); tracksRef.current = tracksOpen;
+  const [switching, setSwitching] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+  const attachRef = useRef<((d: Decision, at: number) => Promise<void>) | null>(null);
+  const subChosen = useRef(false);
   const live = useRef({ startMs: 0, seekMs: 0, stalls: 0, seekAt: 0, mounted: performance.now(), prepared: null as Prepared | null, lastSaved: 0, warmedNext: false });
   const hideTimer = useRef<number>();
 
@@ -87,6 +99,7 @@ export function Player({ type, id, videoId }: { type: string; id: string; videoI
     live.current = { ...live.current, startMs: 0, seekMs: 0, stalls: 0, mounted: performance.now(), prepared: null, lastSaved: 0, warmedNext: false };
     setPhase("loading"); setProblem(""); setStatus("Finding the best source…"); setSegments([]); setSkipped([]); setCount(null); setDeclined(false);
     setTime(0); setDuration(0); setBuffered(0); setNeedsSound(false);
+    setDecision(null); setSubKey(null); setTracksOpen(false); subChosen.current = false;
     holder.current?.appendChild(video);
 
     (async () => {
@@ -101,25 +114,34 @@ export function Player({ type, id, videoId }: { type: string; id: string; videoI
         if (!alive) return;
         live.current.prepared = p;
         if (!p.decision) { setProblem(p.problem || "This title can't be played right now."); setPhase("problem"); return; }
-        sessionId = p.decision.id;
-        setStatus("Starting…");
-        const begin = () => { if (startAt > 1) { try { video.currentTime = startAt; } catch {} } };
-        if (p.decision.mode === "direct" || useNativeHls) {
-          video.src = p.decision.mode === "direct" ? p.decision.url! : p.decision.playlist!;
-          video.addEventListener("loadedmetadata", begin, { once: true });
-        } else {
+        // Attaching a stream: at first, and again when another audio track is chosen.
+        const attach = async (d: Decision, at: number) => {
+          sessionId = d.id;
+          setDecision(d);
+          const begin = () => { if (at > 1) { try { video.currentTime = at; } catch {} } };
+          if (d.mode === "direct" || useNativeHls) {
+            hls?.destroy(); hls = null;
+            video.src = d.mode === "direct" ? d.url! : d.playlist!;
+            video.addEventListener("loadedmetadata", begin, { once: true });
+            return;
+          }
           const { default: Hls } = await import("hls.js");
           if (!alive) return;
+          hls?.destroy();
           const patient = { maxTimeToFirstByteMs: 30000, maxLoadTimeMs: 120000, timeoutRetry: { maxNumRetry: 3, retryDelayMs: 0, maxRetryDelayMs: 0 }, errorRetry: { maxNumRetry: 6, retryDelayMs: 1000, maxRetryDelayMs: 8000 } };
-          hls = new Hls({ startPosition: startAt > 1 ? startAt : -1, maxBufferLength: 40, backBufferLength: 60, fragLoadPolicy: { default: patient } });
-          hls.on(Hls.Events.ERROR, (_e, data) => {
-            if (!data.fatal) return;
-            if (data.type === Hls.ErrorTypes.MEDIA_ERROR) hls!.recoverMediaError();
+          const h = new Hls({ startPosition: at > 1 ? at : -1, maxBufferLength: 40, backBufferLength: 60, fragLoadPolicy: { default: patient } });
+          hls = h;
+          h.on(Hls.Events.ERROR, (_e, data) => {
+            if (!data.fatal || hls !== h) return;
+            if (data.type === Hls.ErrorTypes.MEDIA_ERROR) h.recoverMediaError();
             else if (alive) { setProblem("The stream stopped and couldn't be recovered. Try again."); setPhase("problem"); }
           });
-          hls.loadSource(p.decision.playlist!);
-          hls.attachMedia(video);
-        }
+          h.loadSource(d.playlist!);
+          h.attachMedia(video);
+        };
+        attachRef.current = attach;
+        setStatus("Starting…");
+        await attach(p.decision, startAt);
         try {
           video.muted = false;
           await video.play();
@@ -141,6 +163,7 @@ export function Player({ type, id, videoId }: { type: string; id: string; videoI
       save(true);
       flush();
       hls?.destroy();
+      attachRef.current = null;
       video.pause();
       video.removeAttribute("src");
       video.load();
@@ -248,6 +271,50 @@ export function Player({ type, id, videoId }: { type: string; id: string; videoI
     return () => { lock?.release().catch(() => {}); };
   }, [paused, phase]);
 
+  // Subtitles: the file's own and the add-ons', the one chosen, and its cues.
+  const fromAddons = useAddonSubtitles(type, episode?.id || meta?.id);
+  const subOptions = subtitleOptions(decision, fromAddons);
+  const sub = subOptions.find((o) => o.key === subKey) || null;
+  const cues = useCues(sub, decision?.mode === "remux" ? decision.id : undefined);
+  useSystemCaptions(video, cues, sub?.lang || "");
+  // Chosen by themselves once: the language in Settings; else, with subtitles off, a forced track in
+  // the language being heard (the lines a film means everyone to read).
+  useEffect(() => {
+    if (subChosen.current || !decision) return;
+    const want = prefs.value.subtitles;
+    const heard = lang2(decision.audio?.language) || lang2(prefs.value.audioLanguage);
+    const pick = want !== "off"
+      ? subOptions.find((o) => o.lang === want && !o.forced)
+      : subOptions.find((o) => o.forced && o.lang === heard);
+    if (pick) { setSubKey(pick.key); subChosen.current = true; }
+    else if (want === "off" || fromAddons.length) subChosen.current = true;   // else: the add-ons may still have it
+  }, [decision?.id, fromAddons.length]);
+  const chooseSub = (o: SubOption | null) => {
+    subChosen.current = true;
+    setSubKey(o?.key || null);
+    // The choice carries to the next episode and title, as on Apple TV.
+    if (!o?.forced) setPref("subtitles", o ? o.lang || "off" : "off");
+  };
+
+  const switchAudio = async (track: TrackInfo) => {
+    const p = live.current.prepared, d = decision;
+    if (!p?.candidate || !d || d.audio?.index === track.index || !attachRef.current || switching) return;
+    const at = video.currentTime, resume = !video.paused;
+    setSwitching(true); setTracksOpen(false);
+    const next = await relaySession(sessionRequest(p.candidate, at, { audio: track.index }));
+    if (next.mode !== "remux" || !attachRef.current) {
+      setSwitching(false); setNote("That audio track couldn't be played."); setTimeout(() => setNote(null), 3000);
+      return;
+    }
+    await attachRef.current(next, at);
+    live.current.prepared = { ...p, decision: next };
+    if (d.id) relayClose(d.id);
+    if (resume) video.play().catch(() => {});
+    setSwitching(false);
+  };
+  const audioTracks = decision?.mode === "remux" ? decision.audioTracks || [] : [];
+  const hasTracks = subOptions.length > 0 || audioTracks.length > 1;
+
   const toggle = () => { if (video.paused) video.play().catch(() => {}); else video.pause(); };
   const seekBy = (d: number) => { video.currentTime = Math.max(0, Math.min((video.duration || 0) - 1, video.currentTime + d)); reveal(); };
   const toggleFull = () => {
@@ -260,9 +327,17 @@ export function Player({ type, id, videoId }: { type: string; id: string; videoI
   };
   const sound = () => { video.muted = false; setNeedsSound(false); };
 
+  // "c" turns subtitles on (the language last chosen, else the first) and off.
+  const captionsKey = useRef(() => {});
+  captionsKey.current = () => {
+    if (sub) return chooseSub(null);
+    const want = prefs.value.subtitles !== "off" ? prefs.value.subtitles : lang2(prefs.value.audioLanguage) || lang2(navigator.language);
+    chooseSub(subOptions.find((o) => o.lang === want && !o.forced) || subOptions.find((o) => !o.forced) || null);
+  };
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.key === "Escape" && tracksRef.current) { setTracksOpen(false); e.preventDefault(); return; }
       switch (e.key) {
         case " ": case "k": toggle(); break;
         case "ArrowLeft": case "j": seekBy(-10); break;
@@ -272,6 +347,7 @@ export function Player({ type, id, videoId }: { type: string; id: string; videoI
         case "f": toggleFull(); break;
         case "m": video.muted = !video.muted; break;
         case "s": setStats((v) => !v); break;
+        case "c": captionsKey.current(); break;
         case "n": if (nextRef.current) playNext(); break;
         case "Escape": case "Backspace": if (!document.fullscreenElement) close(); break;
         default: return;
@@ -316,7 +392,8 @@ export function Player({ type, id, videoId }: { type: string; id: string; videoI
           </div>
         </div>
       )}
-      {phase === "playing" && waiting && <div class="wait"><div class="spinner" /></div>}
+      {phase === "playing" && (waiting || switching) && <div class="wait"><div class="spinner" /></div>}
+      {phase === "playing" && <Captions video={video} cues={cues} raised={show} />}
 
       <div class="chrome">
         <div class="topbar">
@@ -353,6 +430,7 @@ export function Player({ type, id, videoId }: { type: string; id: string; videoI
                 <input type="range" min="0" max="1" step="0.05" value={muted ? 0 : volume} aria-label="Volume" onInput={(e) => { video.volume = +(e.target as HTMLInputElement).value; video.muted = false; }} />
               </span>
               {next && <button class="icon" aria-label="Next episode" onClick={playNext}><Next /></button>}
+              {hasTracks && <button class={"icon" + (sub ? " lit" : "")} aria-label="Audio and subtitles" aria-expanded={tracksOpen} onClick={(e) => { e.stopPropagation(); setTracksOpen(!tracksOpen); reveal(); }}><Bubble /></button>}
               {v.webkitShowPlaybackTargetPicker && <button class="icon" aria-label="AirPlay" onClick={() => v.webkitShowPlaybackTargetPicker!()}><Cast /></button>}
               {document.pictureInPictureEnabled && <button class="icon" aria-label="Picture in Picture" onClick={() => (document.pictureInPictureElement ? document.exitPictureInPicture() : video.requestPictureInPicture()).catch(() => {})}><Pip /></button>}
               <button class="icon" aria-label={full ? "Exit full screen" : "Full screen"} onClick={toggleFull}>{full ? <Small /> : <Full />}</button>
@@ -360,6 +438,34 @@ export function Player({ type, id, videoId }: { type: string; id: string; videoI
           </div>
         ) : <div />}
       </div>
+
+      {tracksOpen && (
+        <>
+          <div class="tracks-scrim" onClick={() => setTracksOpen(false)} />
+          <div class="tracks glass" role="dialog" aria-label="Audio and subtitles" onPointerMove={reveal}>
+            <section>
+              <h3>Subtitles</h3>
+              <button class={!sub ? "on" : ""} onClick={() => chooseSub(null)}><Check />Off</button>
+              {subOptions.map((o) => (
+                <button key={o.key} class={sub?.key === o.key ? "on" : ""} onClick={() => chooseSub(o)}>
+                  <Check /><span>{o.label}{o.detail && <small>{o.detail}</small>}</span>
+                </button>
+              ))}
+              {!subOptions.length && <p class="quiet">None for this video.</p>}
+            </section>
+            {audioTracks.length > 1 && (
+              <section>
+                <h3>Audio</h3>
+                {audioTracks.map((t) => (
+                  <button key={t.index} class={decision?.audio?.index === t.index ? "on" : ""} onClick={() => switchAudio(t)}>
+                    <Check /><span>{languageName(t.language)}<small>{[t.channels ? (t.channels >= 6 ? `${t.channels - 1}.1` : t.channels === 1 ? "Mono" : "Stereo") : "", codecLabel(t.codec), t.name && !/^(stereo|surround|\d\.\d)$/i.test(t.name) ? t.name : ""].filter(Boolean).join(" · ")}</small></span>
+                  </button>
+                ))}
+              </section>
+            )}
+          </div>
+        </>
+      )}
 
       {phase === "playing" && (
         <div class="offer">
@@ -374,12 +480,14 @@ export function Player({ type, id, videoId }: { type: string; id: string; videoI
             </>
           )}
           {skippedNote && <span class="note glass">{skippedNote}</span>}
+          {note && <span class="note glass">{note}</span>}
           {count == null && next && (declined || (closing && atEnd) || (atEnd && !prefs.value.autoplayNext)) && <button class="pill primary" onClick={playNext}><Next />Next Episode</button>}
         </div>
       )}
 
       {stats && (
         <div class="stats glass">{[
+          `subtitles ${sub ? `${sub.label}${sub.embedded != null ? " (in the file)" : " (add-on)"}, ${cues.length} lines` : "off"}`,
           `mode      ${p?.decision?.mode || "–"}${p?.decision?.audioCopied ? " (audio untouched)" : ""} via ${p?.decision?.mode === "direct" ? "source" : useNativeHls ? "native HLS" : "hls.js"}`,
           `video     ${video.videoWidth}×${video.videoHeight}`,
           `sources   ${p ? Math.round(p.timings.sourcesMs) : "–"} ms, relay ${p ? Math.round(p.timings.relayMs) : "–"} ms (${p?.timings.tried || 0} tried)`,

@@ -10,6 +10,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -55,6 +57,9 @@ type Session struct {
 	created time.Time
 	onReady func(time.Duration) // first segment of a run, for stats
 
+	subs []int            // text subtitle tracks (among the file's subtitle tracks) to collect
+	cues map[int]*cueList // what has been collected of each, by track
+
 	mu       sync.Mutex
 	notify   chan struct{}
 	done     map[int]bool
@@ -64,6 +69,108 @@ type Session struct {
 	lastUse  time.Time
 	closed   bool
 	failure  error // why the latest run that failed did
+}
+
+// Cue is a line of subtitles: when it shows, on the video's own timeline, and its text (WebVTT
+// markup: <i>, <b>, line breaks).
+type Cue struct {
+	Start float64 `json:"start"`
+	End   float64 `json:"end"`
+	Text  string  `json:"text"`
+}
+
+// cueList keeps a track's cues in the order they were found; runs started by seeks find some twice.
+type cueList struct {
+	list []Cue
+	seen map[string]bool
+}
+
+// SetSubtitles chooses the text subtitle tracks to collect as the stream is made. Call it before the
+// first segment is asked for.
+func (s *Session) SetSubtitles(tracks []int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.subs = tracks
+	s.cues = map[int]*cueList{}
+	for _, t := range tracks {
+		s.cues[t] = &cueList{seen: map[string]bool{}}
+	}
+}
+
+// Cues returns a track's cues found so far after the first `after`, and how many there are in all.
+// Cues arrive as the stream is made, about as far ahead of the viewer as the video is.
+func (s *Session) Cues(track, after int) ([]Cue, int, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c := s.cues[track]
+	if c == nil {
+		return nil, 0, false
+	}
+	if after < 0 || after > len(c.list) {
+		after = 0
+	}
+	return append([]Cue(nil), c.list[after:]...), len(c.list), true
+}
+
+func (s *Session) addCue(track int, c Cue) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	list := s.cues[track]
+	key := fmt.Sprintf("%.2f|%s", c.Start, c.Text)
+	if list == nil || list.seen[key] {
+		return
+	}
+	list.seen[key] = true
+	list.list = append(list.list, c)
+}
+
+// readCues parses WebVTT as ffmpeg writes it.
+func (s *Session) readCues(track int, r io.Reader) {
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 64<<10), 1<<20)
+	var cue *Cue
+	var text []string
+	flush := func() {
+		if cue != nil && len(text) > 0 {
+			cue.Text = strings.Join(text, "\n")
+			s.addCue(track, *cue)
+		}
+		cue, text = nil, nil
+	}
+	for sc.Scan() {
+		line := strings.TrimRight(sc.Text(), "\r")
+		if line == "" {
+			flush()
+			continue
+		}
+		if a, b, ok := strings.Cut(line, " --> "); ok {
+			flush()
+			start, ok1 := vttTime(a)
+			end, ok2 := vttTime(strings.Fields(b)[0])
+			if ok1 && ok2 {
+				cue = &Cue{Start: start, End: end}
+			}
+			continue
+		}
+		if cue != nil {
+			text = append(text, line)
+		}
+	}
+	flush()
+}
+
+// vttTime reads "01:02.500" or "1:01:02.500".
+func vttTime(v string) (float64, bool) {
+	parts := strings.Split(strings.TrimSpace(v), ":")
+	total := 0.0
+	for _, p := range parts {
+		f, err := strconv.ParseFloat(p, 64)
+		if err != nil {
+			return 0, false
+		}
+		total = total*60 + f
+	}
+	return total, len(parts) >= 2
 }
 
 type run struct {
@@ -342,7 +449,27 @@ func (s *Session) remux(ctx context.Context, r *run, began time.Time) error {
 		"-avoid_negative_ts", "disabled", "-output_ts_offset", fmt.Sprintf("%g", tsOffset),
 		"-muxdelay", "0", "-muxpreload", "0",
 		"-mpegts_flags", "+pat_pmt_at_frames", "-f", "mpegts", "pipe:1")
+	// Text subtitles come out of the same pass, each as WebVTT on a pipe of its own, so they cost no
+	// extra reading of the file and follow every seek.
+	s.mu.Lock()
+	subs := s.subs
+	s.mu.Unlock()
+	var subReaders, subWriters []*os.File
+	defer func() {
+		for _, f := range subWriters {
+			f.Close()
+		}
+	}()
+	for k, track := range subs {
+		pr, pw, err := os.Pipe()
+		if err != nil {
+			return err
+		}
+		subReaders, subWriters = append(subReaders, pr), append(subWriters, pw)
+		args = append(args, "-map", fmt.Sprintf("0:s:%d?", track), "-c:s", "webvtt", "-flush_packets", "1", "-f", "webvtt", fmt.Sprintf("pipe:%d", 3+k))
+	}
 	cmd := exec.CommandContext(ctx, s.ffmpeg, args...)
+	cmd.ExtraFiles = subWriters
 	cmd.WaitDelay = 2 * time.Second
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -355,8 +482,26 @@ func (s *Session) remux(ctx context.Context, r *run, began time.Time) error {
 	var stderr bytes.Buffer
 	cmd.Stderr = &limited{b: &stderr, n: 4096}
 	if err := cmd.Start(); err != nil {
+		for _, f := range subReaders {
+			f.Close()
+		}
 		return err
 	}
+	// ffmpeg has its own copies of the write ends; closing ours lets the readers see the end.
+	for _, f := range subWriters {
+		f.Close()
+	}
+	subWriters = nil
+	var subsDone sync.WaitGroup
+	for k, track := range subs {
+		subsDone.Add(1)
+		go func(track int, r *os.File) {
+			defer subsDone.Done()
+			defer r.Close()
+			s.readCues(track, r)
+		}(track, subReaders[k])
+	}
+	defer subsDone.Wait()
 	body := s.src.Stream(ctx, s.Plan.Offsets[r.first])
 	reachedEnd := make(chan bool, 1)
 	go func() {

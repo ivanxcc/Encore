@@ -271,3 +271,16 @@ func TestIndexIsRemembered(t *testing.T) {
 		t.Fatalf("the index was recalled %d times, want 1", recalled)
 	}
 }
+
+func TestSubtitleFilesAreRead(t *testing.T) {
+	srt := "1\r\n00:00:01,500 --> 00:00:03,000\r\n<font color=\"#fff\">Caf\xe9</font> <i>ol\xe9</i>\r\n\r\n2\r\n00:01:02,05 --> 00:01:04,000\r\n{\\an8}Top line\r\n"
+	cues := parseSubtitles(decodeText([]byte(srt)))
+	if len(cues) != 2 || cues[0].Text != "Café <i>olé</i>" || cues[0].Start != 1.5 || cues[1].Start != 62.05 || cues[1].Text != "Top line" {
+		t.Fatalf("SRT in Windows-1252: %+v", cues)
+	}
+	vtt := "\xEF\xBB\xBFWEBVTT\n\nintro\n01:02.500 --> 01:04.000 align:start\nHello\nthere\n"
+	cues = parseSubtitles(decodeText([]byte(vtt)))
+	if len(cues) != 1 || cues[0].Start != 62.5 || cues[0].Text != "Hello\nthere" {
+		t.Fatalf("WebVTT: %+v", cues)
+	}
+}

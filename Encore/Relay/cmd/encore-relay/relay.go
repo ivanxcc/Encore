@@ -152,6 +152,7 @@ type TrackInfo struct {
 	Name     string `json:"name,omitempty"`
 	Channels int    `json:"channels,omitempty"`
 	Default  bool   `json:"default,omitempty"`
+	Forced   bool   `json:"forced,omitempty"`
 	Text     bool   `json:"text,omitempty"`
 }
 
@@ -251,7 +252,7 @@ func (r *Relay) Decide(ctx context.Context, req Request) (*Decision, error) {
 	for i, t := range file.Of(mkv.TrackSubtitle) {
 		name := codecName(t.CodecID)
 		d.Subtitles = append(d.Subtitles, TrackInfo{Index: i, Codec: name, Language: t.Language, Name: t.Name,
-			Default: t.Default, Text: name == "srt" || name == "ass" || name == "ssa" || name == "vtt"})
+			Default: t.Default, Forced: t.Forced, Text: name == "srt" || name == "ass" || name == "ssa" || name == "vtt"})
 	}
 
 	// Video is never re-encoded here: the browser must be able to decode it as it is.
@@ -284,6 +285,14 @@ func (r *Relay) Decide(ctx context.Context, req Request) (*Decision, error) {
 	if err != nil {
 		return unsupported(r, d, "no-index", err.Error()), nil
 	}
+	// Text subtitles are collected as the stream is made (pictures, like PGS, can't be).
+	var texts []int
+	for _, t := range d.Subtitles {
+		if t.Text && len(texts) < 16 {
+			texts = append(texts, t.Index)
+		}
+	}
+	session.SetSubtitles(texts)
 	session.OnFirstSegment(func(took time.Duration) {
 		r.count(func(s *Stats) {
 			s.Runs++
@@ -349,11 +358,31 @@ func streamAudio(req Request) []string {
 	return req.Caps.Audio
 }
 
+// The three-letter codes files use, for the two-letter ones browsers and settings use.
+var threeLetter = map[string]string{"eng": "en", "spa": "es", "fre": "fr", "fra": "fr", "ger": "de", "deu": "de", "ita": "it",
+	"por": "pt", "dut": "nl", "nld": "nl", "swe": "sv", "nor": "no", "nob": "no", "dan": "da", "fin": "fi", "pol": "pl",
+	"rus": "ru", "ukr": "uk", "tur": "tr", "ara": "ar", "heb": "he", "hin": "hi", "jpn": "ja", "kor": "ko", "chi": "zh",
+	"zho": "zh", "vie": "vi", "tha": "th", "ind": "id", "cze": "cs", "ces": "cs", "gre": "el", "ell": "el", "hun": "hu",
+	"rum": "ro", "ron": "ro"}
+
+// sameLanguage reduces a language code to two letters ("spa", "es-419" -> "es").
+func sameLanguage(code string) string {
+	c := strings.ToLower(strings.TrimSpace(code))
+	if two, ok := threeLetter[c]; ok {
+		return two
+	}
+	c, _, _ = strings.Cut(c, "-")
+	if len(c) >= 2 {
+		return c[:2]
+	}
+	return ""
+}
+
 func pickAudio(tracks []mkv.Track, req Request) int {
 	if req.Audio != nil && *req.Audio >= 0 && *req.Audio < len(tracks) {
 		return *req.Audio
 	}
-	want := req.Language
+	want := sameLanguage(req.Language)
 	if want == "" {
 		want = "en"
 	}
@@ -361,7 +390,7 @@ func pickAudio(tracks []mkv.Track, req Request) int {
 	best, score := 0, -1
 	for i, t := range tracks {
 		s := 0
-		if strings.HasPrefix(strings.ToLower(t.Language), strings.ToLower(want[:2])) {
+		if sameLanguage(t.Language) == want {
 			s += 4
 		}
 		if t.Default {
@@ -492,6 +521,8 @@ func (r *Relay) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/s/{id}/index.m3u8", r.handlePlaylist)
 	mux.HandleFunc("GET /v1/s/{id}/seg/{file}", r.handleSegment)
 	mux.HandleFunc("DELETE /v1/s/{id}", r.handleClose)
+	mux.HandleFunc("GET /v1/s/{id}/subs/{track}", r.handleCues)
+	mux.HandleFunc("GET /v1/subtitle", r.authed(r.handleSubtitle))
 	mux.HandleFunc("POST /v1/lab/token", r.handleLabToken)
 	mux.HandleFunc("POST /v1/auth", r.handleAuth)
 	mux.HandleFunc("POST /v1/invite", r.authed(r.handleInvite))
@@ -659,6 +690,27 @@ func (r *Relay) handleSegment(w http.ResponseWriter, req *http.Request) {
 			panic(http.ErrAbortHandler)
 		}
 	}
+}
+
+// handleCues gives a subtitle track's cues found so far; the player asks again for the ones after
+// those it has, every few seconds.
+func (r *Relay) handleCues(w http.ResponseWriter, req *http.Request) {
+	r.mu.Lock()
+	s := r.sessions[req.PathValue("id")]
+	r.mu.Unlock()
+	track, err1 := strconv.Atoi(req.PathValue("track"))
+	after, _ := strconv.Atoi(req.URL.Query().Get("after"))
+	if s == nil || err1 != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "No such stream."})
+		return
+	}
+	cues, total, ok := s.Cues(track, after)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "No such subtitle track."})
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, 200, map[string]any{"cues": cues, "total": total})
 }
 
 func (r *Relay) handleClose(w http.ResponseWriter, req *http.Request) {
