@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -146,6 +147,8 @@ func TestAccountLinking(t *testing.T) {
 			w.Write([]byte(`{"result":{"_id":"1","email":"Ivan@Example.com"}}`))
 		case "key-other":
 			w.Write([]byte(`{"result":{"_id":"2","email":"other@example.com"}}`))
+		case "key-third":
+			w.Write([]byte(`{"result":{"_id":"3","email":"third@example.com"}}`))
 		default:
 			w.Write([]byte(`{"error":{"message":"Session does not exist"}}`))
 		}
@@ -183,6 +186,56 @@ func TestAccountLinking(t *testing.T) {
 	}
 	if code, _ := post(t, h, "/v1/auth", "", map[string]string{"authKey": "made-up"}); code != 401 {
 		t.Fatalf("a made-up sign-in: %d", code)
+	}
+
+	// An invitation lets one more account in, once; it is no access token itself.
+	_, body = post(t, h, "/v1/auth", "", map[string]string{"authKey": "key-ivan"})
+	token, _ = body["token"].(string)
+	if body["admin"] != true {
+		t.Fatalf("the account linked with the code manages the relay: %v", body)
+	}
+	_, body = post(t, h, "/v1/invite", token, nil)
+	invite, _ := body["invite"].(string)
+	if invite == "" || verifyToken(secret, invite, time.Now()) {
+		t.Fatalf("an invitation: %v", body)
+	}
+	if code, _ := post(t, h, "/v1/session", invite, map[string]string{"url": "http://example.com/a.mkv"}); code != 401 {
+		t.Fatalf("an invitation used as a token: %d", code)
+	}
+	code, body = post(t, h, "/v1/auth", "", map[string]string{"authKey": "key-other", "invite": invite})
+	other, _ := body["token"].(string)
+	if code != 200 || body["admin"] == true {
+		t.Fatalf("joining by invitation: %d %v", code, body)
+	}
+	if code, body := post(t, h, "/v1/auth", "", map[string]string{"authKey": "key-third", "invite": invite}); code != 403 || !strings.Contains(fmt.Sprint(body["error"]), "already been used") {
+		t.Fatalf("an invitation used twice: %d %v", code, body)
+	}
+
+	// The manager sees who can use the relay and can take someone off it; their token stops working.
+	get := func(path, token string) (int, map[string]any) {
+		req := httptest.NewRequest("GET", path, nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		var out map[string]any
+		json.Unmarshal(rec.Body.Bytes(), &out)
+		return rec.Code, out
+	}
+	if code, body := get("/v1/people", token); code != 200 || len(body["people"].([]any)) != 2 {
+		t.Fatalf("people: %d %v", code, body)
+	}
+	if code, _ := get("/v1/people", other); code != 403 {
+		t.Fatalf("people, for someone invited: %d", code)
+	}
+	req := httptest.NewRequest("DELETE", "/v1/people/other@example.com", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("removing: %d", rec.Code)
+	}
+	if code, _ := get("/v1/stats", other); code != 401 {
+		t.Fatalf("a removed account's token: %d", code)
 	}
 }
 

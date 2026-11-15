@@ -1,5 +1,5 @@
 // Everything the app talks to: the Stremio account, its add-ons, Encore Cloud, and the relay.
-import { auth, config, relayToken, imdbOf } from "./core";
+import { auth, config, pendingInvite, relayToken, imdbOf } from "./core";
 
 // MARK: Types (the Stremio add-on protocol, as much of it as Encore uses)
 
@@ -279,13 +279,31 @@ export async function relayAuth(code?: string): Promise<string> {
   const now = Date.now() / 1000;
   const have = relayToken.value;
   if (!code && have && have.expiresAt - now > 86400) return have.value;
-  const r = await fetch("/v1/auth", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ authKey: auth.value?.key, code }) });
+  // A link someone shared stands in for the code, once.
+  const invite = code ? undefined : pendingInvite.value || undefined;
+  const r = await fetch("/v1/auth", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ authKey: auth.value?.key, code, invite }) });
   const body = await r.json().catch(() => ({}));
-  if (r.status === 403 && body.needsCode) throw new NeedsCode(code ? body.error : "");
+  if (invite && r.status !== 401) pendingInvite.value = null;
+  if (r.status === 403 && body.needsCode) throw new NeedsCode(code || invite ? body.error : "");
   if (!r.ok) throw new Error(body.error || "The relay refused this sign-in.");
-  relayToken.value = { value: body.token, expiresAt: body.expiresAt };
+  relayToken.value = { value: body.token, expiresAt: body.expiresAt, admin: !!body.admin };
   return body.token;
 }
+
+async function relayCall<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const token = await relayAuth();
+  return json<T>(path, { ...init, headers: { ...(init.headers || {}), "content-type": "application/json", authorization: "Bearer " + token } });
+}
+
+/** A link that lets one more Stremio account use this server, once, within 7 days. */
+export async function relayInvite(): Promise<{ link: string; expiresAt: number }> {
+  const body = await relayCall<{ invite: string; expiresAt: number }>("/v1/invite", { method: "POST" });
+  return { link: `${location.origin}/join#${body.invite}`, expiresAt: body.expiresAt };
+}
+
+export interface RelayPerson { email: string; admin: boolean; invitedBy?: string; since?: number; you?: boolean }
+export const relayPeople = () => relayCall<{ people: RelayPerson[] }>("/v1/people").then((b) => b.people);
+export const relayRemove = (email: string) => relayCall(`/v1/people/${encodeURIComponent(email)}`, { method: "DELETE" });
 
 export async function relaySession(body: object): Promise<Decision> {
   const token = await relayAuth();

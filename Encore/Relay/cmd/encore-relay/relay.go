@@ -61,7 +61,8 @@ type Relay struct {
 	mu       sync.Mutex
 	sessions map[string]*hls.Session
 	attempts map[string][]time.Time // lab-code guesses, per address
-	owners   map[string]bool        // Stremio accounts (by email) allowed to use this relay
+	owners   map[string]person      // Stremio accounts (by email) allowed to use this relay
+	used     map[string]int64       // invites already taken, until they would have expired
 	indexes  map[string]indexed     // files already understood, by size and a hash of their first bytes
 	stats    Stats
 	stop     chan struct{}
@@ -86,7 +87,7 @@ const (
 
 func NewRelay(cfg Config) *Relay {
 	r := &Relay{cfg: cfg, sessions: map[string]*hls.Session{}, attempts: map[string][]time.Time{},
-		owners: map[string]bool{}, indexes: map[string]indexed{}, stop: make(chan struct{})}
+		owners: map[string]person{}, used: map[string]int64{}, indexes: map[string]indexed{}, stop: make(chan struct{})}
 	r.loadOwners()
 	go r.reap()
 	return r
@@ -493,6 +494,9 @@ func (r *Relay) Handler() http.Handler {
 	mux.HandleFunc("DELETE /v1/s/{id}", r.handleClose)
 	mux.HandleFunc("POST /v1/lab/token", r.handleLabToken)
 	mux.HandleFunc("POST /v1/auth", r.handleAuth)
+	mux.HandleFunc("POST /v1/invite", r.authed(r.handleInvite))
+	mux.HandleFunc("GET /v1/people", r.authed(r.handlePeople))
+	mux.HandleFunc("DELETE /v1/people/{email}", r.authed(r.handleRemovePerson))
 	mux.HandleFunc("GET /config.json", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, 200, map[string]string{"cloud": strings.TrimRight(r.cfg.CloudURL, "/")})
 	})
@@ -527,12 +531,24 @@ func (r *Relay) Handler() http.Handler {
 func (r *Relay) authed(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		token := strings.TrimPrefix(req.Header.Get("Authorization"), "Bearer ")
-		if !verifyToken(r.cfg.Secret, token, time.Now()) {
+		if !verifyToken(r.cfg.Secret, token, time.Now()) || r.removed(tokenSubject(token)) {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "A valid token is required."})
 			return
 		}
 		next(w, req)
 	}
+}
+
+// removed says whether a token was made for an account that has since been taken off the relay.
+// Tokens for the lab and the command line (not an email) are not tied to an account.
+func (r *Relay) removed(sub string) bool {
+	if !strings.Contains(sub, "@") {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	_, ok := r.owners[sub]
+	return !ok
 }
 
 func (r *Relay) handleSession(w http.ResponseWriter, req *http.Request) {
@@ -683,14 +699,43 @@ func (r *Relay) ownersFile() string {
 	return filepath.Join(r.cfg.DataDir, "owners.json")
 }
 
+// person is someone allowed to use the relay. Whoever linked with the relay's code manages it (sees
+// who else can use it, and removes them); people who joined by invitation just watch.
+type person struct {
+	Admin     bool   `json:"admin,omitempty"`
+	InvitedBy string `json:"invitedBy,omitempty"`
+	Since     int64  `json:"since,omitempty"`
+}
+
+type peopleFile struct {
+	People map[string]person `json:"people"`
+	Used   map[string]int64  `json:"usedInvites,omitempty"`
+}
+
 func (r *Relay) loadOwners() {
-	if path := r.ownersFile(); path != "" {
-		if raw, err := os.ReadFile(path); err == nil {
-			var emails []string
-			json.Unmarshal(raw, &emails)
-			for _, e := range emails {
-				r.owners[strings.ToLower(e)] = true
-			}
+	path := r.ownersFile()
+	if path == "" {
+		return
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	// The first version kept a plain list of the accounts linked with the code.
+	var emails []string
+	if json.Unmarshal(raw, &emails) == nil {
+		for _, e := range emails {
+			r.owners[strings.ToLower(e)] = person{Admin: true}
+		}
+		return
+	}
+	var f peopleFile
+	if json.Unmarshal(raw, &f) == nil {
+		for e, p := range f.People {
+			r.owners[strings.ToLower(e)] = p
+		}
+		for id, exp := range f.Used {
+			r.used[id] = exp
 		}
 	}
 }
@@ -701,12 +746,13 @@ func (r *Relay) saveOwners() {
 	if path == "" {
 		return
 	}
-	emails := make([]string, 0, len(r.owners))
-	for e := range r.owners {
-		emails = append(emails, e)
+	now := time.Now().Unix()
+	for id, exp := range r.used {
+		if exp < now {
+			delete(r.used, id)
+		}
 	}
-	sort.Strings(emails)
-	raw, _ := json.Marshal(emails)
+	raw, _ := json.MarshalIndent(peopleFile{People: r.owners, Used: r.used}, "", "  ")
 	os.MkdirAll(r.cfg.DataDir, 0o700)
 	os.WriteFile(path+".tmp", raw, 0o600)
 	os.Rename(path+".tmp", path)
@@ -749,6 +795,7 @@ func (r *Relay) handleAuth(w http.ResponseWriter, req *http.Request) {
 	var body struct {
 		AuthKey string `json:"authKey"`
 		Code    string `json:"code"`
+		Invite  string `json:"invite"`
 	}
 	json.NewDecoder(http.MaxBytesReader(w, req.Body, 4096)).Decode(&body)
 	if body.AuthKey == "" {
@@ -761,8 +808,32 @@ func (r *Relay) handleAuth(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	r.mu.Lock()
-	known := r.owners[email]
+	_, known := r.owners[email]
 	r.mu.Unlock()
+	if !known && body.Invite != "" {
+		if r.limited(req) {
+			writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "Too many tries. Wait ten minutes."})
+			return
+		}
+		id, from, exp, ok := r.readInvite(body.Invite)
+		r.mu.Lock()
+		_, taken := r.used[id]
+		if ok && !taken {
+			r.used[id] = exp
+			r.owners[email] = person{InvitedBy: from, Since: time.Now().Unix()}
+			r.saveOwners()
+			known = true
+		}
+		r.mu.Unlock()
+		if !known {
+			msg := "This invitation has expired. Ask for a new one."
+			if taken {
+				msg = "This invitation has already been used. Ask for a new one."
+			}
+			writeJSON(w, http.StatusForbidden, map[string]any{"error": msg, "needsCode": true})
+			return
+		}
+	}
 	if !known {
 		if body.Code == "" {
 			writeJSON(w, http.StatusForbidden, map[string]any{"error": "Enter this relay's code to link your account.", "needsCode": true})
@@ -777,12 +848,101 @@ func (r *Relay) handleAuth(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 		r.mu.Lock()
-		r.owners[email] = true
+		r.owners[email] = person{Admin: true, Since: time.Now().Unix()}
 		r.saveOwners()
 		r.mu.Unlock()
 	}
 	expires := time.Now().Add(7 * 24 * time.Hour)
-	writeJSON(w, 200, map[string]any{"token": signToken(r.cfg.Secret, email, expires), "expiresAt": expires.Unix(), "email": email})
+	r.mu.Lock()
+	admin := r.owners[email].Admin
+	r.mu.Unlock()
+	writeJSON(w, 200, map[string]any{"token": signToken(r.cfg.Secret, email, expires), "expiresAt": expires.Unix(), "email": email, "admin": admin})
+}
+
+// Invitations are signed with their own key, so one can never be used as an access token.
+func (r *Relay) inviteKey() string { return r.cfg.Secret + "|invite" }
+
+// handleInvite makes a link that lets one more Stremio account use this relay, once, within 7 days.
+func (r *Relay) handleInvite(w http.ResponseWriter, req *http.Request) {
+	from := tokenSubject(strings.TrimPrefix(req.Header.Get("Authorization"), "Bearer "))
+	expires := time.Now().Add(7 * 24 * time.Hour)
+	invite := signToken(r.inviteKey(), "invite:"+randomID()[:16]+":"+from, expires)
+	writeJSON(w, 200, map[string]any{"invite": invite, "expiresAt": expires.Unix()})
+}
+
+func (r *Relay) readInvite(invite string) (id, from string, expires int64, ok bool) {
+	if !verifyToken(r.inviteKey(), invite, time.Now()) {
+		return "", "", 0, false
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(strings.SplitN(invite, ".", 2)[0])
+	if err != nil {
+		return "", "", 0, false
+	}
+	parts := strings.SplitN(string(raw), ":", 4) // expiry:invite:id:from
+	if len(parts) != 4 || parts[1] != "invite" {
+		return "", "", 0, false
+	}
+	expires, _ = strconv.ParseInt(parts[0], 10, 64)
+	return parts[2], parts[3], expires, true
+}
+
+// tokenSubject is who a (verified) token was made for.
+func tokenSubject(token string) string {
+	payload, _, _ := strings.Cut(token, ".")
+	raw, err := base64.RawURLEncoding.DecodeString(payload)
+	if err != nil {
+		return ""
+	}
+	_, sub, _ := strings.Cut(string(raw), ":")
+	return sub
+}
+
+// handlePeople lists who can use the relay, for the people who manage it.
+func (r *Relay) handlePeople(w http.ResponseWriter, req *http.Request) {
+	me := tokenSubject(strings.TrimPrefix(req.Header.Get("Authorization"), "Bearer "))
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.owners[me].Admin {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "Only the people who manage this relay can see this."})
+		return
+	}
+	type row struct {
+		Email     string `json:"email"`
+		Admin     bool   `json:"admin"`
+		InvitedBy string `json:"invitedBy,omitempty"`
+		Since     int64  `json:"since,omitempty"`
+		You       bool   `json:"you,omitempty"`
+	}
+	list := []row{}
+	for e, p := range r.owners {
+		list = append(list, row{e, p.Admin, p.InvitedBy, p.Since, e == me})
+	}
+	sort.Slice(list, func(i, j int) bool {
+		if list[i].Admin != list[j].Admin {
+			return list[i].Admin
+		}
+		return list[i].Email < list[j].Email
+	})
+	writeJSON(w, 200, map[string]any{"people": list})
+}
+
+// handleRemovePerson stops an account from using the relay, at once (its tokens stop working too).
+func (r *Relay) handleRemovePerson(w http.ResponseWriter, req *http.Request) {
+	me := tokenSubject(strings.TrimPrefix(req.Header.Get("Authorization"), "Bearer "))
+	who := strings.ToLower(req.PathValue("email"))
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.owners[me].Admin {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "Only the people who manage this relay can do this."})
+		return
+	}
+	if who == me {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "You can't remove yourself."})
+		return
+	}
+	delete(r.owners, who)
+	r.saveOwners()
+	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
 func (r *Relay) stremioEmail(ctx context.Context, authKey string) (string, error) {

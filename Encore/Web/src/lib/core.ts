@@ -23,9 +23,29 @@ export function saved<T>(key: string, initial: T): Signal<T> {
 
 export interface Auth { key: string; email: string }
 export const auth = saved<Auth | null>("auth", null);
-export const relayToken = saved<{ value: string; expiresAt: number } | null>("relay", null);
+export const relayToken = saved<{ value: string; expiresAt: number; admin?: boolean } | null>("relay", null);
 export const profileId = saved<string | null>("profile", null);
 export const config = signal<{ cloud: string }>({ cloud: "" });
+/** An invitation to this relay, from a link someone shared, until it has been used. */
+export const pendingInvite = saved<string | null>("invite", null);
+
+/** Settings › Playback, kept on this device. */
+export interface Prefs {
+  /** Preferred audio language (ISO 639-1), "" for the browser's. */
+  audioLanguage: string;
+  /** Subtitles to turn on by themselves: "off", or a language. */
+  subtitles: string;
+  autoplayNext: boolean;
+  skipIntros: boolean;
+  /** The sharpest source to choose. Lower starts faster and uses less data. */
+  quality: "best" | "1080p" | "720p";
+}
+const defaultPrefs: Prefs = { audioLanguage: "", subtitles: "off", autoplayNext: true, skipIntros: false, quality: "best" };
+export const prefs = saved<Prefs>("prefs", defaultPrefs);
+prefs.value = { ...defaultPrefs, ...prefs.value };
+export const setPref = <K extends keyof Prefs>(key: K, value: Prefs[K]) => { prefs.value = { ...prefs.value, [key]: value }; };
+/** The audio language to ask for: the chosen one, else the browser's. */
+export const audioLanguage = () => prefs.value.audioLanguage || (navigator.language || "en").slice(0, 2).toLowerCase();
 
 // MARK: Router
 

@@ -1,4 +1,5 @@
 // Choosing a source and getting it ready to play, ahead of the Play button.
+import { audioLanguage, prefs } from "./core";
 import { relaySession, relayClose, streams, type Decision, type Meta, type Stream, type Video } from "./api";
 
 export interface Capabilities { video: string[]; audio: string[]; nativeHls: boolean; mse: boolean }
@@ -42,6 +43,11 @@ export function rank(list: Stream[]): Candidate[] {
     if (has("hdr", "dolby vision", "dovi", ".dv.", " dv ", "10bit", "10-bit")) score -= 1200;
     const quality = has("2160p", "4k", "uhd") ? "4K" : has("1080p") ? "1080p" : has("720p") ? "720p" : has("480p", " sd ") ? "SD" : "";
     score += quality === "4K" ? -900 : quality === "1080p" ? 300 : quality === "720p" ? 240 : 60;
+    // Settings › Quality: sharper than allowed only when nothing else is ready.
+    const cap = prefs.value.quality;
+    if (cap === "720p" && (quality === "1080p" || quality === "4K")) score -= 2500;
+    if (cap === "720p" && quality === "720p") score += 200;
+    if (cap === "1080p" && quality === "4K") score -= 1500;
     if (has("remux", "bdremux")) score -= 500;
     if (has(" cam ", "hdcam", "telesync", " ts ")) score -= 5000;
     if (has("aac")) score += 250;
@@ -81,7 +87,7 @@ export function prepare(meta: Meta, video: Video | undefined, startAt: number): 
     for (const candidate of found.slice(0, 6)) {
       tried++;
       // Dolby audio passes through only where the browser's own HLS plays it.
-      const decision = await relaySession({ url: candidate.url, headers: candidate.headers, start: startAt, caps: { video: caps.video, audio: caps.audio, stream: useNativeHls ? caps.audio : caps.audio.filter((a) => a === "aac") } });
+      const decision = await relaySession({ url: candidate.url, headers: candidate.headers, start: startAt, language: audioLanguage(), caps: { video: caps.video, audio: caps.audio, stream: useNativeHls ? caps.audio : caps.audio.filter((a) => a === "aac") } });
       if (decision.mode === "direct" || decision.mode === "remux") {
         return { decision, candidate, startAt, timings: { sourcesMs, relayMs: performance.now() - relayBegan, tried } };
       }

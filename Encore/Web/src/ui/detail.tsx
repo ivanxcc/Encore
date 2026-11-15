@@ -1,9 +1,9 @@
-import { useEffect, useMemo, useState } from "preact/hooks";
+import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { back, go, minutes } from "../lib/core";
 import { art, encore, meta as loadMeta, type Extras, type Meta, type Video } from "../lib/api";
 import { inProgress, isUpNext, isWatched, item as libraryItem, progressOf, setInList, watchedMarks } from "../lib/library";
 import { prepare } from "../lib/play";
-import { Art, Logo, MetaLine, Shelf } from "./shared";
+import { Art, Backdrop, Logo, MetaLine, Shelf } from "./shared";
 import { Check, Left, Play, Plus } from "./icons";
 
 export const episodeNumber = (v: Video) => v.episode ?? v.number;
@@ -38,7 +38,7 @@ function parseRuntime(text?: string): number | null {
   return total > 0 ? total * 60 : null;
 }
 
-export function TitlePage({ type, id }: { type: string; id: string }) {
+export function TitlePage({ type, id, focus }: { type: string; id: string; focus?: string }) {
   const [meta, setMeta] = useState<Meta | null>(null);
   const [extras, setExtras] = useState<Extras | null>(null);
   const [failed, setFailed] = useState(false);
@@ -53,7 +53,8 @@ export function TitlePage({ type, id }: { type: string; id: string }) {
     loadMeta(type, id).then((m) => {
       if (!live) return;
       setMeta(m);
-      setSeason(currentVideo(m)?.season ?? null);
+      const wanted = focus ? (m.videos || []).find((v) => v.id === focus) : undefined;
+      setSeason(wanted?.season ?? currentVideo(m)?.season ?? null);
     }, () => live && setFailed(true));
     encore.extras(id, type).then((e) => live && setExtras(e));
     return () => { live = false; };
@@ -74,6 +75,21 @@ export function TitlePage({ type, id }: { type: string; id: string }) {
     return () => removeEventListener("scroll", onScroll);
   }, []);
 
+  // Opened for one episode ("Go to Episode"): bring it into view and light it up for a moment.
+  const focused = useRef<string | null>(null);
+  useEffect(() => {
+    if (!focus || !meta || focused.current === focus) return;
+    const el = document.getElementById("ep-" + focus);
+    if (!el) return;
+    focused.current = focus;
+    setTimeout(() => {
+      el.scrollIntoView({ block: "center", inline: "center", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+      el.classList.add("spot");
+      el.focus({ preventScroll: true });
+      setTimeout(() => el.classList.remove("spot"), 2400);
+    }, 350);
+  });
+
   const seasons = useMemo(() => meta ? [...new Set(episodes(meta).map((v) => v.season!))] : [], [meta]);
   const shown = useMemo(() => meta && season != null ? episodes(meta).filter((v) => v.season === season) : [], [meta, season]);
   const base = meta || { id, type, name: "" };
@@ -88,7 +104,7 @@ export function TitlePage({ type, id }: { type: string; id: string }) {
 
   return (
     <div class="page title-page">
-      <div class="backdrop"><img key={art.backdrop(withArt)} src={art.backdrop(withArt)} alt="" onLoad={(e) => (e.target as HTMLImageElement).classList.add("in")} /></div>
+      <Backdrop src={meta || extras ? art.backdrop(withArt) : undefined} />
       <div class="shade" style={{ opacity: shade }} />
       <button class="back glass" aria-label="Back" onClick={() => back()}><Left /></button>
 
@@ -131,7 +147,7 @@ export function TitlePage({ type, id }: { type: string; id: string }) {
                   const length = (number != null && runtimes[number]) || showRuntime;
                   const upcoming = v.released ? new Date(v.released).getTime() > Date.now() : false;
                   return (
-                    <button key={v.id} class="episode" disabled={upcoming} onClick={() => go(`/watch/${type}/${encodeURIComponent(id)}?v=${encodeURIComponent(v.id)}`)}>
+                    <button key={v.id} id={"ep-" + v.id} class="episode" disabled={upcoming} onClick={() => go(`/watch/${type}/${encodeURIComponent(id)}?v=${encodeURIComponent(v.id)}`)}>
                       <div class="art-wrap" style={{ position: "relative" }}>
                         <Art src={v.thumbnail || art.wide(withArt)} fallback={videoTitle(v)} />
                         {!upcoming && (

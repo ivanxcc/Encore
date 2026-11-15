@@ -5,10 +5,11 @@ import { load, loaded, profile, profiles, signOut as clearLibrary } from "../lib
 import { HomePage } from "./home";
 import { TitlePage } from "./detail";
 import { ListPage, SearchPage } from "./browse";
+import { SettingsPage } from "./settings";
 import { LinkRelay, SignIn, WhoIsWatching } from "./gates";
 import { Player } from "./player";
-import { Avatar, Link } from "./shared";
-import { Exit, Home, Search, Stack, Swap } from "./icons";
+import { Avatar, Link, MenuHost } from "./shared";
+import { Exit, Gear, Home, Search, Stack, Swap } from "./icons";
 
 function Nav() {
   const [menu, setMenu] = useState<{ right: number } | null>(null);
@@ -38,6 +39,7 @@ function Nav() {
               <Avatar profile={me} /><span>{me.name}<small>{auth.value?.email}</small></span>
             </button>
             <hr />
+            <button role="menuitem" onClick={() => { setMenu(null); go("/settings"); }}><Gear />Settings</button>
             {profiles.value.length > 1 && <button role="menuitem" onClick={() => { setMenu(null); profileId.value = null; }}><Swap />Switch Profile</button>}
             <button role="menuitem" onClick={() => { setMenu(null); auth.value = null; }}><Exit />Sign Out</button>
           </div>
@@ -107,9 +109,10 @@ export function App() {
     return <Player key="player" type={parts[1]} id={parts[2]} videoId={new URLSearchParams(query || "").get("v") || undefined} />;
   }
   let page;
-  if (parts[0] === "title" && parts[1] && parts[2]) page = <TitlePage key={parts[2]} type={parts[1]} id={parts[2]} />;
+  if (parts[0] === "title" && parts[1] && parts[2]) page = <TitlePage key={parts[2]} type={parts[1]} id={parts[2]} focus={new URLSearchParams(query || "").get("v") || undefined} />;
   else if (parts[0] === "search") page = <SearchPage />;
   else if (parts[0] === "list") page = <ListPage />;
+  else if (parts[0] === "settings") page = <SettingsPage />;
   else { page = <HomePage />; if (parts.length) queueMicrotask(() => go("/", { replace: true })); }
-  return <>{parts[0] !== "title" && <Nav />}{page}</>;
+  return <>{parts[0] !== "title" && <Nav />}{page}<MenuHost /></>;
 }

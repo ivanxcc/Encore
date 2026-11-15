@@ -184,6 +184,21 @@ export function recordProgress(meta: Meta, video: Video | undefined, position: n
   }
 }
 
+/** Mark a film or episode watched, as finishing it would: an episode lines up the next one. */
+export function markWatched(meta: Meta, video: Video | undefined, next?: Video) {
+  recordProgress(meta, video, 1, 1, next);
+  flush();
+}
+
+/** Take a title out of Continue Watching without touching My List (as the apps do). */
+export function dismiss(target: LibraryItem) {
+  change({ id: target._id, type: target.type, name: target.name, poster: target.poster }, (i) => {
+    i.state.timeOffset = 0;
+    if (i.temp) i.removed = true;
+  });
+  flush();
+}
+
 export function setInList(meta: Meta, inList: boolean) {
   change(meta, (i) => {
     i.temp = !inList;

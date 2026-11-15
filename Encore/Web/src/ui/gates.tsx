@@ -1,25 +1,25 @@
 // What stands between opening the site and Home: signing in, linking this relay, choosing who's watching.
 import { useEffect, useRef, useState } from "preact/hooks";
 import qrcode from "qrcode-generator";
-import { auth, profileId } from "../lib/core";
+import { auth, pendingInvite, profileId } from "../lib/core";
 import { encore, NeedsCode, relayAuth, signIn, type Profile } from "../lib/api";
 import { pinMatches, profiles } from "../lib/library";
 import { Avatar } from "./shared";
 import { Lock } from "./icons";
 
-function QR({ text }: { text: string }) {
+export function QR({ text, label }: { text: string; label?: string }) {
   const qr = qrcode(0, "M");
   qr.addData(text);
   qr.make();
   const n = qr.getModuleCount();
   let d = "";
   for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) if (qr.isDark(r, c)) d += `M${c} ${r}h1v1h-1z`;
-  return <svg viewBox={`0 0 ${n} ${n}`} shape-rendering="crispEdges" role="img" aria-label="QR code to sign in with your iPhone"><path d={d} fill="#000" /></svg>;
+  return <svg viewBox={`0 0 ${n} ${n}`} shape-rendering="crispEdges" role="img" aria-label={label || "QR code to sign in with your iPhone"}><path d={d} fill="#000" /></svg>;
 }
 
 export function SignIn() {
   const [code, setCode] = useState<string | null>(null);
-  const [useEmail, setUseEmail] = useState(!encore.available());
+  const [useEmail, setUseEmail] = useState(!!pendingInvite.value || !encore.available());
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const email = useRef<HTMLInputElement>(null), password = useRef<HTMLInputElement>(null);
@@ -61,8 +61,11 @@ export function SignIn() {
     <div class="stage">
       {useEmail ? (
         <div style={{ width: "min(24rem, 100%)" }}>
+          {pendingInvite.value && <p class="invited">You're invited to watch on this Encore server.</p>}
           <h1 style={{ fontSize: "2.2rem", fontWeight: 800, letterSpacing: "-0.03em" }}>Sign In to Encore</h1>
-          <p class="quiet" style={{ marginTop: "0.6rem" }}>With the Stremio account you use in Encore. Your password goes only to Stremio.</p>
+          <p class="quiet" style={{ marginTop: "0.6rem" }}>{pendingInvite.value
+            ? "Sign in with your Stremio account. Your library, add-ons, and progress come with it. Your password goes only to Stremio."
+            : "With the Stremio account you use in Encore. Your password goes only to Stremio."}</p>
           <form class="form" onSubmit={submit}>
             <input ref={email} class="field" type="email" placeholder="Email" autocomplete="username" autocapitalize="off" spellcheck={false} required />
             <input ref={password} class="field" type="password" placeholder="Password" autocomplete="current-password" required />
@@ -109,7 +112,7 @@ export function LinkRelay({ onLinked }: { onLinked: () => void }) {
     <div class="stage">
       <div style={{ width: "min(26rem, 100%)" }}>
         <h1 style={{ fontSize: "2.2rem", fontWeight: 800, letterSpacing: "-0.03em" }}>Link This Server</h1>
-        <p class="quiet" style={{ marginTop: "0.6rem" }}>Enter the code your Encore server's installer printed. It's asked once per account; your other devices won't need it.</p>
+        <p class="quiet" style={{ marginTop: "0.6rem" }}>Enter the code your Encore server's installer printed, or open an invitation link from someone who uses this server. It's asked once per account; your other devices won't need it.</p>
         <form class="form" onSubmit={submit}>
           <input ref={code} class="field code" style={{ fontSize: "1.5rem", height: "3.8rem", textAlign: "center" }} placeholder="ABCD-EFGH" autocapitalize="characters" autocomplete="off" spellcheck={false} required />
           {error && <p class="error">{error}</p>}

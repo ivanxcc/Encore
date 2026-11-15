@@ -1,7 +1,7 @@
 // The player: Encore's own controls over one long-lived <video>. Sources are prepared before this
 // screen opens (see lib/play.ts), so its work is to attach, start, and stay out of the way.
 import { useEffect, useRef, useState } from "preact/hooks";
-import { back, clock, go } from "../lib/core";
+import { back, clock, go, prefs } from "../lib/core";
 import { art, encore, meta as loadMeta, NeedsCode, type Meta, type Video } from "../lib/api";
 import { flush, recordProgress } from "../lib/library";
 import { prepare, used, useNativeHls, type Prepared } from "../lib/play";
@@ -201,9 +201,19 @@ export function Player({ type, id, videoId }: { type: string; id: string; videoI
   // Up Next begins with the closing credits, else in the last 25 seconds.
   const atEnd = !!next && duration >= 300 && (closing || (duration - time < 25 && time / duration > 0.8));
   useEffect(() => {
-    if (!atEnd || declined || count != null || phase !== "playing") return;
+    if (!atEnd || declined || count != null || phase !== "playing" || !prefs.value.autoplayNext) return;
     setCount(15);
   }, [atEnd, declined, phase]);
+  // Settings › Skip Intros and Recaps: done by itself, with a word on screen to say so.
+  const [skippedNote, setSkippedNote] = useState<string | null>(null);
+  useEffect(() => {
+    if (!segment || closing || !prefs.value.skipIntros || phase !== "playing") return;
+    video.currentTime = segment.end;
+    setSkipped((s) => [...s, active]);
+    setSkippedNote(segment.kind === "recap" ? "Skipped Recap" : "Skipped Intro");
+    const t = setTimeout(() => setSkippedNote(null), 2600);
+    return () => clearTimeout(t);
+  }, [active, phase]);
   useEffect(() => {
     if (count == null) return;
     if (count <= 0) { playNext(); return; }
@@ -363,7 +373,8 @@ export function Player({ type, id, videoId }: { type: string; id: string; videoI
               <button class="pill primary count" style={{ "--count": "15s" }} onClick={playNext}><span><Next />Next Episode in {count}</span></button>
             </>
           )}
-          {count == null && next && (declined || (closing && atEnd)) && <button class="pill primary" onClick={playNext}><Next />Next Episode</button>}
+          {skippedNote && <span class="note glass">{skippedNote}</span>}
+          {count == null && next && (declined || (closing && atEnd) || (atEnd && !prefs.value.autoplayNext)) && <button class="pill primary" onClick={playNext}><Next />Next Episode</button>}
         </div>
       )}
 
