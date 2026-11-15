@@ -31,10 +31,16 @@ this frame by frame.
 ## API
 
 ```
-POST   /v1/session            {url, headers?, start?, audio?, language?, caps: {video: [...], audio: [...]}}
+GET    /                      the web app (Encore/Web), built into the relay
+GET    /config.json           where the web app finds Encore Cloud
+POST   /v1/auth               {authKey, code?}  -> a 7-day token for a signed-in Stremio account. The
+                              account is linked once with the relay code; after that, signing in is enough
+POST   /v1/session            {url, headers?, start?, audio?, language?,
+                               caps: {video: [...], audio: [...], stream?: [...]}}
                               Authorization: Bearer <token>     -> a decision (see above), with the playlist path
 GET    /v1/s/{id}/index.m3u8  the complete VOD playlist
-GET    /v1/s/{id}/seg/{n}.ts  a segment (Server-Timing says how long it took to prepare)
+GET    /v1/s/{id}/seg/{n}.ts  a segment, sent while it is being made (Server-Timing says how long the
+                              first bytes took)
 DELETE /v1/s/{id}             close a stream early (idle streams close after 15 minutes)
 POST   /v1/speed              {url, headers?}  -> the relay's own link to that source: first byte time,
                               one connection's throughput, and six connections'
@@ -42,7 +48,12 @@ GET    /v1/stats              counters (token required)
 GET    /lab                   the lab page: time real titles on any device
 ```
 
-Access is by signed, expiring tokens (`encore-relay token`); stream ids are unguessable. The relay
+`caps.audio` is what the browser plays from a file; `caps.stream` is what it plays inside HLS, when
+that is narrower (a script-driven player takes only AAC).
+
+Access is by signed, expiring tokens (`encore-relay token`, or `/v1/auth`); stream ids are unguessable.
+Linked accounts and file indexes are remembered in `RELAY_DATA` (the installer sets it up), so a title
+played before skips the index read. The relay
 refuses to fetch private, loopback, and link-local addresses, checked at connection time so redirects
 and DNS tricks are covered. It keeps no logs of what is played.
 
@@ -77,6 +88,7 @@ docker exec encore-relay encore-relay bench -url 'https://…/file.mkv'
 ## Develop
 
 ```sh
+(cd ../Web && npm ci && npm run build && cp -r dist/. ../Relay/cmd/encore-relay/web/)   # the web app
 go test ./...                       # needs ffmpeg; makes its own sample files
 RELAY_SECRET=$(openssl rand -hex 24) RELAY_LAB_CODE=TEST-CODE RELAY_ALLOW_PRIVATE=1 go run ./cmd/encore-relay serve
 ```
@@ -89,4 +101,3 @@ RELAY_SECRET=$(openssl rand -hex 24) RELAY_LAB_CODE=TEST-CODE RELAY_ALLOW_PRIVAT
 - Converting video (HEVC, AV1, HDR) on a machine with a hardware encoder, as a last resort.
 - HEVC and Dolby audio passed through untouched to Safari (needs fMP4 segments).
 - Subtitle tracks from the file as WebVTT; scrub-bar thumbnails.
-- Sending a segment to the browser while it is still being made.

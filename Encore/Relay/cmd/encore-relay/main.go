@@ -62,6 +62,7 @@ func serve(args []string) {
 		AllowPrivate: os.Getenv("RELAY_ALLOW_PRIVATE") == "1",
 		FFmpeg:       env("RELAY_FFMPEG", "ffmpeg"),
 		FFprobe:      env("RELAY_FFPROBE", "ffprobe"),
+		DataDir:      os.Getenv("RELAY_DATA"),
 	}
 	if len(cfg.Secret) < 24 {
 		log.Fatal("RELAY_SECRET must be set to at least 24 random characters")

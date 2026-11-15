@@ -22,7 +22,13 @@ type HTTP struct {
 	headers map[string]string
 	Size    int64
 	Type    string
+	// Head is the start of the file, fetched by the request that opened it: enough for most files'
+	// headers, so understanding a file usually costs no further round trip before its index.
+	Head []byte
 }
+
+// HeadSize is how much of the file Open reads.
+const HeadSize = 256 << 10
 
 var ErrBlocked = errors.New("that address is not allowed")
 
@@ -60,23 +66,25 @@ func Open(ctx context.Context, raw string, headers map[string]string, allowPriva
 		DisableCompression:    true,
 	}
 	s := &HTTP{client: &http.Client{Transport: transport}, url: raw, headers: headers}
-	resp, err := s.get(ctx, 0, 0)
+	resp, err := s.get(ctx, 0, HeadSize-1)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	io.Copy(io.Discard, io.LimitReader(resp.Body, 16))
 	s.url = resp.Request.URL.String()
 	s.Type = resp.Header.Get("Content-Type")
 	if resp.StatusCode != http.StatusPartialContent {
 		return nil, fmt.Errorf("the source does not support seeking (HTTP %d)", resp.StatusCode)
 	}
-	// "bytes 0-0/12345"
+	// "bytes 0-262143/12345678"
 	if i := strings.LastIndex(resp.Header.Get("Content-Range"), "/"); i >= 0 {
 		s.Size, _ = strconv.ParseInt(resp.Header.Get("Content-Range")[i+1:], 10, 64)
 	}
 	if s.Size <= 0 {
 		return nil, errors.New("the source did not say how large it is")
+	}
+	if s.Head, err = io.ReadAll(io.LimitReader(resp.Body, HeadSize)); err != nil {
+		return nil, err
 	}
 	return s, nil
 }
@@ -105,6 +113,12 @@ func (s *HTTP) get(ctx context.Context, from, to int64) (*http.Response, error) 
 func (s *HTTP) ReadAt(ctx context.Context, off int64, n int) ([]byte, error) {
 	if off >= s.Size {
 		return nil, nil
+	}
+	if off+int64(n) <= int64(len(s.Head)) {
+		return s.Head[off : off+int64(n)], nil
+	}
+	if int64(len(s.Head)) >= s.Size && off < s.Size {
+		return s.Head[off:], nil // the whole file is in hand
 	}
 	end := off + int64(n) - 1
 	if end >= s.Size {

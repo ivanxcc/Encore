@@ -1,14 +1,14 @@
 name: Encore Relay
 
-# Tests the relay (Encore/Relay) and publishes its Linux binaries and installer to the rolling
+# Builds the web app (Encore/Web) into the relay, tests the relay (Encore/Relay), and publishes its Linux binaries and installer to the rolling
 # `relay-latest` pre-release, which deploy/install.sh downloads from. Linux runners only: cheap.
 
 on:
   push:
     branches: [beta]
-    paths: ["Encore/Relay/**", ".github/workflows/encore-relay.yml"]
+    paths: ["Encore/Relay/**", "Encore/Web/**", ".github/workflows/encore-relay.yml"]
   pull_request:
-    paths: ["Encore/Relay/**", ".github/workflows/encore-relay.yml"]
+    paths: ["Encore/Relay/**", "Encore/Web/**", ".github/workflows/encore-relay.yml"]
   workflow_dispatch:
 
 permissions:
@@ -28,6 +28,16 @@ jobs:
         with:
           go-version: "1.24"
           cache: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Build the web app into the relay
+        working-directory: Encore/Web
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+          cp -r dist/. ../Relay/cmd/encore-relay/web/
+          test -f ../Relay/cmd/encore-relay/web/index.html
       - name: Install ffmpeg
         run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
       - name: Test

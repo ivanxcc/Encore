@@ -120,7 +120,7 @@ RUN apk add --no-cache ffmpeg ca-certificates
 ADD https://github.com/$REPO/releases/download/relay-latest/encore-relay-linux-$ARCH /usr/local/bin/encore-relay
 RUN chmod 755 /usr/local/bin/encore-relay && adduser -D -H relay
 USER relay
-ENV RELAY_ADDR=0.0.0.0:8089 RELAY_CACHE=/cache
+ENV RELAY_ADDR=0.0.0.0:8089 RELAY_CACHE=/cache RELAY_DATA=/data
 ENTRYPOINT ["encore-relay", "serve"]
 EOF
   {
@@ -133,6 +133,7 @@ EOF
     echo "    restart: unless-stopped"
     echo "    env_file: relay.env"
     echo "    tmpfs: [\"/cache:size=3g,uid=1000\"]"
+    echo "    volumes: [\"./data:/data\"]"
     echo "    mem_limit: 4g"
     echo "    healthcheck:"
     echo "      test: [\"CMD\", \"wget\", \"-qO-\", \"http://127.0.0.1:8089/healthz\"]"
@@ -147,6 +148,12 @@ EOF
       echo "    ports: [\"127.0.0.1:8089:8089\"]"
     fi
   } > "$DIR/compose.yaml"
+
+  # What the relay remembers (linked accounts, file indexes), kept across updates. The container's
+  # user is uid 1000.
+  mkdir -p "$DIR/data"
+  chown 1000:1000 "$DIR/data"
+  chmod 700 "$DIR/data"
 
   cd "$DIR"
   # A newer base image when Docker Hub answers; the one already here when it's busy.
@@ -183,7 +190,10 @@ User=encore-relay
 EnvironmentFile=$ENV
 Environment=RELAY_ADDR=127.0.0.1:8089
 Environment=RELAY_CACHE=/var/cache/encore-relay
+Environment=RELAY_DATA=/var/lib/encore-relay
 CacheDirectory=encore-relay
+StateDirectory=encore-relay
+StateDirectoryMode=0700
 ExecStart=$DIR/encore-relay serve
 Restart=always
 RestartSec=2
@@ -260,14 +270,14 @@ reachable until you publish it. In the Pangolin dashboard:
   4. In the resource's Authentication tab, turn authentication off. The relay checks its own
      tokens, and the video player can't sign in to Pangolin.
 
-Then open  https://<that address>/lab  on the Tesla.
+Then open  https://<that address>  in any browser, and sign in to Encore.
 EOF
       ;;
     docker-local)
-      echo "It listens on 127.0.0.1:8089. Point your reverse proxy at it, then open https://<address>/lab."
+      echo "It listens on 127.0.0.1:8089. Point your reverse proxy at it, then open https://<address> and sign in to Encore."
       ;;
     caddy)
-      echo "  Lab page   https://$(cat "$DIR/host")/lab"
+      echo "  Encore     https://$(cat "$DIR/host")"
       echo
       echo "If it doesn't open from another device, allow TCP ports 80 and 443 in the Oracle console:"
       echo "Networking > Virtual Cloud Networks > your network > Security Lists > Add Ingress Rules."
@@ -275,7 +285,10 @@ EOF
   esac
   cat <<EOF
 
-  Lab code   $code
+  Relay code   $code
+
+The first time you sign in to Encore on this address it asks for the relay code, once per Stremio
+account. After that, signing in is all any device needs. (The test page is still at /lab.)
 
 Status:     curl -fsSL https://github.com/$REPO/releases/download/relay-latest/install.sh | sudo bash -s status
 Update:     run the install command again
@@ -295,7 +308,7 @@ status() {
     echo "Encore Relay isn't installed."
     return
   fi
-  echo "Lab code: $(sed -n 's/^RELAY_LAB_CODE=//p' "$ENV" 2>/dev/null)"
+  echo "Relay code: $(sed -n 's/^RELAY_LAB_CODE=//p' "$ENV" 2>/dev/null)"
 }
 
 uninstall() {
@@ -312,7 +325,7 @@ uninstall() {
     fi
   fi
   id encore-relay >/dev/null 2>&1 && userdel encore-relay 2>/dev/null || true
-  rm -rf "$DIR"
+  rm -rf "$DIR" /var/lib/encore-relay
   echo "Encore Relay is uninstalled. Nothing else on this server was changed."
 }
 

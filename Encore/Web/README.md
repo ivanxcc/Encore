@@ -57,9 +57,10 @@ Video never passes through Cloudflare.
 ## Phases
 
 1. **Prove it**: relay + lab page on the server. *(done: see Measured; the Tesla run is still to come)*
-2. **Relay, complete**: subtitles as WebVTT, audio track switching, segments streamed while being
-   made, tokens minted by Encore Cloud.
-3. **The web app**: browse, title pages, player, sign-in, sync.
+2. **Relay, complete**: segments streamed while being made and remembered indexes *(done)*; tokens
+   from a Stremio sign-in *(done, by the relay itself)*; subtitles as WebVTT and audio track
+   switching *(to do)*.
+3. **The web app**: browse, title pages, player, sign-in, sync. *(first version done: see below)*
 4. **Conversion fallback** on the home server; HEVC and Dolby passthrough for Safari.
 5. **Polish**: scrub thumbnails, source-level quality adaptation, PWA install.
 
@@ -89,11 +90,33 @@ What the rounds established:
 - **Ranking**: prefer H.264, AAC, and about 8 Mbps or less; add-on text needs Unicode folding (NFKC)
   to read their styled numbers.
 
-## Next relay work (before or alongside the app)
+## The first version of the app
+
+Preact + signals + TypeScript, built by Vite (`npm run build`; about 36 KB compressed, plus hls.js
+loaded only where the browser needs it). CI builds it into the relay, which serves it at `/`, so one
+address and one container are the whole product.
+
+- Sign in by QR, by code, or with email and password; the relay code is asked for once per account.
+- Who's watching, with PINs; Home with a featured carousel, Continue Watching (with Up Next), and the
+  account's catalog rows; title pages with seasons, episode status, cast; search as you type; My List.
+- Player: resume, scrubbing, Skip Intro and Recap, Up Next with Watch Credits, keyboard shortcuts,
+  Media Session, Picture in Picture, AirPlay, wake lock, a stats overlay (press S).
+- Sources are found, ranked, and opened on the relay as soon as a title page opens, and the next
+  episode at 85%, so Play has nothing left to wait for.
+- Progress goes where the apps read it: the Stremio library for the owner profile, the household
+  document (one item, with a version check) for the others.
+
+Not yet: subtitles, audio-track choice, conversion for HEVC/HDR-only titles, scrub thumbnails, an
+offline shell. Checked so far in headless Chromium at desktop, phone, and Tesla sizes against a test
+relay; real-device passes on Safari and the Tesla browser are still to come.
+
+Develop: `npm run dev` with a relay on `127.0.0.1:8089` (see `vite.config.ts`).
+
+## Relay work (done)
 
 1. **Serve a segment while it's being made** (chunked response that follows the growing part file):
    expected to cut about a second from every seek and from the first frame.
-2. **Remember each file's index** (keyed by the source URL without its token): repeat plays skip the
+2. **Remember each file's index** (keyed by its size and a hash of its first bytes, so a fresh link to the same file still matches): repeat plays skip the
    index read (0.6–4.4 s measured).
 3. **Prepare from the title page**: resolve sources and open a relay session at the resume point as
    soon as a title page opens; near the end of an episode, prepare the next.

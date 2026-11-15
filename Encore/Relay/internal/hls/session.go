@@ -58,6 +58,7 @@ type Session struct {
 	mu       sync.Mutex
 	notify   chan struct{}
 	done     map[int]bool
+	live     map[int]*live // segments being written right now
 	runs     []*run
 	playhead int
 	lastUse  time.Time
@@ -74,6 +75,101 @@ type run struct {
 	// The segment that was being written when ffmpeg's output ended.
 	lastPart  string
 	lastIndex int
+	lastLive  *live
+}
+
+// live is a segment while it is being written. Readers follow it as it grows, so a player receives
+// the start of a segment while the rest is still being made.
+type live struct {
+	path  string
+	mu    sync.Mutex
+	size  int64
+	state int // 0 writing, 1 complete, 2 abandoned
+	pulse chan struct{}
+}
+
+func (l *live) advance(n int) {
+	l.mu.Lock()
+	l.size += int64(n)
+	close(l.pulse)
+	l.pulse = make(chan struct{})
+	l.mu.Unlock()
+}
+
+func (l *live) finish(complete bool) {
+	l.mu.Lock()
+	if l.state == 0 {
+		if complete {
+			l.state = 1
+		} else {
+			l.state = 2
+		}
+		close(l.pulse)
+		l.pulse = make(chan struct{})
+	}
+	l.mu.Unlock()
+}
+
+type liveWriter struct {
+	f *os.File
+	l *live
+}
+
+func (w liveWriter) Write(p []byte) (int, error) {
+	n, err := w.f.Write(p)
+	if n > 0 {
+		w.l.advance(n)
+	}
+	return n, err
+}
+
+// ErrAbandoned: the segment a reader was following will not be finished (the viewer seeked away).
+var ErrAbandoned = errors.New("the segment was abandoned")
+
+// follower reads a live segment from its start, waiting for more as it is written.
+type follower struct {
+	ctx context.Context
+	f   *os.File
+	l   *live
+	off int64
+}
+
+func (r *follower) Read(p []byte) (int, error) {
+	for {
+		n, err := r.f.Read(p)
+		if n > 0 {
+			r.off += int64(n)
+			return n, nil
+		}
+		if err != nil && err != io.EOF {
+			return 0, err
+		}
+		r.l.mu.Lock()
+		state, size, pulse := r.l.state, r.l.size, r.l.pulse
+		r.l.mu.Unlock()
+		if r.off < size {
+			continue // written since the read
+		}
+		switch state {
+		case 1:
+			return 0, io.EOF
+		case 2:
+			return 0, ErrAbandoned
+		}
+		select {
+		case <-pulse:
+		case <-r.ctx.Done():
+			return 0, r.ctx.Err()
+		}
+	}
+}
+
+func (r *follower) Close() error { return r.f.Close() }
+
+// Reader is a segment to send: a finished file (Path), or one still being written (Live).
+type Reader struct {
+	Path string
+	Live io.ReadCloser
 }
 
 func NewSession(id string, f *mkv.File, src Source, audio Audio, dir, ffmpeg string) (*Session, error) {
@@ -85,7 +181,7 @@ func NewSession(id string, f *mkv.File, src Source, audio Audio, dir, ffmpeg str
 		return nil, err
 	}
 	return &Session{ID: id, Plan: plan, File: f, audio: audio, src: src, dir: dir, ffmpeg: ffmpeg,
-		created: time.Now(), notify: make(chan struct{}), done: map[int]bool{}, lastUse: time.Now()}, nil
+		created: time.Now(), notify: make(chan struct{}), done: map[int]bool{}, live: map[int]*live{}, lastUse: time.Now()}, nil
 }
 
 func (s *Session) path(n int) string { return filepath.Join(s.dir, fmt.Sprintf("seg-%05d.ts", n)) }
@@ -125,13 +221,14 @@ func (s *Session) Warm(n int) {
 	}
 }
 
-// Segment returns the file holding segment n, making it if needed, and how long that took.
-func (s *Session) Segment(ctx context.Context, n int) (string, time.Duration, error) {
+// Open returns segment n as soon as its first bytes exist, making it if needed, and how long that
+// took. A segment still being written is followed as it grows.
+func (s *Session) Open(ctx context.Context, n int) (*Reader, time.Duration, error) {
 	if n < 0 || n >= s.Plan.Count() {
-		return "", 0, os.ErrNotExist
+		return nil, 0, os.ErrNotExist
 	}
 	began := time.Now()
-	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	wait, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -141,19 +238,43 @@ func (s *Session) Segment(ctx context.Context, n int) (string, time.Duration, er
 	starts := 0
 	for {
 		if s.closed {
-			return "", 0, errors.New("the stream was closed")
+			return nil, 0, errors.New("the stream was closed")
 		}
 		if s.done[n] {
-			return s.path(n), time.Since(began), nil
+			return &Reader{Path: s.path(n)}, time.Since(began), nil
+		}
+		if l := s.live[n]; l != nil {
+			if f, err := os.Open(l.path); err == nil {
+				return &Reader{Live: &follower{ctx: ctx, f: f, l: l}}, time.Since(began), nil
+			}
 		}
 		if s.runFor(n) == nil {
 			if starts >= 3 {
-				return "", 0, fmt.Errorf("the stream could not be prepared: %w", s.lastError())
+				return nil, 0, fmt.Errorf("the stream could not be prepared: %w", s.lastError())
 			}
 			starts++
 			s.startRun(n)
 		}
-		if err := s.wait(ctx, 5*time.Second); err != nil {
+		if err := s.wait(wait, 5*time.Second); err != nil {
+			return nil, 0, err
+		}
+	}
+}
+
+// Segment returns the finished file holding segment n, and how long it took to finish.
+func (s *Session) Segment(ctx context.Context, n int) (string, time.Duration, error) {
+	began := time.Now()
+	for attempt := 0; ; attempt++ {
+		r, _, err := s.Open(ctx, n)
+		if err != nil {
+			return "", 0, err
+		}
+		if r.Live == nil {
+			return r.Path, time.Since(began), nil
+		}
+		_, err = io.Copy(io.Discard, r.Live)
+		r.Live.Close()
+		if err != nil && (err != ErrAbandoned || attempt >= 3) {
 			return "", 0, err
 		}
 	}
@@ -253,6 +374,9 @@ func (s *Session) remux(ctx context.Context, r *run, began time.Time) error {
 		r.cancel()
 	}
 	waitErr := cmd.Wait()
+	// The file ended cleanly: whatever was being written is the last segment, complete.
+	ended := splitErr == nil && waitErr == nil && <-reachedEnd
+	s.finishLast(r, ended)
 	if splitErr == errStop {
 		return nil
 	}
@@ -261,10 +385,6 @@ func (s *Session) remux(ctx context.Context, r *run, began time.Time) error {
 	}
 	if waitErr != nil {
 		return fmt.Errorf("ffmpeg: %v: %s", waitErr, bytes.TrimSpace(stderr.Bytes()))
-	}
-	// The file ended cleanly: whatever was being written is the last segment, complete.
-	if ok := <-reachedEnd; ok {
-		s.finishLast(r)
 	}
 	return nil
 }
@@ -279,6 +399,7 @@ func (s *Session) split(ctx context.Context, r *run, stdout io.Reader, began tim
 	var pending [][]byte
 	var out *bufio.Writer
 	var file *os.File
+	var lv *live
 	cur := -1
 	audioStarted := false
 	first := true
@@ -291,20 +412,29 @@ func (s *Session) split(ctx context.Context, r *run, stdout io.Reader, began tim
 		if cerr := file.Close(); err == nil {
 			err = cerr
 		}
-		part := file.Name()
-		file, out = nil, nil
-		if !complete || err != nil {
+		part, l := file.Name(), lv
+		file, out, lv = nil, nil, nil
+		complete = complete && err == nil
+		if complete {
+			if err = os.Rename(part, s.path(cur)); err != nil {
+				complete = false
+			}
+		}
+		s.mu.Lock()
+		if s.live[cur] == l {
+			delete(s.live, cur)
+		}
+		if complete {
+			s.done[cur] = true
+			s.evict()
+		}
+		s.broadcast()
+		s.mu.Unlock()
+		l.finish(complete)
+		if !complete {
 			os.Remove(part)
 			return err
 		}
-		if err := os.Rename(part, s.path(cur)); err != nil {
-			return err
-		}
-		s.mu.Lock()
-		s.done[cur] = true
-		s.evict()
-		s.broadcast()
-		s.mu.Unlock()
 		if first {
 			first = false
 			if s.onReady != nil {
@@ -320,10 +450,10 @@ func (s *Session) split(ctx context.Context, r *run, stdout io.Reader, began tim
 			if err == io.EOF || err == io.ErrUnexpectedEOF {
 				// Left for remux to decide whether the file really ended here.
 				if file != nil {
-					r.lastPart, r.lastIndex = file.Name(), cur
+					r.lastPart, r.lastIndex, r.lastLive = file.Name(), cur, lv
 					out.Flush()
 					file.Close()
-					file, out = nil, nil
+					file, out, lv = nil, nil, nil
 				}
 				return nil
 			}
@@ -366,7 +496,12 @@ func (s *Session) split(ctx context.Context, r *run, stdout io.Reader, began tim
 					if err != nil {
 						return err
 					}
-					file, out = f, bufio.NewWriterSize(f, 256<<10)
+					lv = &live{path: f.Name(), pulse: make(chan struct{})}
+					file, out = f, bufio.NewWriterSize(liveWriter{f, lv}, 32<<10)
+					s.mu.Lock()
+					s.live[idx] = lv
+					s.broadcast()
+					s.mu.Unlock()
 					audioStarted = false
 					// Every segment opens with the tables, so it plays on its own.
 					if len(pending) == 0 && pat != nil && pmt != nil {
@@ -422,17 +557,27 @@ func (s *Session) admit(ctx context.Context, r *run, idx int) (bool, error) {
 	}
 }
 
-func (s *Session) finishLast(r *run) {
+// finishLast settles the segment that was being written when ffmpeg's output ended.
+func (s *Session) finishLast(r *run, complete bool) {
 	if r.lastPart == "" {
 		return
 	}
-	if err := os.Rename(r.lastPart, s.path(r.lastIndex)); err != nil {
-		return
+	if complete && os.Rename(r.lastPart, s.path(r.lastIndex)) != nil {
+		complete = false
 	}
 	s.mu.Lock()
-	s.done[r.lastIndex] = true
+	if s.live[r.lastIndex] == r.lastLive {
+		delete(s.live, r.lastIndex)
+	}
+	if complete {
+		s.done[r.lastIndex] = true
+	}
 	s.broadcast()
 	s.mu.Unlock()
+	r.lastLive.finish(complete)
+	if !complete {
+		os.Remove(r.lastPart)
+	}
 	r.lastPart = ""
 }
 

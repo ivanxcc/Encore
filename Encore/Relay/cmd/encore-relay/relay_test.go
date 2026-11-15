@@ -134,3 +134,87 @@ func TestTheAPIEndToEnd(t *testing.T) {
 		t.Fatal("the lab page is missing")
 	}
 }
+
+// An account is linked once with the relay's code; after that its sign-in alone gets tokens. Other
+// accounts get nothing without the code.
+func TestAccountLinking(t *testing.T) {
+	stremio := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct{ AuthKey string }
+		json.NewDecoder(r.Body).Decode(&body)
+		switch body.AuthKey {
+		case "key-ivan":
+			w.Write([]byte(`{"result":{"_id":"1","email":"Ivan@Example.com"}}`))
+		case "key-other":
+			w.Write([]byte(`{"result":{"_id":"2","email":"other@example.com"}}`))
+		default:
+			w.Write([]byte(`{"error":{"message":"Session does not exist"}}`))
+		}
+	}))
+	defer stremio.Close()
+	data := t.TempDir()
+	cfg := Config{Secret: secret, LabCode: "K7QM-2XPD", CacheDir: t.TempDir(), DataDir: data, StremioAPI: stremio.URL, FFmpeg: "ffmpeg"}
+	relay := NewRelay(cfg)
+	h := relay.Handler()
+
+	if code, body := post(t, h, "/v1/auth", "", map[string]string{"authKey": "key-ivan"}); code != 403 || body["needsCode"] != true {
+		t.Fatalf("an unlinked account: %d %v", code, body)
+	}
+	if code, _ := post(t, h, "/v1/auth", "", map[string]string{"authKey": "key-ivan", "code": "WRONG-ONE"}); code != 403 {
+		t.Fatalf("a wrong code: %d", code)
+	}
+	code, body := post(t, h, "/v1/auth", "", map[string]string{"authKey": "key-ivan", "code": "k7qm2xpd"})
+	token, _ := body["token"].(string)
+	if code != 200 || !verifyToken(secret, token, time.Now()) || body["email"] != "ivan@example.com" {
+		t.Fatalf("linking: %d %v", code, body)
+	}
+	// Linked: no code needed again, on this relay or after a restart.
+	if code, _ := post(t, h, "/v1/auth", "", map[string]string{"authKey": "key-ivan"}); code != 200 {
+		t.Fatalf("a linked account: %d", code)
+	}
+	relay.Close()
+	restarted := NewRelay(cfg)
+	defer restarted.Close()
+	h = restarted.Handler()
+	if code, _ := post(t, h, "/v1/auth", "", map[string]string{"authKey": "key-ivan"}); code != 200 {
+		t.Fatalf("after a restart: %d", code)
+	}
+	if code, _ := post(t, h, "/v1/auth", "", map[string]string{"authKey": "key-other"}); code != 403 {
+		t.Fatalf("another account: %d", code)
+	}
+	if code, _ := post(t, h, "/v1/auth", "", map[string]string{"authKey": "made-up"}); code != 401 {
+		t.Fatalf("a made-up sign-in: %d", code)
+	}
+}
+
+// A file seen before is understood without reading its index again, whatever address it comes from.
+func TestIndexIsRemembered(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg not installed")
+	}
+	dir := t.TempDir()
+	if out, err := exec.Command("ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=24", "-t", "40",
+		"-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-g", "48", filepath.Join(dir, "a.mkv")).CombinedOutput(); err != nil {
+		t.Fatal(err, string(out))
+	}
+	inner := http.FileServer(http.Dir(dir))
+	files := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.URL.Path = "/a.mkv" // any address, the same file: like a debrid link with a new token each time
+		inner.ServeHTTP(w, r)
+	}))
+	defer files.Close()
+	relay := NewRelay(Config{Secret: secret, CacheDir: t.TempDir(), AllowPrivate: true, FFmpeg: "ffmpeg"})
+	defer relay.Close()
+	token := signToken(secret, "t", time.Now().Add(time.Hour))
+	h := relay.Handler()
+	_, first := post(t, h, "/v1/session", token, map[string]any{"url": files.URL + "/token-one/a.mkv"})
+	_, second := post(t, h, "/v1/session", token, map[string]any{"url": files.URL + "/token-two/a.mkv"})
+	if first["mode"] != "remux" || second["mode"] != "remux" {
+		t.Fatalf("decisions: %v / %v", first["mode"], second["mode"])
+	}
+	relay.mu.Lock()
+	recalled := relay.stats.IndexesRecalled
+	relay.mu.Unlock()
+	if recalled != 1 {
+		t.Fatalf("the index was recalled %d times, want 1", recalled)
+	}
+}

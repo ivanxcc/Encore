@@ -7,12 +7,14 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
-	_ "embed"
+	"embed"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"os"
@@ -35,6 +37,11 @@ var labPage []byte
 //go:embed hls.min.js
 var hlsScript []byte
 
+// The web app (Encore/Web), built into this folder before the relay is compiled.
+//
+//go:embed all:web
+var webFiles embed.FS
+
 type Config struct {
 	Secret       string
 	LabCode      string
@@ -43,6 +50,10 @@ type Config struct {
 	AllowPrivate bool
 	FFmpeg       string
 	FFprobe      string // unused: kept so older settings still parse
+	// DataDir keeps who may use the relay (owners.json). Empty: remembered until restart only.
+	DataDir string
+	// StremioAPI is where sign-ins are checked. Empty: api.strem.io.
+	StremioAPI string
 }
 
 type Relay struct {
@@ -50,19 +61,22 @@ type Relay struct {
 	mu       sync.Mutex
 	sessions map[string]*hls.Session
 	attempts map[string][]time.Time // lab-code guesses, per address
+	owners   map[string]bool        // Stremio accounts (by email) allowed to use this relay
+	indexes  map[string]indexed     // files already understood, by size and a hash of their first bytes
 	stats    Stats
 	stop     chan struct{}
 }
 
 type Stats struct {
-	Decisions     int     `json:"decisions"`
-	Direct        int     `json:"direct"`
-	Remux         int     `json:"remux"`
-	Unsupported   int     `json:"unsupported"`
-	Segments      int     `json:"segments"`
-	Runs          int     `json:"runs"`
-	FirstSegmentP float64 `json:"firstSegmentMsAvg"`
-	firstTotal    float64
+	Decisions       int     `json:"decisions"`
+	Direct          int     `json:"direct"`
+	Remux           int     `json:"remux"`
+	Unsupported     int     `json:"unsupported"`
+	IndexesRecalled int     `json:"indexesRecalled"`
+	Segments        int     `json:"segments"`
+	Runs            int     `json:"runs"`
+	FirstSegmentP   float64 `json:"firstSegmentMsAvg"`
+	firstTotal      float64
 }
 
 const (
@@ -71,7 +85,9 @@ const (
 )
 
 func NewRelay(cfg Config) *Relay {
-	r := &Relay{cfg: cfg, sessions: map[string]*hls.Session{}, attempts: map[string][]time.Time{}, stop: make(chan struct{})}
+	r := &Relay{cfg: cfg, sessions: map[string]*hls.Session{}, attempts: map[string][]time.Time{},
+		owners: map[string]bool{}, indexes: map[string]indexed{}, stop: make(chan struct{})}
+	r.loadOwners()
 	go r.reap()
 	return r
 }
@@ -119,6 +135,9 @@ type Request struct {
 	Caps    struct {
 		Video []string `json:"video"`
 		Audio []string `json:"audio"`
+		// Audio the browser plays inside an HLS stream, when that is narrower than what it plays from
+		// a file (a script-driven player takes only AAC). Left out, Audio stands for both.
+		Stream *[]string `json:"stream,omitempty"`
 	} `json:"caps"`
 	Start    float64 `json:"start"`    // where playback will begin, in seconds
 	Audio    *int    `json:"audio"`    // a chosen audio track
@@ -204,7 +223,7 @@ func (r *Relay) Decide(ctx context.Context, req Request) (*Decision, error) {
 	}
 	d.Timings.OpenMs = time.Since(began).Milliseconds()
 	began = time.Now()
-	file, err := mkv.Parse(ctx, src)
+	file, err := r.index(ctx, src)
 	d.Timings.IndexMs = time.Since(began).Milliseconds()
 	r.count(func(s *Stats) { s.Decisions++ })
 
@@ -254,7 +273,7 @@ func (r *Relay) Decide(ctx context.Context, req Request) (*Decision, error) {
 		choice.Index = pickAudio(audio, req)
 		name := codecName(audio[choice.Index].CodecID)
 		// AAC and MP3 play everywhere; Dolby audio passes through where the browser says it decodes it.
-		choice.Copy = name == "aac" || name == "mp3" || (name == "ac3" || name == "eac3") && has(req.Caps.Audio, name)
+		choice.Copy = name == "aac" || name == "mp3" || (name == "ac3" || name == "eac3") && has(streamAudio(req), name)
 		info := d.AudioTracks[choice.Index]
 		d.Audio, d.AudioCopied = &info, choice.Copy
 	}
@@ -283,6 +302,50 @@ func (r *Relay) Decide(ctx context.Context, req Request) (*Decision, error) {
 
 	d.Mode, d.ID, d.Playlist, d.Segments = "remux", id, "/v1/s/"+id+"/index.m3u8", session.Plan.Count()
 	return d, nil
+}
+
+type indexed struct {
+	file *mkv.File
+	err  error
+}
+
+// index reads a Matroska file's tracks and keyframe index, or recalls them: a file seen before
+// (the same size and first bytes, whatever its address) costs nothing to understand again.
+func (r *Relay) index(ctx context.Context, src *source.HTTP) (*mkv.File, error) {
+	head := src.Head
+	if len(head) > 4096 {
+		head = head[:4096]
+	}
+	sum := sha256.Sum256(head)
+	key := fmt.Sprintf("%d:%x", src.Size, sum[:12])
+	r.mu.Lock()
+	hit, ok := r.indexes[key]
+	r.mu.Unlock()
+	if ok {
+		r.count(func(s *Stats) { s.IndexesRecalled++ })
+		return hit.file, hit.err
+	}
+	file, err := mkv.Parse(ctx, src)
+	if err == nil || errors.Is(err, mkv.ErrNoIndex) || errors.Is(err, mkv.ErrNotMatroska) {
+		r.mu.Lock()
+		if len(r.indexes) >= 400 {
+			for k := range r.indexes { // any one: the map is a cache, not a record
+				delete(r.indexes, k)
+				break
+			}
+		}
+		r.indexes[key] = indexed{file, err}
+		r.mu.Unlock()
+	}
+	return file, err
+}
+
+// streamAudio is the audio a browser decodes inside an HLS stream.
+func streamAudio(req Request) []string {
+	if req.Caps.Stream != nil {
+		return *req.Caps.Stream
+	}
+	return req.Caps.Audio
 }
 
 func pickAudio(tracks []mkv.Track, req Request) int {
@@ -429,6 +492,11 @@ func (r *Relay) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/s/{id}/seg/{file}", r.handleSegment)
 	mux.HandleFunc("DELETE /v1/s/{id}", r.handleClose)
 	mux.HandleFunc("POST /v1/lab/token", r.handleLabToken)
+	mux.HandleFunc("POST /v1/auth", r.handleAuth)
+	mux.HandleFunc("GET /config.json", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, 200, map[string]string{"cloud": strings.TrimRight(r.cfg.CloudURL, "/")})
+	})
+	mux.HandleFunc("GET /", r.handleApp)
 	mux.HandleFunc("GET /lab", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-cache")
@@ -530,7 +598,7 @@ func (r *Relay) handleSegment(w http.ResponseWriter, req *http.Request) {
 		http.NotFound(w, req)
 		return
 	}
-	path, took, err := s.Segment(req.Context(), n)
+	reader, took, err := s.Open(req.Context(), n)
 	if err != nil {
 		if req.Context().Err() != nil {
 			return // the player moved on
@@ -546,7 +614,35 @@ func (r *Relay) handleSegment(w http.ResponseWriter, req *http.Request) {
 	w.Header().Set("Content-Type", "video/mp2t")
 	w.Header().Set("Cache-Control", "private, max-age=3600")
 	w.Header().Set("Server-Timing", fmt.Sprintf("prepare;dur=%d", took.Milliseconds()))
-	http.ServeFile(w, req, path)
+	if reader.Live == nil {
+		http.ServeFile(w, req, reader.Path)
+		return
+	}
+	// Still being made: send what exists and follow it, so the player gets the start of the segment
+	// while the rest is on its way.
+	defer reader.Live.Close()
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+	flusher, _ := w.(http.Flusher)
+	buf := make([]byte, 64<<10)
+	for {
+		n, err := reader.Live.Read(buf)
+		if n > 0 {
+			if _, werr := w.Write(buf[:n]); werr != nil {
+				return
+			}
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+		if err == io.EOF {
+			return
+		}
+		if err != nil {
+			// Abandoned mid-way: break the connection so the player knows the segment is incomplete.
+			panic(http.ErrAbortHandler)
+		}
+	}
 }
 
 func (r *Relay) handleClose(w http.ResponseWriter, req *http.Request) {
@@ -566,35 +662,189 @@ func (r *Relay) handleLabToken(w http.ResponseWriter, req *http.Request) {
 		Code string `json:"code"`
 	}
 	json.NewDecoder(http.MaxBytesReader(w, req.Body, 1024)).Decode(&body)
+	if r.limited(req) {
+		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "Too many tries. Wait ten minutes."})
+		return
+	}
+	if !r.codeMatches(body.Code) {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "That code isn't right."})
+		return
+	}
+	now := time.Now()
+	writeJSON(w, 200, map[string]string{"token": signToken(r.cfg.Secret, "lab", now.Add(24*time.Hour))})
+}
+
+// MARK: Who may use the relay
+
+func (r *Relay) ownersFile() string {
+	if r.cfg.DataDir == "" {
+		return ""
+	}
+	return filepath.Join(r.cfg.DataDir, "owners.json")
+}
+
+func (r *Relay) loadOwners() {
+	if path := r.ownersFile(); path != "" {
+		if raw, err := os.ReadFile(path); err == nil {
+			var emails []string
+			json.Unmarshal(raw, &emails)
+			for _, e := range emails {
+				r.owners[strings.ToLower(e)] = true
+			}
+		}
+	}
+}
+
+// saveOwners is called with the lock held.
+func (r *Relay) saveOwners() {
+	path := r.ownersFile()
+	if path == "" {
+		return
+	}
+	emails := make([]string, 0, len(r.owners))
+	for e := range r.owners {
+		emails = append(emails, e)
+	}
+	sort.Strings(emails)
+	raw, _ := json.Marshal(emails)
+	os.MkdirAll(r.cfg.DataDir, 0o700)
+	os.WriteFile(path+".tmp", raw, 0o600)
+	os.Rename(path+".tmp", path)
+}
+
+// limited counts a guess at the relay code from an address and says whether it has had too many.
+func (r *Relay) limited(req *http.Request) bool {
 	host, _, _ := net.SplitHostPort(req.RemoteAddr)
 	if fwd := req.Header.Get("X-Forwarded-For"); fwd != "" {
 		host = strings.TrimSpace(strings.Split(fwd, ",")[0])
 	}
 	now := time.Now()
 	r.mu.Lock()
+	defer r.mu.Unlock()
 	recent := r.attempts[host][:0]
 	for _, t := range r.attempts[host] {
 		if now.Sub(t) < 10*time.Minute {
 			recent = append(recent, t)
 		}
 	}
-	limited := len(recent) >= 8
-	if !limited {
-		r.attempts[host] = append(recent, now)
+	if len(recent) >= 8 {
+		r.attempts[host] = recent
+		return true
 	}
-	r.mu.Unlock()
-	if limited {
-		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "Too many tries. Wait ten minutes."})
-		return
-	}
+	r.attempts[host] = append(recent, now)
+	return false
+}
+
+func (r *Relay) codeMatches(code string) bool {
 	clean := func(s string) string {
 		return strings.ToUpper(strings.NewReplacer("-", "", " ", "").Replace(s))
 	}
-	if len(r.cfg.LabCode) < 8 || subtle.ConstantTimeCompare([]byte(clean(body.Code)), []byte(clean(r.cfg.LabCode))) != 1 {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "That code isn't right."})
+	return len(r.cfg.LabCode) >= 8 && subtle.ConstantTimeCompare([]byte(clean(code)), []byte(clean(r.cfg.LabCode))) == 1
+}
+
+// handleAuth gives the web app a token. A Stremio account is linked to this relay once, by entering
+// the relay's code on any device; after that, every device signed in to that account gets tokens by
+// itself. The account is confirmed with Stremio each time.
+func (r *Relay) handleAuth(w http.ResponseWriter, req *http.Request) {
+	var body struct {
+		AuthKey string `json:"authKey"`
+		Code    string `json:"code"`
+	}
+	json.NewDecoder(http.MaxBytesReader(w, req.Body, 4096)).Decode(&body)
+	if body.AuthKey == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Sign in first."})
 		return
 	}
-	writeJSON(w, 200, map[string]string{"token": signToken(r.cfg.Secret, "lab", now.Add(24*time.Hour))})
+	email, err := r.stremioEmail(req.Context(), body.AuthKey)
+	if err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "Stremio didn't recognize this sign-in. Sign in again."})
+		return
+	}
+	r.mu.Lock()
+	known := r.owners[email]
+	r.mu.Unlock()
+	if !known {
+		if body.Code == "" {
+			writeJSON(w, http.StatusForbidden, map[string]any{"error": "Enter this relay's code to link your account.", "needsCode": true})
+			return
+		}
+		if r.limited(req) {
+			writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "Too many tries. Wait ten minutes."})
+			return
+		}
+		if !r.codeMatches(body.Code) {
+			writeJSON(w, http.StatusForbidden, map[string]any{"error": "That code isn't right.", "needsCode": true})
+			return
+		}
+		r.mu.Lock()
+		r.owners[email] = true
+		r.saveOwners()
+		r.mu.Unlock()
+	}
+	expires := time.Now().Add(7 * 24 * time.Hour)
+	writeJSON(w, 200, map[string]any{"token": signToken(r.cfg.Secret, email, expires), "expiresAt": expires.Unix(), "email": email})
+}
+
+func (r *Relay) stremioEmail(ctx context.Context, authKey string) (string, error) {
+	base := r.cfg.StremioAPI
+	if base == "" {
+		base = "https://api.strem.io/api"
+	}
+	payload, _ := json.Marshal(map[string]string{"type": "GetUser", "authKey": authKey})
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/getUser", bytes.NewReader(payload))
+	if err != nil {
+		return "", err
+	}
+	resp, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	var out struct {
+		Result *struct {
+			Email string `json:"email"`
+		} `json:"result"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&out); err != nil || out.Result == nil || out.Result.Email == "" {
+		return "", errors.New("not signed in")
+	}
+	return strings.ToLower(out.Result.Email), nil
+}
+
+// MARK: The web app
+
+// handleApp serves the built app: its files by name, and its page for every other address (the app
+// routes by address itself).
+func (r *Relay) handleApp(w http.ResponseWriter, req *http.Request) {
+	name := strings.TrimPrefix(req.URL.Path, "/")
+	if name == "" || strings.HasPrefix(name, "v1/") {
+		name = "index.html"
+	}
+	raw, err := fs.ReadFile(webFiles, "web/"+name)
+	if err != nil {
+		if strings.HasPrefix(name, "assets/") || strings.Contains(filepath.Base(name), ".") {
+			http.NotFound(w, req)
+			return
+		}
+		name = "index.html"
+		if raw, err = fs.ReadFile(webFiles, "web/index.html"); err != nil {
+			http.Error(w, "The web app isn't part of this build. The lab page is at /lab.", http.StatusNotFound)
+			return
+		}
+	}
+	switch {
+	case strings.HasPrefix(name, "assets/"):
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable") // named by content hash
+	default:
+		w.Header().Set("Cache-Control", "no-cache")
+	}
+	if name == "index.html" {
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; img-src * data: blob:; media-src * blob:; connect-src *; style-src 'self' 'unsafe-inline'; script-src 'self'; worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+	}
+	http.ServeContent(w, req, name, time.Time{}, bytes.NewReader(raw))
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

@@ -284,3 +284,97 @@ func TestSeekStopsTheOldRun(t *testing.T) {
 		}
 	}
 }
+
+// slowSource feeds the file at a fixed rate, like a real network, so "while it is being made" is visible.
+type slowSource struct {
+	inner Source
+	rate  int // bytes per second
+}
+
+type slowReader struct {
+	io.ReadCloser
+	rate int
+}
+
+func (r slowReader) Read(p []byte) (int, error) {
+	if len(p) > 16<<10 {
+		p = p[:16<<10]
+	}
+	n, err := r.ReadCloser.Read(p)
+	time.Sleep(time.Duration(n) * time.Second / time.Duration(r.rate))
+	return n, err
+}
+
+func (s slowSource) Stream(ctx context.Context, off int64) io.ReadCloser {
+	return slowReader{s.inner.Stream(ctx, off), s.rate}
+}
+
+// A segment is sent while it is being written: its first bytes arrive well before it is finished,
+// and what a follower reads is exactly the finished segment.
+func TestSegmentIsServedWhileBeingMade(t *testing.T) {
+	src := serve(t)
+	file, err := mkv.Parse(context.Background(), src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := NewSession("live", file, slowSource{src, 400 << 10}, Audio{Index: 0}, t.TempDir(), "ffmpeg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	began := time.Now()
+	r, _, err := s.Open(context.Background(), 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Live == nil {
+		t.Fatal("expected a segment still being written")
+	}
+	first := make([]byte, 188)
+	if _, err := io.ReadFull(r.Live, first); err != nil {
+		t.Fatal(err)
+	}
+	firstByte := time.Since(began)
+	rest, err := io.ReadAll(r.Live)
+	r.Live.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	whole := time.Since(began)
+	path, _, err := s.Segment(context.Background(), 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	final, _ := os.ReadFile(path)
+	if got := append(first, rest...); len(got) != len(final) || string(got) != string(final) {
+		t.Fatalf("followed %d bytes, the finished segment is %d", len(got), len(final))
+	}
+	t.Logf("first bytes after %v, whole segment after %v", firstByte.Round(time.Millisecond), whole.Round(time.Millisecond))
+	if firstByte > whole*2/3 {
+		t.Fatalf("first bytes (%v) should arrive well before the segment is finished (%v)", firstByte, whole)
+	}
+}
+
+// A follower of a segment that is abandoned (the viewer seeks away) is told, not left with half a segment.
+func TestAbandonedSegmentEndsItsFollowers(t *testing.T) {
+	src := serve(t)
+	file, _ := mkv.Parse(context.Background(), src)
+	s, err := NewSession("gone", file, slowSource{src, 150 << 10}, Audio{Index: 0}, t.TempDir(), "ffmpeg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	r, _, err := s.Open(context.Background(), 1)
+	if err != nil || r.Live == nil {
+		t.Fatal(err, r)
+	}
+	defer r.Live.Close()
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		s.Warm(9) // a seek far away stops the run that was writing segment 1
+	}()
+	if _, err := io.ReadAll(r.Live); err != ErrAbandoned {
+		t.Fatalf("the follower ended with %v, want ErrAbandoned", err)
+	}
+}

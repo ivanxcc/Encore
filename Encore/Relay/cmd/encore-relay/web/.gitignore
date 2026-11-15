@@ -1,0 +1,4 @@
+# The web app is built into this folder (see README.txt); only the note is kept in git.
+/*
+!/.gitignore
+!/README.txt
