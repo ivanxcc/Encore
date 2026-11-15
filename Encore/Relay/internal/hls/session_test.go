@@ -458,3 +458,91 @@ func TestSubtitlesFollowTheStream(t *testing.T) {
 		t.Fatalf("cues after %d: %d", total-1, len(newer))
 	}
 }
+
+// A scrub-bar picture comes from the keyframe's own cluster, and is made once.
+func TestThumbnail(t *testing.T) {
+	s, _ := open(t)
+	began := time.Now()
+	path, err := s.Thumbnail(context.Background(), 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(path)
+	if len(raw) < 1000 || raw[0] != 0xFF || raw[1] != 0xD8 {
+		t.Fatalf("not a JPEG: %d bytes", len(raw))
+	}
+	first := time.Since(began)
+	began = time.Now()
+	if again, err := s.Thumbnail(context.Background(), 30.5); err != nil || again != path {
+		t.Fatalf("the same keyframe again: %v %v", again, err)
+	}
+	t.Logf("first %v, again %v", first.Round(time.Millisecond), time.Since(began).Round(time.Microsecond))
+}
+
+// Video the browser can't decode is re-encoded as H.264, with a keyframe exactly at the start of
+// every planned segment, from wherever a run starts; seeks give the same frame times as playing.
+func TestConvertedSegmentsLineUp(t *testing.T) {
+	dir := t.TempDir()
+	hevc := filepath.Join(dir, "hevc.mkv")
+	if out, err := exec.Command("ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=24",
+		"-f", "lavfi", "-i", "sine=sample_rate=48000", "-t", "24", "-c:v", "libx265", "-preset", "ultrafast",
+		"-pix_fmt", "yuv420p10le", "-x265-params", "keyint=60:min-keyint=60:scenecut=0:log-level=error",
+		"-c:a", "aac", hevc).CombinedOutput(); err != nil {
+		t.Fatal(err, string(out))
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.ServeFile(w, r, hevc) }))
+	defer server.Close()
+	make := func() *Session {
+		src, err := source.Open(context.Background(), server.URL+"/hevc.mkv", nil, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		file, err := mkv.Parse(context.Background(), src)
+		if err != nil {
+			t.Fatal(err)
+		}
+		s, err := NewSession("c", file, src, Audio{Index: 0, Copy: true}, t.TempDir(), "ffmpeg")
+		if err != nil {
+			t.Fatal(err)
+		}
+		s.SetConvert(&Convert{Height: 240})
+		t.Cleanup(s.Close)
+		return s
+	}
+	played, seeked := make(), make()
+	if played.Plan.Count() < 6 {
+		t.Fatalf("plan of %d segments", played.Plan.Count())
+	}
+	began := time.Now()
+	for n := 0; n < played.Plan.Count(); n++ {
+		path, _, err := played.Segment(context.Background(), n)
+		if err != nil {
+			t.Fatalf("segment %d: %v", n, err)
+		}
+		out, _ := exec.Command("ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name,height:packet=pts_time,flags",
+			"-of", "csv=p=0", path).Output()
+		lines := strings.Fields(string(out))
+		if len(lines) < 2 || !strings.Contains(string(out), "h264,240") {
+			t.Fatalf("segment %d isn't 240p H.264: %s", n, out)
+		}
+		firstPacket := lines[0]
+		if !strings.Contains(firstPacket, "K") {
+			t.Fatalf("segment %d doesn't open on a keyframe: %s", n, firstPacket)
+		}
+		pts, _ := strconv.ParseFloat(strings.Split(firstPacket, ",")[0], 64)
+		if d := pts - tsOffset - played.Plan.Starts[n]; d > 0.05 || d < -0.05 {
+			t.Fatalf("segment %d starts at %.3f, planned %.3f", n, pts-tsOffset, played.Plan.Starts[n])
+		}
+	}
+	t.Logf("converted %d segments (%.0f s of video) in %v", played.Plan.Count(), played.File.Duration, time.Since(began).Round(time.Millisecond))
+	mid := played.Plan.Count() / 2
+	seekPath, _, err := seeked.Segment(context.Background(), mid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	playPath, _, _ := played.Segment(context.Background(), mid)
+	a, b := videoPTS(t, seekPath), videoPTS(t, playPath)
+	if len(a) != len(b) || a[0] != b[0] {
+		t.Fatalf("segment %d by seeking: %d frames from %.3f; by playing: %d from %.3f", mid, len(a), a[0], len(b), b[0])
+	}
+}

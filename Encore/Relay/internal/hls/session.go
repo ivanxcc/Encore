@@ -29,6 +29,15 @@ type Audio struct {
 	Copy  bool // the viewer's browser plays this codec as it is
 }
 
+// Convert re-encodes the video as H.264, for files whose video the browser can't decode (HEVC, AV1,
+// 10-bit, HDR). Keyframes are placed exactly on the plan's boundaries, so segments made by any run
+// line up as they do when the video is copied.
+type Convert struct {
+	Height  int  // the picture's height at most (the width follows)
+	Tonemap bool // HDR to SDR (needs ffmpeg's zscale)
+	Threads int  // 0: as many as ffmpeg likes
+}
+
 // tsOffset is added to every timestamp so none is negative (B-frames decode before they show). It
 // is the same for every run, so segments made by different runs line up exactly.
 const tsOffset = 10.0
@@ -57,8 +66,10 @@ type Session struct {
 	created time.Time
 	onReady func(time.Duration) // first segment of a run, for stats
 
-	subs []int            // text subtitle tracks (among the file's subtitle tracks) to collect
-	cues map[int]*cueList // what has been collected of each, by track
+	thumbs  chan struct{}    // one thumbnail made at a time
+	convert *Convert         // nil: the video is copied
+	subs    []int            // text subtitle tracks (among the file's subtitle tracks) to collect
+	cues    map[int]*cueList // what has been collected of each, by track
 
 	mu       sync.Mutex
 	notify   chan struct{}
@@ -83,6 +94,20 @@ type Cue struct {
 type cueList struct {
 	list []Cue
 	seen map[string]bool
+}
+
+// SetConvert has the video re-encoded. Call it before the first segment is asked for.
+func (s *Session) SetConvert(c *Convert) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.convert = c
+}
+
+// Converting says whether the video is being re-encoded.
+func (s *Session) Converting() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.convert != nil
 }
 
 // SetSubtitles chooses the text subtitle tracks to collect as the stream is made. Call it before the
@@ -288,7 +313,7 @@ func NewSession(id string, f *mkv.File, src Source, audio Audio, dir, ffmpeg str
 		return nil, err
 	}
 	return &Session{ID: id, Plan: plan, File: f, audio: audio, src: src, dir: dir, ffmpeg: ffmpeg,
-		created: time.Now(), notify: make(chan struct{}), done: map[int]bool{}, live: map[int]*live{}, lastUse: time.Now()}, nil
+		created: time.Now(), notify: make(chan struct{}), thumbs: make(chan struct{}, 1), done: map[int]bool{}, live: map[int]*live{}, lastUse: time.Now()}, nil
 }
 
 func (s *Session) path(n int) string { return filepath.Join(s.dir, fmt.Sprintf("seg-%05d.ts", n)) }
@@ -438,8 +463,15 @@ func (s *Session) remux(ctx context.Context, r *run, began time.Time) error {
 	args := []string{"-hide_banner", "-loglevel", "error",
 		"-probesize", "1000000", "-analyzeduration", "1000000",
 		"-f", "matroska", "-copyts", "-i", "pipe:0",
-		"-map", "0:v:0", "-map", fmt.Sprintf("0:a:%d?", s.audio.Index),
-		"-c:v", "copy"}
+		"-map", "0:v:0", "-map", fmt.Sprintf("0:a:%d?", s.audio.Index)}
+	s.mu.Lock()
+	convert := s.convert
+	s.mu.Unlock()
+	if convert == nil {
+		args = append(args, "-c:v", "copy")
+	} else {
+		args = append(args, s.encoder(convert, r.first)...)
+	}
 	if s.audio.Copy {
 		args = append(args, "-c:a", "copy")
 	} else {
@@ -532,6 +564,38 @@ func (s *Session) remux(ctx context.Context, r *run, began time.Time) error {
 		return fmt.Errorf("ffmpeg: %v: %s", waitErr, bytes.TrimSpace(stderr.Bytes()))
 	}
 	return nil
+}
+
+// encoder is the ffmpeg arguments that re-encode the video from segment `first` on: H.264 High at a
+// steady quality, fast enough for one stream on a small server, with a keyframe exactly where each
+// planned segment starts.
+func (s *Session) encoder(c *Convert, first int) []string {
+	var times strings.Builder
+	for i := first; i < s.Plan.Count(); i++ {
+		if i > first {
+			times.WriteByte(',')
+		}
+		times.WriteString(strconv.FormatFloat(s.Plan.Starts[i], 'f', 3, 64))
+	}
+	height := c.Height
+	if height <= 0 {
+		height = 720
+	}
+	scale := fmt.Sprintf("scale=w=-2:h='min(%d,ih)':flags=bicubic,format=yuv420p", height)
+	if c.Tonemap {
+		// Down to size first: tone mapping costs per pixel.
+		scale = fmt.Sprintf("zscale=w=-2:h='min(%d,ih)':f=bicubic,zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,"+
+			"tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p", height)
+	}
+	args := []string{"-vf", scale, "-fps_mode", "passthrough",
+		"-c:v", "libx264", "-preset", "veryfast", "-tune", "film", "-crf", "21",
+		"-maxrate", fmt.Sprintf("%dk", height*8), "-bufsize", fmt.Sprintf("%dk", height*16),
+		"-profile:v", "high", "-level:v", "4.1", "-g", "600", "-keyint_min", "1",
+		"-x264-params", "open_gop=0", "-force_key_frames", times.String()}
+	if c.Threads > 0 {
+		args = append(args, "-threads", strconv.Itoa(c.Threads))
+	}
+	return args
 }
 
 var errStop = errors.New("stop")

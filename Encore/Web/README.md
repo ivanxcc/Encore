@@ -106,9 +106,13 @@ address and one container are the whole product.
 - Progress goes where the apps read it: the Stremio library for the owner profile, the household
   document (one item, with a version check) for the others.
 
-Not yet: subtitles, audio-track choice, conversion for HEVC/HDR-only titles, scrub thumbnails, an
-offline shell. Checked so far in headless Chromium at desktop, phone, and Tesla sizes against a test
-relay; real-device passes on Safari and the Tesla browser are still to come.
+Added since: Settings (audio language, subtitles, autoplay, skip intros, quality, invitations, who can
+use the server); a menu on Continue Watching cards; subtitles from the file and from add-ons, with an
+Audio and Subtitles panel; audio track switching; scrub-bar pictures; an offer of a lighter source when
+playback keeps stalling; converting on the relay when no source plays as it is; the app opens offline.
+
+Not yet: downloads for watching offline (the Encore apps have them; browsers, the Tesla's especially,
+keep little and clear it), real-device passes on Safari and the Tesla browser.
 
 Develop: `npm run dev` with a relay on `127.0.0.1:8089` (see `vite.config.ts`).
 

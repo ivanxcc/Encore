@@ -55,6 +55,7 @@ func serve(args []string) {
 	addr := fs.String("addr", env("RELAY_ADDR", "127.0.0.1:8089"), "address to listen on")
 	fs.Parse(args)
 	cfg := Config{
+		Convert:      os.Getenv("RELAY_CONVERT"),
 		Secret:       os.Getenv("RELAY_SECRET"),
 		LabCode:      os.Getenv("RELAY_LAB_CODE"),
 		CacheDir:     env("RELAY_CACHE", os.TempDir()+"/encore-relay"),

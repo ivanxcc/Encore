@@ -4,12 +4,12 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import { back, clock, go, prefs, setPref } from "../lib/core";
 import { art, encore, meta as loadMeta, NeedsCode, relayClose, relaySession, type Decision, type Meta, type TrackInfo, type Video } from "../lib/api";
 import { flush, recordProgress } from "../lib/library";
-import { prepare, sessionRequest, used, useNativeHls, type Prepared } from "../lib/play";
+import { lighter, prepare, sessionRequest, used, useNativeHls, type Candidate, type Prepared } from "../lib/play";
 import { lang2, languageName } from "../lib/lang";
 import { Captions, subtitleOptions, useAddonSubtitles, useCues, useSystemCaptions, type SubOption } from "./captions";
 import { currentVideo, episodes, episodeTag, resumeAt, videoTitle } from "./detail";
 import { Logo } from "./shared";
-import { Back10, Bubble, Cast, Check, Full, Fwd10, Left, Muted, Next, Pause, Pip, Play, Small, Sound } from "./icons";
+import { Back10, Bubble, Cast, Check, Close, Full, Fwd10, Left, Muted, Next, Pause, Pip, Play, Small, Sound } from "./icons";
 
 // One element for the life of the page. Browsers only let a video start with sound from a tap; the
 // tap that leads here (Play, an episode, a Continue Watching card) unlocks this element at once,
@@ -23,6 +23,19 @@ addEventListener("click", () => {
 }, { capture: true });
 
 const codecLabel = (c: string) => ({ aac: "AAC", ac3: "Dolby Digital", eac3: "Dolby Digital Plus", dts: "DTS", truehd: "Dolby TrueHD", opus: "Opus", flac: "FLAC", mp3: "MP3", vorbis: "Vorbis" } as Record<string, string>)[c] || c.toUpperCase();
+
+/** The picture above the scrub bar: the keyframe near that moment, from the relay. Asked for on a
+ * 10-second grid, once the pointer has rested a moment, so dragging fast doesn't queue dozens. */
+function Preview({ session, at }: { session: string; at: number }) {
+  const grid = Math.floor(at / 10) * 10;
+  const [src, setSrc] = useState<string | null>(null);
+  const [ready, setReady] = useState(false);
+  useEffect(() => {
+    const t = setTimeout(() => setSrc(`/v1/s/${session}/thumb?t=${grid}`), src ? 70 : 0);
+    return () => clearTimeout(t);
+  }, [session, grid]);
+  return <div class="preview">{src && <img src={src} alt="" class={ready ? "in" : ""} onLoad={() => setReady(true)} draggable={false} />}</div>;
+}
 
 type Segment = { kind: "intro" | "recap" | "credits"; start: number; end: number };
 type HlsType = import("hls.js").default;
@@ -60,6 +73,10 @@ export function Player({ type, id, videoId }: { type: string; id: string; videoI
   const [note, setNote] = useState<string | null>(null);
   const attachRef = useRef<((d: Decision, at: number) => Promise<void>) | null>(null);
   const subChosen = useRef(false);
+  // Stalls while playing (not seeking): two in a minute and a half, or one long one, and a lighter
+  // source is offered.
+  const [struggling, setStruggling] = useState<Candidate | null>(null);
+  const stalls = useRef<{ at: number[]; since: number; offered: boolean }>({ at: [], since: 0, offered: false });
   const live = useRef({ startMs: 0, seekMs: 0, stalls: 0, seekAt: 0, mounted: performance.now(), prepared: null as Prepared | null, lastSaved: 0, warmedNext: false });
   const hideTimer = useRef<number>();
 
@@ -100,6 +117,7 @@ export function Player({ type, id, videoId }: { type: string; id: string; videoI
     setPhase("loading"); setProblem(""); setStatus("Finding the best source…"); setSegments([]); setSkipped([]); setCount(null); setDeclined(false);
     setTime(0); setDuration(0); setBuffered(0); setNeedsSound(false);
     setDecision(null); setSubKey(null); setTracksOpen(false); subChosen.current = false;
+    setStruggling(null); stalls.current = { at: [], since: 0, offered: false };
     holder.current?.appendChild(video);
 
     (async () => {
@@ -194,8 +212,21 @@ export function Player({ type, id, videoId }: { type: string; id: string; videoI
       on("progress", () => { const b = video.buffered; setBuffered(b.length ? b.end(b.length - 1) : 0); }),
       on("play", () => { setPaused(false); reveal(); }),
       on("pause", () => { setPaused(true); setShow(true); save(true); }),
-      on("waiting", () => { setWaiting(true); if (live.current.startMs && !live.current.seekAt) live.current.stalls++; }),
-      on("playing", () => setWaiting(false)),
+      on("waiting", () => {
+        setWaiting(true);
+        if (!live.current.startMs || live.current.seekAt) return;
+        live.current.stalls++;
+        const now = performance.now(), s = stalls.current;
+        s.since = now;
+        s.at = [...s.at.filter((t) => now - t < 90_000), now];
+        if (s.at.length >= 2) offerLighter.current();
+      }),
+      on("playing", () => {
+        setWaiting(false);
+        const s = stalls.current;
+        if (s.since && performance.now() - s.since > 5000) offerLighter.current();
+        s.since = 0;
+      }),
       on("seeking", () => { live.current.seekAt = performance.now(); }),
       on("volumechange", () => { setMuted(video.muted); setVolume(video.volume); }),
       on("ended", () => {
@@ -312,6 +343,32 @@ export function Player({ type, id, videoId }: { type: string; id: string; videoI
     if (resume) video.play().catch(() => {});
     setSwitching(false);
   };
+  // A lighter source, at the same moment, when this one can't keep up.
+  const offerLighter = useRef(() => {});
+  offerLighter.current = () => {
+    const p = live.current.prepared;
+    if (!p || stalls.current.offered || switching) return;
+    const choice = lighter(p)[0];
+    if (choice) { stalls.current.offered = true; setStruggling(choice); }
+  };
+  const switchSource = async () => {
+    const p = live.current.prepared, old = decision;
+    if (!p || !attachRef.current) return;
+    setStruggling(null); setSwitching(true);
+    const at = video.currentTime;
+    for (const candidate of lighter(p).slice(0, 3)) {
+      const next = await relaySession(sessionRequest(candidate, at));
+      if (next.mode !== "direct" && next.mode !== "remux") continue;
+      await attachRef.current(next, at);
+      live.current.prepared = { ...p, decision: next, candidate };
+      if (old?.id) relayClose(old.id);
+      video.play().catch(() => {});
+      stalls.current = { at: [], since: 0, offered: false };
+      setSwitching(false);
+      return;
+    }
+    setSwitching(false); setNote("No lighter source could be played."); setTimeout(() => setNote(null), 3000);
+  };
   const audioTracks = decision?.mode === "remux" ? decision.audioTracks || [] : [];
   const hasTracks = subOptions.length > 0 || audioTracks.length > 1;
 
@@ -418,7 +475,12 @@ export function Player({ type, id, videoId }: { type: string; id: string; videoI
                 <div class="played" style={{ width: `${duration ? (shownTime / duration) * 100 : 0}%` }} />
               </div>
               <div class="knob" style={{ left: `${duration ? (shownTime / duration) * 100 : 0}%` }} />
-              {(hover != null || drag != null) && duration > 0 && <div class="tip glass" style={{ left: `${((drag ?? hover!) / duration) * 100}%` }}>{clock(drag ?? hover!)}</div>}
+              {(hover != null || drag != null) && duration > 0 && (
+                <div class={"tip glass" + (decision?.mode === "remux" ? " with-picture" : "")} style={{ left: `clamp(6.5rem, ${((drag ?? hover!) / duration) * 100}%, calc(100% - 6.5rem))` }}>
+                  {decision?.mode === "remux" && decision.id && <Preview session={decision.id} at={drag ?? hover!} />}
+                  <span>{clock(drag ?? hover!)}</span>
+                </div>
+              )}
             </div>
             <div class="controls">
               <span>{clock(shownTime)}</span>
@@ -481,6 +543,13 @@ export function Player({ type, id, videoId }: { type: string; id: string; videoI
           )}
           {skippedNote && <span class="note glass">{skippedNote}</span>}
           {note && <span class="note glass">{note}</span>}
+          {struggling && (
+            <span class="struggle glass">
+              <span>Playback is stuttering.</span>
+              <button class="pill primary small" onClick={switchSource}>Switch to {struggling.quality || "a Lighter Source"}</button>
+              <button class="icon" aria-label="Keep this source" onClick={() => setStruggling(null)}><Close /></button>
+            </span>
+          )}
           {count == null && next && (declined || (closing && atEnd) || (atEnd && !prefs.value.autoplayNext)) && <button class="pill primary" onClick={playNext}><Next />Next Episode</button>}
         </div>
       )}
@@ -488,7 +557,7 @@ export function Player({ type, id, videoId }: { type: string; id: string; videoI
       {stats && (
         <div class="stats glass">{[
           `subtitles ${sub ? `${sub.label}${sub.embedded != null ? " (in the file)" : " (add-on)"}, ${cues.length} lines` : "off"}`,
-          `mode      ${p?.decision?.mode || "–"}${p?.decision?.audioCopied ? " (audio untouched)" : ""} via ${p?.decision?.mode === "direct" ? "source" : useNativeHls ? "native HLS" : "hls.js"}`,
+          `mode      ${p?.decision?.mode || "–"}${p?.decision?.converted ? " (video converted on the server)" : ""}${p?.decision?.audioCopied ? " (audio untouched)" : ""} via ${p?.decision?.mode === "direct" ? "source" : useNativeHls ? "native HLS" : "hls.js"}`,
           `video     ${video.videoWidth}×${video.videoHeight}`,
           `sources   ${p ? Math.round(p.timings.sourcesMs) : "–"} ms, relay ${p ? Math.round(p.timings.relayMs) : "–"} ms (${p?.timings.tried || 0} tried)`,
           `start     ${Math.round(live.current.startMs)} ms from opening the player`,

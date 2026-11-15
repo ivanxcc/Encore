@@ -284,7 +284,7 @@ export const encore = {
 // MARK: Relay (this site)
 
 export interface TrackInfo { index: number; codec: string; language?: string; name?: string; channels?: number; default?: boolean; forced?: boolean; text?: boolean }
-export interface Decision { mode: "direct" | "remux" | "unsupported" | "error"; reason?: string; url?: string; id?: string; playlist?: string; duration?: number; audioCopied?: boolean; audio?: TrackInfo; audioTracks?: TrackInfo[]; subtitles?: TrackInfo[]; video?: { codec?: string; width?: number; height?: number }; timings?: { openMs: number; indexMs: number } }
+export interface Decision { mode: "direct" | "remux" | "unsupported" | "error"; reason?: string; convertible?: boolean; converted?: boolean; url?: string; id?: string; playlist?: string; duration?: number; audioCopied?: boolean; audio?: TrackInfo; audioTracks?: TrackInfo[]; subtitles?: TrackInfo[]; video?: { codec?: string; width?: number; height?: number }; timings?: { openMs: number; indexMs: number } }
 export interface Cue { start: number; end: number; text: string }
 
 /** A subtitle track's cues the relay has found so far, after the first `after`. */

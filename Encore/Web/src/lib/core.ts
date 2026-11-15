@@ -47,6 +47,11 @@ export const setPref = <K extends keyof Prefs>(key: K, value: Prefs[K]) => { pre
 /** The audio language to ask for: the chosen one, else the browser's. */
 export const audioLanguage = () => prefs.value.audioLanguage || (navigator.language || "en").slice(0, 2).toLowerCase();
 
+/** Whether the device has a connection. */
+export const online = signal(navigator.onLine);
+addEventListener("online", () => { online.value = true; });
+addEventListener("offline", () => { online.value = false; });
+
 // MARK: Router
 
 export const path = signal(location.pathname + location.search);

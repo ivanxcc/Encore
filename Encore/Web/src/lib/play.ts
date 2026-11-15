@@ -61,7 +61,7 @@ export function rank(list: Stream[]): Candidate[] {
 
 /** What the relay is asked for a source: from where, in which language, for what this browser plays.
  * Dolby audio passes through only where the browser's own HLS plays it. */
-export function sessionRequest(candidate: Candidate, start: number, extra: { audio?: number } = {}) {
+export function sessionRequest(candidate: Candidate, start: number, extra: { audio?: number; convert?: boolean } = {}) {
   return { url: candidate.url, headers: candidate.headers, start, language: audioLanguage(), ...extra,
     caps: { video: caps.video, audio: caps.audio, stream: useNativeHls ? caps.audio : caps.audio.filter((a) => a === "aac") } };
 }
@@ -73,6 +73,15 @@ export interface Prepared {
   problem?: string;
   startAt: number;
   timings: { sourcesMs: number; relayMs: number; tried: number };
+  /** The other sources, best first, for switching to a lighter one. */
+  alternatives?: Candidate[];
+}
+
+const QUALITY_RANK: Record<string, number> = { "4K": 4, "1080p": 3, "720p": 2, SD: 1 };
+/** Sources lighter than the one playing: a lower resolution, best first. */
+export function lighter(p: Prepared): Candidate[] {
+  const now = QUALITY_RANK[p.candidate?.quality || ""] ?? 3;
+  return (p.alternatives || []).filter((c) => c.url !== p.candidate?.url && (QUALITY_RANK[c.quality] ?? 3) < now);
 }
 
 const prepared = new Map<string, { at: number; startAt: number; promise: Promise<Prepared> }>();
@@ -91,15 +100,29 @@ export function prepare(meta: Meta, video: Video | undefined, startAt: number): 
     if (!found.length) return { decision: null, candidate: null, startAt, problem: "No sources were found for this title. Check the add-ons on your Stremio account.", timings: { sourcesMs, relayMs: 0, tried: 0 } };
     const relayBegan = performance.now();
     let tried = 0, lastReason = "";
+    const convertible: Candidate[] = [];
     for (const candidate of found.slice(0, 6)) {
       tried++;
       const decision = await relaySession(sessionRequest(candidate, startAt));
       if (decision.mode === "direct" || decision.mode === "remux") {
-        return { decision, candidate, startAt, timings: { sourcesMs, relayMs: performance.now() - relayBegan, tried } };
+        return { decision, candidate, startAt, timings: { sourcesMs, relayMs: performance.now() - relayBegan, tried }, alternatives: found };
       }
+      if (decision.convertible) convertible.push(candidate);
       lastReason = decision.reason || decision.mode;
     }
-    return { decision: null, candidate: null, startAt, problem: `None of the best sources can play in this browser yet (${lastReason}).`, timings: { sourcesMs, relayMs: performance.now() - relayBegan, tried } };
+    // Nothing plays as it is: the server converts the best one that it can (it remembers the file, so
+    // asking again is quick).
+    for (const candidate of convertible.slice(0, 2)) {
+      tried++;
+      const decision = await relaySession(sessionRequest(candidate, startAt, { convert: true }));
+      if (decision.mode === "remux") {
+        return { decision, candidate, startAt, timings: { sourcesMs, relayMs: performance.now() - relayBegan, tried }, alternatives: found };
+      }
+      lastReason = decision.reason === "busy" ? "the server is converting another video" : decision.reason || decision.mode;
+    }
+    return { decision: null, candidate: null, startAt, problem: lastReason === "the server is converting another video"
+      ? "Your server is converting another video right now. Try again when that one is done, or choose another title."
+      : `None of the sources found can play in this browser (${lastReason}).`, timings: { sourcesMs, relayMs: performance.now() - relayBegan, tried } };
   })();
   prepared.set(key, { at: Date.now(), startAt, promise });
   promise.then((p) => { if (!p.decision) prepared.delete(key); }, () => prepared.delete(key));

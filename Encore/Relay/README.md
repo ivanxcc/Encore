@@ -33,20 +33,36 @@ this frame by frame.
 ```
 GET    /                      the web app (Encore/Web), built into the relay
 GET    /config.json           where the web app finds Encore Cloud
-POST   /v1/auth               {authKey, code?}  -> a 7-day token for a signed-in Stremio account. The
-                              account is linked once with the relay code; after that, signing in is enough
-POST   /v1/session            {url, headers?, start?, audio?, language?,
+POST   /v1/auth               {authKey, code? | invite?}  -> a 7-day token for a signed-in Stremio account.
+                              An account is linked once, with the relay code or an invitation
+POST   /v1/invite             -> a link that lets one more account in, once, within 7 days
+GET    /v1/people             who can use the relay (for accounts linked with the code)
+DELETE /v1/people/{email}     take someone off the relay; their tokens stop working at once
+POST   /v1/session            {url, headers?, start?, audio?, language?, convert?,
                                caps: {video: [...], audio: [...], stream?: [...]}}
                               Authorization: Bearer <token>     -> a decision (see above), with the playlist path
 GET    /v1/s/{id}/index.m3u8  the complete VOD playlist
 GET    /v1/s/{id}/seg/{n}.ts  a segment, sent while it is being made (Server-Timing says how long the
                               first bytes took)
+GET    /v1/s/{id}/subs/{n}    a text subtitle track's cues found so far (?after=count for the new ones)
+GET    /v1/s/{id}/thumb?t=    a picture of the keyframe near t seconds, for the scrub bar
+GET    /v1/subtitle?url=      an add-on's subtitle file (SRT or WebVTT, any encoding) as cues
 DELETE /v1/s/{id}             close a stream early (idle streams close after 15 minutes)
 POST   /v1/speed              {url, headers?}  -> the relay's own link to that source: first byte time,
                               one connection's throughput, and six connections'
 GET    /v1/stats              counters (token required)
 GET    /lab                   the lab page: time real titles on any device
 ```
+
+**Converting.** Video a browser can't decode (HEVC, AV1, 10-bit, HDR) is reported `convertible`; asked
+again with `convert: true`, the relay re-encodes it as H.264 with keyframes on the same segment
+boundaries, so seeking works the same way. It's a last resort: the web app tries every source that plays
+as it is first. One converted stream runs at a time, at 720p (1080p on machines with 8 or more cores),
+using all but one core; HDR is tone-mapped when ffmpeg has `zscale`. `RELAY_CONVERT=off|720|1080` in
+`relay.env` changes that.
+
+**Subtitles** in the file (SRT, ASS, WebVTT) come out of the same ffmpeg pass that makes the stream, so
+they cost no extra reading and follow every seek. Picture subtitles (PGS, VobSub) can't be shown.
 
 `caps.audio` is what the browser plays from a file; `caps.stream` is what it plays inside HLS, when
 that is narrower (a script-driven player takes only AAC).
@@ -98,6 +114,6 @@ RELAY_SECRET=$(openssl rand -hex 24) RELAY_LAB_CODE=TEST-CODE RELAY_ALLOW_PRIVAT
 
 ## Not yet
 
-- Converting video (HEVC, AV1, HDR) on a machine with a hardware encoder, as a last resort.
+- Hardware encoders (VAAPI, Quick Sync) for converting, on a home server that has one.
 - HEVC and Dolby audio passed through untouched to Safari (needs fMP4 segments).
-- Subtitle tracks from the file as WebVTT; scrub-bar thumbnails.
+- Picture subtitles (PGS, VobSub).

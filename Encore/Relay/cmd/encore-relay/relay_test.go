@@ -103,9 +103,22 @@ func TestTheAPIEndToEnd(t *testing.T) {
 	if mp4["mode"] != "direct" || mp4["url"] != files.URL+"/avc-aac.mp4" {
 		t.Fatalf("mp4 decision: %v", mp4)
 	}
-	// HEVC and things that aren't video: choose another source.
-	if _, hevc := post(t, h, "/v1/session", token, map[string]any{"url": files.URL + "/hevc.mkv"}); hevc["mode"] != "unsupported" || hevc["reason"] != "hevc" {
+	// HEVC: another source first (it can be converted, when asked for), then converted, one at a time.
+	if _, hevc := post(t, h, "/v1/session", token, map[string]any{"url": files.URL + "/hevc.mkv"}); hevc["mode"] != "unsupported" || hevc["reason"] != "hevc" || hevc["convertible"] != true {
 		t.Fatalf("hevc decision: %v", hevc)
+	}
+	_, converted := post(t, h, "/v1/session", token, map[string]any{"url": files.URL + "/hevc.mkv", "convert": true})
+	if converted["mode"] != "remux" || converted["converted"] != true {
+		t.Fatalf("hevc, converted: %v", converted)
+	}
+	if _, second := post(t, h, "/v1/session", token, map[string]any{"url": files.URL + "/hevc.mkv", "convert": true}); second["reason"] != "busy" {
+		t.Fatalf("a second conversion at once: %v", second)
+	}
+	// Turned off, nothing is offered for converting.
+	off := NewRelay(Config{Secret: secret, CacheDir: t.TempDir(), FFmpeg: "ffmpeg", AllowPrivate: true, Convert: "off"})
+	defer off.Close()
+	if _, hevc := post(t, off.Handler(), "/v1/session", token, map[string]any{"url": files.URL + "/hevc.mkv", "convert": true}); hevc["mode"] != "unsupported" || hevc["convertible"] == true {
+		t.Fatalf("hevc with converting off: %v", hevc)
 	}
 	if _, txt := post(t, h, "/v1/session", token, map[string]any{"url": files.URL + "/notes.txt"}); txt["mode"] != "unsupported" {
 		t.Fatalf("text decision: %v", txt)

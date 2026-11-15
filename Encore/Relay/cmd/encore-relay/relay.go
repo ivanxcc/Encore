@@ -18,7 +18,9 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -43,6 +45,9 @@ var hlsScript []byte
 var webFiles embed.FS
 
 type Config struct {
+	// Convert says whether video the browser can't decode may be re-encoded here, and how sharply:
+	// "off", "720", "1080", or "" for the machine's size (1080 with 8 or more cores, else 720).
+	Convert      string
 	Secret       string
 	LabCode      string
 	CacheDir     string
@@ -57,15 +62,17 @@ type Config struct {
 }
 
 type Relay struct {
-	cfg      Config
-	mu       sync.Mutex
-	sessions map[string]*hls.Session
-	attempts map[string][]time.Time // lab-code guesses, per address
-	owners   map[string]person      // Stremio accounts (by email) allowed to use this relay
-	used     map[string]int64       // invites already taken, until they would have expired
-	indexes  map[string]indexed     // files already understood, by size and a hash of their first bytes
-	stats    Stats
-	stop     chan struct{}
+	cfg       Config
+	mu        sync.Mutex
+	sessions  map[string]*hls.Session
+	attempts  map[string][]time.Time // lab-code guesses, per address
+	owners    map[string]person      // Stremio accounts (by email) allowed to use this relay
+	used      map[string]int64       // invites already taken, until they would have expired
+	indexes   map[string]indexed     // files already understood, by size and a hash of their first bytes
+	stats     Stats
+	toolsOnce sync.Once
+	tools     tools
+	stop      chan struct{}
 }
 
 type Stats struct {
@@ -74,6 +81,7 @@ type Stats struct {
 	Remux           int     `json:"remux"`
 	Unsupported     int     `json:"unsupported"`
 	IndexesRecalled int     `json:"indexesRecalled"`
+	Converted       int     `json:"converted"`
 	Segments        int     `json:"segments"`
 	Runs            int     `json:"runs"`
 	FirstSegmentP   float64 `json:"firstSegmentMsAvg"`
@@ -143,6 +151,9 @@ type Request struct {
 	Start    float64 `json:"start"`    // where playback will begin, in seconds
 	Audio    *int    `json:"audio"`    // a chosen audio track
 	Language string  `json:"language"` // preferred audio language
+	// Convert: re-encode video the browser can't decode. Without it such a file is reported as
+	// convertible, so the player can look for a source that plays as it is first.
+	Convert bool `json:"convert"`
 }
 
 type TrackInfo struct {
@@ -159,14 +170,18 @@ type TrackInfo struct {
 // Decision is how to play it.
 type Decision struct {
 	// direct: play URL as it is. remux: play Playlist. unsupported: choose another source.
-	Mode     string  `json:"mode"`
-	Reason   string  `json:"reason,omitempty"`
-	URL      string  `json:"url,omitempty"`
-	ID       string  `json:"id,omitempty"`
-	Playlist string  `json:"playlist,omitempty"`
-	Duration float64 `json:"duration,omitempty"`
-	Segments int     `json:"segments,omitempty"`
-	Video    struct {
+	Mode string `json:"mode"`
+	// Convertible: unsupported as it is, but this relay can re-encode it (ask again with convert).
+	Convertible bool `json:"convertible,omitempty"`
+	// Converted: the video is being re-encoded as H.264 for this browser.
+	Converted bool    `json:"converted,omitempty"`
+	Reason    string  `json:"reason,omitempty"`
+	URL       string  `json:"url,omitempty"`
+	ID        string  `json:"id,omitempty"`
+	Playlist  string  `json:"playlist,omitempty"`
+	Duration  float64 `json:"duration,omitempty"`
+	Segments  int     `json:"segments,omitempty"`
+	Video     struct {
 		Codec  string `json:"codec,omitempty"`
 		Width  int    `json:"width,omitempty"`
 		Height int    `json:"height,omitempty"`
@@ -255,19 +270,36 @@ func (r *Relay) Decide(ctx context.Context, req Request) (*Decision, error) {
 			Default: t.Default, Forced: t.Forced, Text: name == "srt" || name == "ass" || name == "ssa" || name == "vtt"})
 	}
 
-	// Video is never re-encoded here: the browser must be able to decode it as it is.
+	// Video is copied when the browser decodes it as it is; otherwise it can be re-encoded, as a last
+	// resort (it costs the server's processor, and one such stream runs at a time).
+	needs := ""
 	switch {
-	case d.Video.Codec != "h264":
-		return unsupported(r, d, d.Video.Codec, "This video needs converting for this browser."), nil
 	case len(req.Caps.Video) > 0 && !has(req.Caps.Video, "h264"):
 		return unsupported(r, d, "h264", "This browser cannot play H.264."), nil
+	case d.Video.Codec != "h264":
+		needs = d.Video.Codec
 	case len(video.CodecPrivate) > 1 && !map[byte]bool{66: true, 77: true, 88: true, 100: true}[video.CodecPrivate[1]]:
-		return unsupported(r, d, "h264-10bit", "10-bit H.264 needs converting for browsers."), nil
+		needs = "h264-10bit"
 	case d.Video.HDR:
-		return unsupported(r, d, "hdr", "HDR video needs converting for this browser."), nil
+		needs = "hdr"
 	}
 	if err != nil { // ErrNoIndex
 		return unsupported(r, d, "no-index", "The file has no keyframe index."), nil
+	}
+	var convert *hls.Convert
+	if needs != "" {
+		convert = r.conversion(d.Video.HDR)
+		switch {
+		case convert == nil:
+			return unsupported(r, d, needs, "This video needs converting, which this server doesn't do."), nil
+		case !req.Convert:
+			u := unsupported(r, d, needs, "This video needs converting for this browser.")
+			u.Convertible = true
+			return u, nil
+		case r.convertingNow():
+			return unsupported(r, d, "busy", "This server is already converting a video."), nil
+		}
+		d.Converted = true
 	}
 
 	choice := hls.Audio{}
@@ -293,6 +325,10 @@ func (r *Relay) Decide(ctx context.Context, req Request) (*Decision, error) {
 		}
 	}
 	session.SetSubtitles(texts)
+	if convert != nil {
+		session.SetConvert(convert)
+		r.count(func(s *Stats) { s.Converted++ })
+	}
 	session.OnFirstSegment(func(took time.Duration) {
 		r.count(func(s *Stats) {
 			s.Runs++
@@ -444,6 +480,53 @@ func (r *Relay) decideOther(ctx context.Context, req Request, src *source.HTTP, 
 	return unsupported(r, d, "mp4-codecs", "This MP4's codecs need converting for this browser.")
 }
 
+// conversion is how this relay re-encodes video, or nil when it doesn't (turned off, no x264, or
+// HDR without the filters that map it to SDR).
+func (r *Relay) conversion(hdr bool) *hls.Convert {
+	mode := strings.ToLower(strings.TrimSpace(r.cfg.Convert))
+	if mode == "off" || mode == "no" || mode == "0" {
+		return nil
+	}
+	tools := r.ffmpegTools()
+	if !tools.x264 || (hdr && !tools.zscale) {
+		return nil
+	}
+	height := 720
+	switch {
+	case mode == "1080":
+		height = 1080
+	case mode == "720":
+	case runtime.NumCPU() >= 8:
+		height = 1080
+	}
+	// One core is left for everything else the server runs.
+	return &hls.Convert{Height: height, Tonemap: hdr, Threads: max(1, runtime.NumCPU()-1)}
+}
+
+// convertingNow says whether a stream that re-encodes is in use.
+func (r *Relay) convertingNow() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, s := range r.sessions {
+		if s.Converting() && s.Idle() < 2*time.Minute {
+			return true
+		}
+	}
+	return false
+}
+
+type tools struct{ x264, zscale bool }
+
+// ffmpegTools learns once what this machine's ffmpeg can do.
+func (r *Relay) ffmpegTools() tools {
+	r.toolsOnce.Do(func() {
+		enc, _ := exec.Command(r.cfg.FFmpeg, "-hide_banner", "-encoders").Output()
+		flt, _ := exec.Command(r.cfg.FFmpeg, "-hide_banner", "-filters").Output()
+		r.tools = tools{x264: bytes.Contains(enc, []byte(" libx264 ")), zscale: bytes.Contains(flt, []byte(" zscale ")) && bytes.Contains(flt, []byte(" tonemap "))}
+	})
+	return r.tools
+}
+
 func unsupported(r *Relay, d *Decision, reason, detail string) *Decision {
 	r.count(func(s *Stats) { s.Unsupported++ })
 	d.Mode, d.Reason = "unsupported", reason
@@ -522,6 +605,7 @@ func (r *Relay) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/s/{id}/seg/{file}", r.handleSegment)
 	mux.HandleFunc("DELETE /v1/s/{id}", r.handleClose)
 	mux.HandleFunc("GET /v1/s/{id}/subs/{track}", r.handleCues)
+	mux.HandleFunc("GET /v1/s/{id}/thumb", r.handleThumb)
 	mux.HandleFunc("GET /v1/subtitle", r.authed(r.handleSubtitle))
 	mux.HandleFunc("POST /v1/lab/token", r.handleLabToken)
 	mux.HandleFunc("POST /v1/auth", r.handleAuth)
@@ -690,6 +774,26 @@ func (r *Relay) handleSegment(w http.ResponseWriter, req *http.Request) {
 			panic(http.ErrAbortHandler)
 		}
 	}
+}
+
+// handleThumb gives a picture of the stream near ?t= (seconds), for the scrub bar.
+func (r *Relay) handleThumb(w http.ResponseWriter, req *http.Request) {
+	r.mu.Lock()
+	s := r.sessions[req.PathValue("id")]
+	r.mu.Unlock()
+	t, err := strconv.ParseFloat(req.URL.Query().Get("t"), 64)
+	if s == nil || err != nil {
+		http.NotFound(w, req)
+		return
+	}
+	path, err := s.Thumbnail(req.Context(), t)
+	if err != nil {
+		http.Error(w, "No picture for that moment.", http.StatusBadGateway)
+		return
+	}
+	w.Header().Set("Content-Type", "image/jpeg")
+	w.Header().Set("Cache-Control", "private, max-age=3600")
+	http.ServeFile(w, req, path)
 }
 
 // handleCues gives a subtitle track's cues found so far; the player asks again for the ones after

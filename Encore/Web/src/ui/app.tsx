@@ -1,5 +1,5 @@
 import { useEffect, useState } from "preact/hooks";
-import { auth, go, path, profileId } from "../lib/core";
+import { auth, go, online, path, profileId } from "../lib/core";
 import { forgetSession, NeedsCode, relayAuth } from "../lib/api";
 import { load, loaded, profile, profiles, signOut as clearLibrary } from "../lib/library";
 import { HomePage } from "./home";
@@ -47,6 +47,12 @@ function Nav() {
       )}
     </>
   );
+}
+
+/** Said once, quietly, while there's no connection. */
+export function Offline() {
+  if (online.value) return null;
+  return <div class="offline glass" role="status">No connection. Encore picks up where it left off when you're back online.</div>;
 }
 
 /** Arrow keys move between things on screen, for TV remotes and keyboards: to the nearest control in
