@@ -39,10 +39,14 @@ export interface Prefs {
   skipIntros: boolean;
   /** The sharpest source to choose. Lower starts faster and uses less data. */
   quality: "best" | "1080p" | "720p";
+  /** Ready a few seconds of a title when its page has been open a moment, so Play starts at once. */
+  prepareAhead: boolean;
+  v?: number;
 }
-const defaultPrefs: Prefs = { audioLanguage: "", subtitles: "off", autoplayNext: true, skipIntros: false, quality: "best" };
+const defaultPrefs: Prefs = { audioLanguage: "en", subtitles: "off", autoplayNext: true, skipIntros: false, quality: "best", prepareAhead: true, v: 2 };
 export const prefs = saved<Prefs>("prefs", defaultPrefs);
-prefs.value = { ...defaultPrefs, ...prefs.value };
+// Version 2: English unless chosen otherwise (it was the device's language).
+prefs.value = { ...defaultPrefs, ...prefs.value, ...(prefs.value.v !== 2 && !prefs.value.audioLanguage ? { audioLanguage: "en" } : {}), v: 2 };
 export const setPref = <K extends keyof Prefs>(key: K, value: Prefs[K]) => { prefs.value = { ...prefs.value, [key]: value }; };
 /** The audio language to ask for: the chosen one, else the browser's. */
 export const audioLanguage = () => prefs.value.audioLanguage || (navigator.language || "en").slice(0, 2).toLowerCase();
@@ -54,9 +58,16 @@ addEventListener("offline", () => { online.value = false; });
 
 // MARK: Router
 
+const TABS = ["/", "/search", "/list", "/settings"];
+const isTab = (p: string) => TABS.includes(p.split("?")[0]);
+
 export const path = signal(location.pathname + location.search);
 
-addEventListener("popstate", () => transition(() => { path.value = location.pathname + location.search; }));
+addEventListener("popstate", () => {
+  const to = location.pathname + location.search;
+  const change = () => { path.value = to; };
+  if (isTab(path.value) && isTab(to)) change(); else transition(change);
+});
 
 /** Changes the page with the browser's own cross-fade where it has one. */
 function transition(change: () => void) {
@@ -70,11 +81,15 @@ function transition(change: () => void) {
 
 export function go(to: string, options: { replace?: boolean } = {}) {
   if (to === path.value) return;
+  const from = path.value;
   if (options.replace) history.replaceState(null, "", to); else history.pushState(null, "", to);
-  transition(() => {
+  const change = () => {
     path.value = to;
     if (!to.startsWith("/watch")) scrollTo(0, 0);
-  });
+  };
+  // Between tabs the page changes at once, as a tab bar does; the bar itself never moves. Into and
+  // out of a title, the browser's cross-fade.
+  if (isTab(from) && isTab(to)) change(); else transition(change);
 }
 
 export function back(fallback = "/") {

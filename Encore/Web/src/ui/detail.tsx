@@ -4,7 +4,8 @@ import { art, encore, meta as loadMeta, type Extras, type Meta, type Video } fro
 import { inProgress, isUpNext, isWatched, item as libraryItem, progressOf, setInList, watchedMarks } from "../lib/library";
 import { prepare } from "../lib/play";
 import { Art, Backdrop, Logo, MetaLine, Shelf } from "./shared";
-import { Check, Left, Play, Plus } from "./icons";
+import { Check, Left, List, Play, Plus } from "./icons";
+import { SourcesSheet } from "./sources";
 
 export const episodeNumber = (v: Video) => v.episode ?? v.number;
 export const videoTitle = (v: Video) => v.title || v.name || (episodeNumber(v) != null ? `Episode ${episodeNumber(v)}` : "");
@@ -64,8 +65,14 @@ export function TitlePage({ type, id, focus }: { type: string; id: string; focus
   const video = meta ? currentVideo(meta) : undefined;
   const resume = meta ? resumeAt(meta, video) : 0;
 
-  // Ready the stream at the resume point now, so Play has nothing to wait for.
-  useEffect(() => { if (meta) prepare(meta, video, resume).catch(() => {}); }, [meta?.id, video?.id]);
+  // Ready a few seconds of the stream at the resume point once the page has been open a moment (not
+  // while flicking through titles), so Play has nothing to wait for.
+  useEffect(() => {
+    if (!meta) return;
+    const t = setTimeout(() => { prepare(meta, video, resume, { preview: true }).catch(() => {}); }, 1200);
+    return () => clearTimeout(t);
+  }, [meta?.id, video?.id]);
+  const [choosing, setChoosing] = useState(false);
   useEffect(() => {
     if (extras?.tmdbId && season != null) encore.runtimes(extras.tmdbId, season).then(setRuntimes);
   }, [extras?.tmdbId, season]);
@@ -120,7 +127,9 @@ export function TitlePage({ type, id, focus }: { type: string; id: string; focus
               <button class="pill secondary round" aria-label={inList ? "Remove from My List" : "Add to My List"} onClick={() => setInList(meta, !inList)}>
                 {inList ? <Check /> : <Plus />}
               </button>
+              <button class="pill secondary round" aria-label="Sources" title="Sources" onClick={() => setChoosing(true)}><List /></button>
             </div>
+            {choosing && <SourcesSheet meta={meta} video={video} title={[tag, video ? videoTitle(video) : meta.name].filter(Boolean).join(" · ")} onClose={() => setChoosing(false)} />}
             {resuming && item && (
               <div class="resume"><div class="bar"><i style={{ width: `${progressOf(item) * 100}%` }} /></div>{minutes(left)} left</div>
             )}
@@ -140,7 +149,7 @@ export function TitlePage({ type, id, focus }: { type: string; id: string; focus
                   {seasons.map((s) => <button key={s} role="tab" aria-selected={s === season} class={s === season ? "on" : ""} onClick={() => setSeason(s)}>{s === 0 ? "Specials" : `Season ${s}`}</button>)}
                 </div>
               )}
-              <Shelf title={seasons.length > 1 ? "" : "Episodes"}>
+              <Shelf title={seasons.length > 1 ? "" : "Episodes"} class="episodes" key={season}>
                 {shown.map((v) => {
                   const mine = item?.state.video_id === v.id && resuming;
                   const number = episodeNumber(v);

@@ -38,7 +38,7 @@ POST   /v1/auth               {authKey, code? | invite?}  -> a 7-day token for a
 POST   /v1/invite             -> a link that lets one more account in, once, within 7 days
 GET    /v1/people             who can use the relay (for accounts linked with the code)
 DELETE /v1/people/{email}     take someone off the relay; their tokens stop working at once
-POST   /v1/session            {url, headers?, start?, audio?, language?, convert?,
+POST   /v1/session            {url, headers?, start?, audio?, language?, convert?, preview?,
                                caps: {video: [...], audio: [...], stream?: [...]}}
                               Authorization: Bearer <token>     -> a decision (see above), with the playlist path
 GET    /v1/s/{id}/index.m3u8  the complete VOD playlist
@@ -60,6 +60,11 @@ boundaries, so seeking works the same way. It's a last resort: the web app tries
 as it is first. One converted stream runs at a time, at 720p (1080p on machines with 8 or more cores),
 using all but one core; HDR is tone-mapped when ffmpeg has `zscale`. `RELAY_CONVERT=off|720|1080` in
 `relay.env` changes that.
+
+**Preview.** A session asked for with `preview: true` (a title page has been open a moment) makes only
+two segments, then lets go of the source; the first segment a player asks for lifts the limit. The web
+app readies only sources marked ready now, one title at a time, and closes the last one when another
+is readied.
 
 **Subtitles** in the file (SRT, ASS, WebVTT) come out of the same ffmpeg pass that makes the stream, so
 they cost no extra reading and follow every seek. Picture subtitles (PGS, VobSub) can't be shown.

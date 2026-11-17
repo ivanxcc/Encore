@@ -96,7 +96,7 @@ function People() {
 
 export function SettingsPage() {
   const me = profile.value!;
-  const languages: [string, string][] = [["", "Automatic"], ...LANGUAGES];
+  const languages: [string, string][] = [["", "Device Language"], ...LANGUAGES];
   return (
     <div class="page padded settings">
       <h1 class="heading">Settings</h1>
@@ -111,7 +111,7 @@ export function SettingsPage() {
 
       <h2 class="group-title">Playback</h2>
       <section class="group">
-        <Row title="Audio Language" detail="Chosen when a source has more than one.">
+        <Row title="Audio Language" detail="Sources in this language come first, and it's the track chosen when a source has several.">
           <select class="select" aria-label="Audio language" value={prefs.value.audioLanguage} onChange={(e) => setPref("audioLanguage", (e.target as HTMLSelectElement).value)}>
             {languages.map(([c, n]) => <option key={c} value={c}>{n}</option>)}
           </select>
@@ -127,6 +127,9 @@ export function SettingsPage() {
         </Row>
         <Row title="Skip Intros and Recaps" detail="Skips them by themselves where Encore knows where they are.">
           <Toggle label="Skip intros and recaps" on={prefs.value.skipIntros} onChange={(v) => setPref("skipIntros", v)} />
+        </Row>
+        <Row title="Prepare While Browsing" detail="Readies a few seconds of a title when its page has been open a moment, so Play starts at once. Only sources that are ready now.">
+          <Toggle label="Prepare while browsing" on={prefs.value.prepareAhead} onChange={(v) => setPref("prepareAhead", v)} />
         </Row>
         <Row title="Quality" detail="Lower starts faster and uses less data, for weak or metered connections.">
           <Choice pref="quality" label="Quality" options={[["best", "Best"], ["1080p", "1080p"], ["720p", "720p"]]} />

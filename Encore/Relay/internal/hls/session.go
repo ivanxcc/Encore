@@ -71,15 +71,19 @@ type Session struct {
 	subs    []int            // text subtitle tracks (among the file's subtitle tracks) to collect
 	cues    map[int]*cueList // what has been collected of each, by track
 
-	mu       sync.Mutex
-	notify   chan struct{}
-	done     map[int]bool
-	live     map[int]*live // segments being written right now
-	runs     []*run
-	playhead int
-	lastUse  time.Time
-	closed   bool
-	failure  error // why the latest run that failed did
+	mu sync.Mutex
+	// A stream readied before anyone presses Play makes only a few segments, then lets go of the
+	// connection; the first segment a player asks for lifts the limit.
+	warmUntil int
+	claimed   bool
+	notify    chan struct{}
+	done      map[int]bool
+	live      map[int]*live // segments being written right now
+	runs      []*run
+	playhead  int
+	lastUse   time.Time
+	closed    bool
+	failure   error // why the latest run that failed did
 }
 
 // Cue is a line of subtitles: when it shows, on the video's own timeline, and its text (WebVTT
@@ -313,7 +317,7 @@ func NewSession(id string, f *mkv.File, src Source, audio Audio, dir, ffmpeg str
 		return nil, err
 	}
 	return &Session{ID: id, Plan: plan, File: f, audio: audio, src: src, dir: dir, ffmpeg: ffmpeg,
-		created: time.Now(), notify: make(chan struct{}), thumbs: make(chan struct{}, 1), done: map[int]bool{}, live: map[int]*live{}, lastUse: time.Now()}, nil
+		created: time.Now(), warmUntil: -1, notify: make(chan struct{}), thumbs: make(chan struct{}, 1), done: map[int]bool{}, live: map[int]*live{}, lastUse: time.Now()}, nil
 }
 
 func (s *Session) path(n int) string { return filepath.Join(s.dir, fmt.Sprintf("seg-%05d.ts", n)) }
@@ -341,11 +345,20 @@ func (s *Session) wait(ctx context.Context, limit time.Duration) error {
 }
 
 // Warm starts making the stream at a segment, before the player asks for it.
-func (s *Session) Warm(n int) {
+func (s *Session) Warm(n int) { s.warm(n, -1) }
+
+// Preview readies a stream ahead of Play: just `segments` segments from n (a few seconds), so opening
+// many titles' pages costs little of the source's bandwidth and holds no connection open.
+func (s *Session) Preview(n, segments int) { s.warm(n, segments) }
+
+func (s *Session) warm(n, segments int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if n < 0 || n >= s.Plan.Count() || s.closed || s.done[n] {
 		return
+	}
+	if segments > 0 && !s.claimed {
+		s.warmUntil = n + segments - 1
 	}
 	s.playhead = n
 	if s.runFor(n) == nil {
@@ -366,6 +379,7 @@ func (s *Session) Open(ctx context.Context, n int) (*Reader, time.Duration, erro
 	defer s.mu.Unlock()
 	s.playhead = n
 	s.lastUse = time.Now()
+	s.claimed = true
 	s.broadcast() // runs held back for being too far ahead look again
 	starts := 0
 	for {
@@ -752,6 +766,9 @@ func (s *Session) admit(ctx context.Context, r *run, idx int) (bool, error) {
 		}
 		if s.done[idx] {
 			return true, nil
+		}
+		if !s.claimed && s.warmUntil >= 0 && idx > s.warmUntil {
+			return true, nil // readied ahead of Play: enough
 		}
 		if idx <= s.playhead+aheadSegments {
 			return false, nil

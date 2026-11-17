@@ -156,7 +156,7 @@ export function PosterCard({ meta }: { meta: Meta }) {
 }
 
 /** A titled row that scrolls sideways: by touch or trackpad, or by the arrows that appear at its edges. */
-export function Shelf(props: { title: string; children: ComponentChildren }) {
+export function Shelf(props: { title: string; children: ComponentChildren; class?: string }) {
   const row = useRef<HTMLDivElement>(null);
   const [ends, setEnds] = useState({ left: true, right: false });
   const measure = () => {
@@ -166,7 +166,7 @@ export function Shelf(props: { title: string; children: ComponentChildren }) {
   useEffect(measure, [props.children]);
   const page = (direction: number) => row.current?.scrollBy({ left: direction * row.current.clientWidth * 0.85, behavior: "smooth" });
   return (
-    <section class="shelf">
+    <section class={"shelf" + (props.class ? " " + props.class : "")}>
       <h2>{props.title}</h2>
       <div class="row" ref={row} onScroll={measure}>{props.children}</div>
       <button class="edge left" disabled={ends.left} tabIndex={-1} aria-hidden="true" onClick={() => page(-1)}><Left /></button>
@@ -210,10 +210,18 @@ export function MetaLine({ meta, extra }: { meta: Meta; extra?: { runtime?: stri
   );
 }
 
+/** A title's logo, faded in once it's decoded; its name in type when there's none. The space it will
+ * take is held while it loads, so nothing below it jumps. */
 export function Logo({ src, name }: { src?: string; name: string }) {
-  // Remembers which address failed, so a new title's logo gets its own try.
-  const [failed, setFailed] = useState<string>();
-  return src && failed !== src
-    ? <img class="logo" src={src} alt={name} onError={() => setFailed(src)} draggable={false} />
-    : <h1 class="logo-text">{name}</h1>;
+  // Kept by address, so a new title's logo gets its own try and its own fade.
+  const [state, setState] = useState<{ src?: string; is: "wait" | "in" | "failed" }>({ is: "wait" });
+  const now = state.src === src ? state.is : "wait";
+  if (!src || now === "failed") return <h1 class="logo-text">{name}</h1>;
+  return (
+    <div class={"logo-box" + (now === "in" ? " in" : "")}>
+      <img class="logo" src={src} alt={name} draggable={false} decoding="async"
+        ref={(img) => { if (img && now === "wait" && img.complete && img.naturalWidth) queueMicrotask(() => setState({ src, is: "in" })); }}
+        onLoad={(e) => reveal(e.currentTarget, () => setState({ src, is: "in" }))} onError={() => setState({ src, is: "failed" })} />
+    </div>
+  );
 }

@@ -154,6 +154,9 @@ type Request struct {
 	// Convert: re-encode video the browser can't decode. Without it such a file is reported as
 	// convertible, so the player can look for a source that plays as it is first.
 	Convert bool `json:"convert"`
+	// Preview: readied ahead of Play (a title's page is open). Only a few seconds are made until a
+	// player asks for a segment.
+	Preview bool `json:"preview"`
 }
 
 type TrackInfo struct {
@@ -344,7 +347,11 @@ func (r *Relay) Decide(ctx context.Context, req Request) (*Decision, error) {
 	r.stats.Remux++
 	r.mu.Unlock()
 	// Start on the segment playback will begin with, before the player has even fetched the playlist.
-	session.Warm(session.Plan.At(req.Start))
+	if req.Preview {
+		session.Preview(session.Plan.At(req.Start), 2)
+	} else {
+		session.Warm(session.Plan.At(req.Start))
+	}
 
 	d.Mode, d.ID, d.Playlist, d.Segments = "remux", id, "/v1/s/"+id+"/index.m3u8", session.Plan.Count()
 	return d, nil

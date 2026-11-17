@@ -4,12 +4,13 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import { back, clock, go, prefs, setPref } from "../lib/core";
 import { art, encore, meta as loadMeta, NeedsCode, relayClose, relaySession, type Decision, type Meta, type TrackInfo, type Video } from "../lib/api";
 import { flush, recordProgress } from "../lib/library";
-import { lighter, prepare, sessionRequest, used, useNativeHls, type Candidate, type Prepared } from "../lib/play";
+import { chosenSource, claim, lighter, prepare, sessionRequest, used, useNativeHls, type Candidate, type Prepared } from "../lib/play";
+import { SourcesSheet } from "./sources";
 import { lang2, languageName } from "../lib/lang";
 import { Captions, subtitleOptions, useAddonSubtitles, useCues, useSystemCaptions, type SubOption } from "./captions";
 import { currentVideo, episodes, episodeTag, resumeAt, videoTitle } from "./detail";
 import { Logo } from "./shared";
-import { Back10, Bubble, Cast, Check, Close, Full, Fwd10, Left, Muted, Next, Pause, Pip, Play, Small, Sound } from "./icons";
+import { Back10, Bubble, Cast, Check, Close, List, Full, Fwd10, Left, Muted, Next, Pause, Pip, Play, Small, Sound } from "./icons";
 
 // One element for the life of the page. Browsers only let a video start with sound from a tap; the
 // tap that leads here (Play, an episode, a Continue Watching card) unlocks this element at once,
@@ -128,8 +129,12 @@ export function Player({ type, id, videoId }: { type: string; id: string; videoI
         key = v?.id || m.id;
         setMeta(m); setEpisode(v);
         const startAt = videoId && v?.id !== currentVideo(m)?.id ? resumeAt(m, v) : resumeAt(m, v);
-        const p = await prepare(m, v, startAt);
+        // A source chosen by hand on the title's page comes first.
+        const chosen = chosenSource.get(key);
+        chosenSource.delete(key);
+        const p = await prepare(m, v, startAt, chosen ? { candidate: chosen } : {});
         if (!alive) return;
+        claim(key);
         live.current.prepared = p;
         if (!p.decision) { setProblem(p.problem || "This title can't be played right now."); setPhase("problem"); return; }
         // Attaching a stream: at first, and again when another audio track is chosen.
@@ -205,7 +210,7 @@ export function Player({ type, id, videoId }: { type: string; id: string; videoI
         const { meta } = state.current;
         if (meta && nextRef.current && !live.current.warmedNext && video.duration > 0 && video.currentTime / video.duration > 0.85) {
           live.current.warmedNext = true;
-          prepare(meta, nextRef.current, 0).catch(() => {});
+          prepare(meta, nextRef.current, 0, { preview: true }).catch(() => {});
         }
       }),
       on("durationchange", () => setDuration(isFinite(video.duration) ? video.duration : 0)),
@@ -351,12 +356,14 @@ export function Player({ type, id, videoId }: { type: string; id: string; videoI
     const choice = lighter(p)[0];
     if (choice) { stalls.current.offered = true; setStruggling(choice); }
   };
-  const switchSource = async () => {
+  const switchSource = (choice?: Candidate) => switchTo(choice ? [choice] : lighter(live.current.prepared!).slice(0, 3));
+  // Another source, at the same moment (a lighter one, or one chosen by hand).
+  const switchTo = async (candidates: Candidate[]) => {
     const p = live.current.prepared, old = decision;
     if (!p || !attachRef.current) return;
-    setStruggling(null); setSwitching(true);
+    setStruggling(null); setSwitching(true); setPicking(false);
     const at = video.currentTime;
-    for (const candidate of lighter(p).slice(0, 3)) {
+    for (const candidate of candidates) {
       const next = await relaySession(sessionRequest(candidate, at));
       if (next.mode !== "direct" && next.mode !== "remux") continue;
       await attachRef.current(next, at);
@@ -367,10 +374,11 @@ export function Player({ type, id, videoId }: { type: string; id: string; videoI
       setSwitching(false);
       return;
     }
-    setSwitching(false); setNote("No lighter source could be played."); setTimeout(() => setNote(null), 3000);
+    setSwitching(false); setNote(candidates.length === 1 ? "That source couldn't be played." : "No lighter source could be played."); setTimeout(() => setNote(null), 3000);
   };
   const audioTracks = decision?.mode === "remux" ? decision.audioTracks || [] : [];
-  const hasTracks = subOptions.length > 0 || audioTracks.length > 1;
+  const hasTracks = !!decision;
+  const [picking, setPicking] = useState(false);
 
   const toggle = () => { if (video.paused) video.play().catch(() => {}); else video.pause(); };
   const seekBy = (d: number) => { video.currentTime = Math.max(0, Math.min((video.duration || 0) - 1, video.currentTime + d)); reveal(); };
@@ -431,7 +439,8 @@ export function Player({ type, id, videoId }: { type: string; id: string; videoI
 
   return (
     <div ref={root} class={"player" + (show || phase !== "playing" ? " show" : " idle")} onPointerMove={(e) => e.pointerType === "mouse" && reveal()}>
-      <div ref={holder} onClick={(e) => { if ((e as unknown as PointerEvent).pointerType === "mouse") toggle(); else if (show && !video.paused) setShow(false); else reveal(); }}
+      {/* A click or tap on the picture shows or hides the controls; only the play button pauses. */}
+      <div ref={holder} onClick={() => { if (show && !video.paused) { clearTimeout(hideTimer.current); setShow(false); } else reveal(); }}
         onDblClick={toggleFull} style={{ position: "absolute", inset: 0 }} />
 
       {phase !== "playing" && (
@@ -515,7 +524,7 @@ export function Player({ type, id, videoId }: { type: string; id: string; videoI
               ))}
               {!subOptions.length && <p class="quiet">None for this video.</p>}
             </section>
-            {audioTracks.length > 1 && (
+            {(
               <section>
                 <h3>Audio</h3>
                 {audioTracks.map((t) => (
@@ -523,10 +532,16 @@ export function Player({ type, id, videoId }: { type: string; id: string; videoI
                     <Check /><span>{languageName(t.language)}<small>{[t.channels ? (t.channels >= 6 ? `${t.channels - 1}.1` : t.channels === 1 ? "Mono" : "Stereo") : "", codecLabel(t.codec), t.name && !/^(stereo|surround|\d\.\d)$/i.test(t.name) ? t.name : ""].filter(Boolean).join(" · ")}</small></span>
                   </button>
                 ))}
+                {audioTracks.length <= 1 && <p class="quiet">{decision?.audio ? languageName(decision.audio.language) : "One track"}</p>}
+                <button class="other" onClick={() => { setTracksOpen(false); setPicking(true); }}><List /><span>Other Sources…<small>Another language or quality</small></span></button>
               </section>
             )}
           </div>
         </>
+      )}
+      {picking && meta && (
+        <SourcesSheet meta={meta} video={episode} title={[tag, episode ? videoTitle(episode) : meta.name].filter(Boolean).join(" · ")}
+          onClose={() => setPicking(false)} onPick={(c) => switchSource(c)} />
       )}
 
       {phase === "playing" && (
@@ -546,7 +561,7 @@ export function Player({ type, id, videoId }: { type: string; id: string; videoI
           {struggling && (
             <span class="struggle glass">
               <span>Playback is stuttering.</span>
-              <button class="pill primary small" onClick={switchSource}>Switch to {struggling.quality || "a Lighter Source"}</button>
+              <button class="pill primary small" onClick={() => switchSource()}>Switch to {struggling.quality || "a Lighter Source"}</button>
               <button class="icon" aria-label="Keep this source" onClick={() => setStruggling(null)}><Close /></button>
             </span>
           )}

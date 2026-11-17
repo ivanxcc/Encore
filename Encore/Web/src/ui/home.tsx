@@ -9,6 +9,10 @@ import { Check, Close, Film, Info, Left, More, Play, Right } from "./icons";
 
 const SLIDE = 9000;
 
+// What Home has shown, kept for the next time it's opened: coming back from another tab draws it as
+// it was, at once, instead of rebuilding it from placeholders.
+const kept = { featured: [] as Meta[], list: [] as CatalogRef[], slide: 0, rows: new Map<string, Meta[]>() };
+
 /** "24m left" for something part-watched. */
 function left(item: { state: { timeOffset?: number; duration?: number } }): string | null {
   const { timeOffset = 0, duration = 0 } = item.state;
@@ -16,12 +20,13 @@ function left(item: { state: { timeOffset?: number; duration?: number } }): stri
 }
 
 function Hero({ items }: { items: Meta[] }) {
-  const [index, setIndex] = useState(0);
+  const [index, setIndexState] = useState(() => Math.min(kept.slide, items.length - 1));
+  const setIndex = (next: number | ((i: number) => number)) => setIndexState((i) => { const n = typeof next === "function" ? next(i) : next; kept.slide = n; return n; });
   const [held, setHeld] = useState(false);
   const [loadedArt, setLoadedArt] = useState<Set<string>>(new Set());
   const touch = useRef<number | null>(null);
   // The words under the artwork change a beat after the picture starts to: they fade out, then in.
-  const [infoIndex, setInfoIndex] = useState(0);
+  const [infoIndex, setInfoIndex] = useState(index);
   const [leaving, setLeaving] = useState(false);
   useEffect(() => {
     if (index === infoIndex) return;
@@ -131,11 +136,11 @@ function ContinueShelf() {
 
 function CatalogShelf({ shelf }: { shelf: CatalogRef }) {
   const [ref, near] = useNearScreen<HTMLDivElement>();
-  const [metas, setMetas] = useState<Meta[] | null>(null);
+  const [metas, setMetas] = useState<Meta[] | null>(() => kept.rows.get(shelf.key) || null);
   useEffect(() => {
-    if (!near) return;
+    if (!near || kept.rows.has(shelf.key)) return;
     let live = true;
-    catalog(shelf).then((m) => live && setMetas(m), () => live && setMetas([]));
+    catalog(shelf).then((m) => { kept.rows.set(shelf.key, m); if (live) setMetas(m); }, () => live && setMetas([]));
     return () => { live = false; };
   }, [near, shelf.key]);
   if (metas && !metas.length) return null;
@@ -149,8 +154,10 @@ function CatalogShelf({ shelf }: { shelf: CatalogRef }) {
 }
 
 export function HomePage() {
-  const [featured, setFeatured] = useState<Meta[]>([]);
-  const [list, setList] = useState<CatalogRef[]>([]);
+  const [featured, setFeaturedState] = useState<Meta[]>(kept.featured);
+  const [list, setListState] = useState<CatalogRef[]>(kept.list);
+  const setFeatured = (m: Meta[]) => { kept.featured = m; setFeaturedState(m); };
+  const setList = (l: CatalogRef[]) => { kept.list = l; setListState(l); };
 
   useEffect(() => {
     let live = true;

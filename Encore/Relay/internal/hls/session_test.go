@@ -546,3 +546,32 @@ func TestConvertedSegmentsLineUp(t *testing.T) {
 		t.Fatalf("segment %d by seeking: %d frames from %.3f; by playing: %d from %.3f", mid, len(a), a[0], len(b), b[0])
 	}
 }
+
+// Readied ahead of Play, a stream makes only a few segments and lets go of the source; once a player
+// asks, it carries on as usual.
+func TestPreviewMakesOnlyAFewSegments(t *testing.T) {
+	s, _ := open(t)
+	s.Preview(3, 2)
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		s.mu.Lock()
+		idle := len(s.runs) > 0 && s.runs[0].dead
+		s.mu.Unlock()
+		if idle {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	s.mu.Lock()
+	made := len(s.done)
+	dead := len(s.runs) == 1 && s.runs[0].dead
+	s.mu.Unlock()
+	if !dead || made < 2 || made > 3 {
+		t.Fatalf("after a preview: %d segments made, run stopped: %v", made, dead)
+	}
+	for n := 3; n < 9; n++ {
+		if _, _, err := s.Segment(context.Background(), n); err != nil {
+			t.Fatalf("segment %d after the preview: %v", n, err)
+		}
+	}
+}
