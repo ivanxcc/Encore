@@ -36,8 +36,10 @@ GET    /config.json           where the web app finds Encore Cloud
 POST   /v1/auth               {authKey, code? | invite?}  -> a 7-day token for a signed-in Stremio account.
                               An account is linked once, with the relay code or an invitation
 POST   /v1/invite             -> a link that lets one more account in, once, within 7 days
-GET    /v1/people             who can use the relay (for accounts linked with the code)
-DELETE /v1/people/{email}     take someone off the relay; their tokens stop working at once
+GET    /v1/people             who can use the relay, their limits, last seen, watching now (owners only)
+PATCH  /v1/people/{email}     {paused?, streams?, convert?}: pause someone (their streams end at once) or
+                              change their limits (owners only)
+DELETE /v1/people/{email}     take someone off the relay; their tokens stop working at once (owners only)
 POST   /v1/session            {url, headers?, start?, audio?, language?, convert?, preview?,
                                caps: {video: [...], audio: [...], stream?: [...]}}
                               Authorization: Bearer <token>     -> a decision (see above), with the playlist path
@@ -60,6 +62,12 @@ boundaries, so seeking works the same way. It's a last resort: the web app tries
 as it is first. One converted stream runs at a time, at 720p (1080p on machines with 8 or more cores),
 using all but one core; HDR is tone-mapped when ffmpeg has `zscale`. `RELAY_CONVERT=off|720|1080` in
 `relay.env` changes that.
+
+**Who may do what.** The first account linked with the relay code owns the relay: it invites people,
+sees and manages them, reads `/v1/stats`, and opens `/lab` (from a browser signed in to Encore Web).
+After that the code links no one new (`RELAY_CODE_SIGNUP=on` in `relay.env` reopens it); people come by
+invitation. Invited people watch, up to 2 streams at once by default, without converting; the owner can
+change both, or pause them.
 
 **Preview.** A session asked for with `preview: true` (a title page has been open a moment) makes only
 two segments, then lets go of the source; the first segment a player asks for lifts the limit. The web

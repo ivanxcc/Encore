@@ -57,6 +57,7 @@ const (
 // Session is one viewer's stream of one file.
 type Session struct {
 	ID      string
+	Owner   string // the account watching (set before the session is shared)
 	Plan    Plan
 	File    *mkv.File
 	audio   Audio
@@ -105,6 +106,13 @@ func (s *Session) SetConvert(c *Convert) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.convert = c
+}
+
+// Claimed says whether a player has asked for a segment (not only readied ahead of Play).
+func (s *Session) Claimed() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.claimed
 }
 
 // Converting says whether the video is being re-encoded.

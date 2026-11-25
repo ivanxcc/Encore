@@ -1,12 +1,12 @@
 // Settings: who's watching, how things play, this server (and who else may use it), the account.
 import { useEffect, useState } from "preact/hooks";
 import { auth, prefs, profileId, relayToken, setPref, type Prefs } from "../lib/core";
-import { relayInvite, relayPeople, relayRemove, type RelayPerson } from "../lib/api";
+import { relayChange, relayInvite, relayPeople, relayRemove, type RelayPerson } from "../lib/api";
 import { profile, profiles } from "../lib/library";
 import { Avatar } from "./shared";
 import { LANGUAGES } from "../lib/lang";
 import { QR } from "./gates";
-import { Check, Close, Exit, Swap } from "./icons";
+import { Check, Exit, Swap } from "./icons";
 
 function Toggle({ on, label, onChange }: { on: boolean; label: string; onChange: (v: boolean) => void }) {
   return <button role="switch" aria-checked={on} aria-label={label} class={"switch" + (on ? " on" : "")} onClick={() => onChange(!on)}><i /></button>;
@@ -71,25 +71,76 @@ function Invite() {
   );
 }
 
+/** "3 days ago", "just now". */
+function ago(unix?: number): string {
+  if (!unix) return "not yet";
+  const m = Math.round((Date.now() / 1000 - unix) / 60);
+  if (m < 10) return "just now";
+  if (m < 60) return `${m} minutes ago`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `${h} hour${h === 1 ? "" : "s"} ago`;
+  const d = Math.round(h / 24);
+  return d < 30 ? `${d} day${d === 1 ? "" : "s"} ago` : new Date(unix * 1000).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+}
+
+/** Everyone who can use this server, for whoever manages it: pause, limit, or remove them. */
 function People() {
   const [people, setPeople] = useState<RelayPerson[] | null>(null);
+  const [open, setOpen] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<string | null>(null);
-  useEffect(() => { relayPeople().then(setPeople, () => setPeople([])); }, []);
+  const load = () => relayPeople().then(setPeople, () => setPeople([]));
+  useEffect(() => { load(); }, []);
   if (!people || people.length < 2) return null;
+  const change = async (p: RelayPerson, edit: { paused?: boolean; streams?: number; convert?: boolean }) => {
+    setPeople((list) => (list || []).map((x) => (x.email === p.email ? { ...x, ...edit } : x)));
+    await relayChange(p.email, edit).catch(load);
+  };
   const remove = async (email: string) => {
     await relayRemove(email).catch(() => {});
     setPeople((list) => (list || []).filter((p) => p.email !== email));
-    setConfirm(null);
+    setConfirm(null); setOpen(null);
   };
   return (
     <>
-      {people.map((p) => (
-        <Row key={p.email} title={p.email + (p.you ? " (you)" : "")} detail={p.admin ? "Manages this server" : p.invitedBy ? `Invited by ${p.invitedBy}` : "Invited"}>
-          {!p.you && (confirm === p.email
-            ? <span class="actions"><button class="pill small danger" onClick={() => remove(p.email)}>Remove</button><button class="pill secondary small" onClick={() => setConfirm(null)}>Cancel</button></span>
-            : <button class="icon" aria-label={`Remove ${p.email}`} onClick={() => setConfirm(p.email)}><Close /></button>)}
-        </Row>
-      ))}
+      <h2 class="group-title">People</h2>
+      <section class="group">
+        {people.map((p) => {
+          const status = p.paused ? "Paused" : p.watching ? `Watching now${p.watching > 1 ? ` on ${p.watching} screens` : ""}` : `Last seen ${ago(p.lastSeen)}`;
+          const detail = p.you ? "You · manage this server" : [p.admin ? "Manages this server" : p.invitedBy ? `Invited by ${p.invitedBy}` : "Invited", status].join(" · ");
+          return (
+            <div key={p.email} class={"person-row" + (open === p.email ? " open" : "") + (p.paused ? " paused" : "")}>
+              <button class="setting person-head" disabled={p.you || p.admin} aria-expanded={open === p.email} onClick={() => setOpen(open === p.email ? null : p.email)}>
+                <div class="words"><b>{p.email}</b><small>{detail}</small></div>
+                {!p.you && !p.admin && <span class="chev" aria-hidden="true">›</span>}
+              </button>
+              {open === p.email && (
+                <div class="person-controls">
+                  <div class="setting">
+                    <div class="words"><b>Screens at Once</b><small>How many streams they can watch at the same time.</small></div>
+                    <div class="segmented" role="radiogroup" aria-label="Screens at once">
+                      {[1, 2, 3].map((n) => <button key={n} role="radio" aria-checked={p.streams === n} class={p.streams === n ? "on" : ""} onClick={() => change(p, { streams: n })}>{n}</button>)}
+                    </div>
+                  </div>
+                  <div class="setting">
+                    <div class="words"><b>Converting</b><small>Lets the server re-encode video their browser can't play. Uses most of the server's processor.</small></div>
+                    <Toggle label="Converting" on={p.convert} onChange={(v) => change(p, { convert: v })} />
+                  </div>
+                  <div class="setting">
+                    <div class="words"><b>{p.paused ? "Paused" : "Pause Access"}</b><small>{p.paused ? "Nothing plays for them until you resume." : "Stops what they're watching now; nothing plays until you resume."}</small></div>
+                    <Toggle label="Paused" on={!!p.paused} onChange={(v) => change(p, { paused: v })} />
+                  </div>
+                  <div class="setting">
+                    <div class="words"><b>Remove</b><small>Takes them off this server. They'd need a new invitation.</small></div>
+                    {confirm === p.email
+                      ? <span class="actions"><button class="pill small danger" onClick={() => remove(p.email)}>Remove</button><button class="pill secondary small" onClick={() => setConfirm(null)}>Cancel</button></span>
+                      : <button class="pill secondary small danger" onClick={() => setConfirm(p.email)}>Remove…</button>}
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </section>
     </>
   );
 }
@@ -139,9 +190,9 @@ export function SettingsPage() {
       <h2 class="group-title">This Server</h2>
       <section class="group">
         <Row title={location.host} detail={relayToken.value ? `Connected${relayToken.value.admin ? " · you manage this server" : ""}` : "Not connected yet"} />
-        <Invite />
-        {relayToken.value?.admin && <People />}
+        {relayToken.value?.admin && <Invite />}
       </section>
+      {relayToken.value?.admin && <People />}
 
       <h2 class="group-title">Account</h2>
       <section class="group">

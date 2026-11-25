@@ -71,7 +71,7 @@ export function SignIn() {
             <input ref={password} class="field" type="password" placeholder="Password" autocomplete="current-password" required />
             {error && <p class="error">{error}</p>}
             <button class="pill primary" disabled={busy}>{busy ? "Signing In…" : "Sign In"}</button>
-            {encore.available() && <button type="button" class="link" onClick={() => setUseEmail(false)}>Use a QR code instead</button>}
+            {encore.available() && !pendingInvite.value && <button type="button" class="link" onClick={() => setUseEmail(false)}>Use a QR code instead</button>}
           </form>
         </div>
       ) : (

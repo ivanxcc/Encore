@@ -442,3 +442,27 @@ video::cue { background: rgba(0, 0, 0, 0.5); color: #fff; font-family: system-ui
 .tracks button.other svg { opacity: 1; color: var(--dim); }
 .player .scrim { z-index: 19; position: absolute; }
 .player .sources { z-index: 20; }
+.gate-note { width: min(28rem, 100%); display: grid; gap: 1rem; text-align: center; justify-items: center; }
+.gate-note h1 { font-size: 2.2rem; font-weight: 800; letter-spacing: -0.03em; }
+.person-row + .person-row { border-top: 1px solid var(--line); }
+.person-head { width: 100%; text-align: left; }
+.person-head:disabled { cursor: default; }
+.person-head .chev { color: var(--faint); font-size: 1.5rem; line-height: 1; transition: transform 0.25s var(--ease); }
+.person-row.open .chev { transform: rotate(90deg); }
+.person-row.paused .person-head b { color: var(--dim); }
+.person-controls { background: rgba(255, 255, 255, 0.03); border-top: 1px solid var(--line); animation: fade 0.25s var(--ease); }
+.person-controls .setting { padding-left: 1.6rem; }
+@media (hover: hover) { .person-head:not(:disabled):hover { background: rgba(255, 255, 255, 0.04); } }
+
+/* Add to Home Screen (iPhone and iPad Safari) */
+.install { position: fixed; z-index: 44; left: 50%; bottom: max(1.2rem, env(safe-area-inset-bottom)); transform: translateX(-50%); width: min(30rem, calc(100% - 1.6rem));
+  display: flex; align-items: center; gap: 0.9rem; padding: 0.75rem 0.5rem 0.75rem 0.85rem; border-radius: 1.2rem; box-shadow: 0 1rem 2.5rem rgba(0, 0, 0, 0.5); animation: rise 0.45s var(--ease); }
+.install img { width: 2.8rem; height: 2.8rem; border-radius: 0.7rem; flex: none; }
+.install div { display: grid; gap: 0.15rem; min-width: 0; flex: 1; }
+.install b { font-weight: 650; font-size: 0.95rem; }
+.install span { color: var(--dim); font-size: 0.82rem; line-height: 1.4; }
+.install em { font-style: normal; color: var(--text); font-weight: 600; }
+.install .share { width: 1.05em; height: 1.05em; vertical-align: -0.15em; color: #0a84ff; }
+.install .icon { width: 2.4rem; height: 2.4rem; }
+.install .icon svg { width: 1.05rem; height: 1.05rem; }
+@media (max-width: 640px) { .install { bottom: 5.4rem; } }

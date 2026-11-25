@@ -55,6 +55,9 @@ type Config struct {
 	AllowPrivate bool
 	FFmpeg       string
 	FFprobe      string // unused: kept so older settings still parse
+	// CodeSignup lets new accounts link with the relay code even after someone manages the relay
+	// (RELAY_CODE_SIGNUP=on). Off: once the first account is linked, new people need an invitation.
+	CodeSignup bool
 	// DataDir keeps who may use the relay (owners.json). Empty: remembered until restart only.
 	DataDir string
 	// StremioAPI is where sign-ins are checked. Empty: api.strem.io.
@@ -156,7 +159,8 @@ type Request struct {
 	Convert bool `json:"convert"`
 	// Preview: readied ahead of Play (a title's page is open). Only a few seconds are made until a
 	// player asks for a segment.
-	Preview bool `json:"preview"`
+	Preview bool   `json:"preview"`
+	who     string // the account asking (from its token)
 }
 
 type TrackInfo struct {
@@ -174,6 +178,8 @@ type TrackInfo struct {
 type Decision struct {
 	// direct: play URL as it is. remux: play Playlist. unsupported: choose another source.
 	Mode string `json:"mode"`
+	// Message: why, in words for the viewer (unsupported).
+	Message string `json:"message,omitempty"`
 	// Convertible: unsupported as it is, but this relay can re-encode it (ask again with convert).
 	Convertible bool `json:"convertible,omitempty"`
 	// Converted: the video is being re-encoded as H.264 for this browser.
@@ -292,6 +298,9 @@ func (r *Relay) Decide(ctx context.Context, req Request) (*Decision, error) {
 	var convert *hls.Convert
 	if needs != "" {
 		convert = r.conversion(d.Video.HDR)
+		if !r.mayConvert(req.who) {
+			convert = nil
+		}
 		switch {
 		case convert == nil:
 			return unsupported(r, d, needs, "This video needs converting, which this server doesn't do."), nil
@@ -315,6 +324,12 @@ func (r *Relay) Decide(ctx context.Context, req Request) (*Decision, error) {
 		d.Audio, d.AudioCopied = &info, choice.Copy
 	}
 
+	// Readied ahead of Play doesn't count; watching does.
+	if !req.Preview {
+		if limit, watching := r.streamLimit(req.who); limit > 0 && watching >= limit {
+			return unsupported(r, d, "limit", fmt.Sprintf("You're already watching on %d screens. Stop one, then try again.", watching)), nil
+		}
+	}
 	id := randomID()
 	session, err := hls.NewSession(id, file, src, choice, filepath.Join(r.cfg.CacheDir, id), r.cfg.FFmpeg)
 	if err != nil {
@@ -328,6 +343,7 @@ func (r *Relay) Decide(ctx context.Context, req Request) (*Decision, error) {
 		}
 	}
 	session.SetSubtitles(texts)
+	session.Owner = req.who
 	if convert != nil {
 		session.SetConvert(convert)
 		r.count(func(s *Stats) { s.Converted++ })
@@ -536,8 +552,7 @@ func (r *Relay) ffmpegTools() tools {
 
 func unsupported(r *Relay, d *Decision, reason, detail string) *Decision {
 	r.count(func(s *Stats) { s.Unsupported++ })
-	d.Mode, d.Reason = "unsupported", reason
-	_ = detail
+	d.Mode, d.Reason, d.Message = "unsupported", reason, detail
 	return d
 }
 
@@ -606,8 +621,8 @@ func (r *Relay) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, map[string]any{"ok": true}) })
 	mux.HandleFunc("POST /v1/session", r.authed(r.handleSession))
-	mux.HandleFunc("GET /v1/stats", r.authed(r.handleStats))
-	mux.HandleFunc("POST /v1/speed", r.authed(r.handleSpeed))
+	mux.HandleFunc("GET /v1/stats", r.adminOnly(r.handleStats))
+	mux.HandleFunc("POST /v1/speed", r.adminOnly(r.handleSpeed))
 	mux.HandleFunc("GET /v1/s/{id}/index.m3u8", r.handlePlaylist)
 	mux.HandleFunc("GET /v1/s/{id}/seg/{file}", r.handleSegment)
 	mux.HandleFunc("DELETE /v1/s/{id}", r.handleClose)
@@ -616,9 +631,10 @@ func (r *Relay) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/subtitle", r.authed(r.handleSubtitle))
 	mux.HandleFunc("POST /v1/lab/token", r.handleLabToken)
 	mux.HandleFunc("POST /v1/auth", r.handleAuth)
-	mux.HandleFunc("POST /v1/invite", r.authed(r.handleInvite))
-	mux.HandleFunc("GET /v1/people", r.authed(r.handlePeople))
-	mux.HandleFunc("DELETE /v1/people/{email}", r.authed(r.handleRemovePerson))
+	mux.HandleFunc("POST /v1/invite", r.adminOnly(r.handleInvite))
+	mux.HandleFunc("GET /v1/people", r.adminOnly(r.handlePeople))
+	mux.HandleFunc("PATCH /v1/people/{email}", r.adminOnly(r.handleChangePerson))
+	mux.HandleFunc("DELETE /v1/people/{email}", r.adminOnly(r.handleRemovePerson))
 	mux.HandleFunc("GET /config.json", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, 200, map[string]string{"cloud": strings.TrimRight(r.cfg.CloudURL, "/")})
 	})
@@ -657,6 +673,10 @@ func (r *Relay) authed(next http.HandlerFunc) http.HandlerFunc {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "A valid token is required."})
 			return
 		}
+		if r.paused(tokenSubject(token)) {
+			writeJSON(w, http.StatusForbidden, map[string]any{"error": pausedMessage, "paused": true})
+			return
+		}
 		next(w, req)
 	}
 }
@@ -681,6 +701,8 @@ func (r *Relay) handleSession(w http.ResponseWriter, req *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(req.Context(), 30*time.Second)
 	defer cancel()
+	body.who = tokenSubject(strings.TrimPrefix(req.Header.Get("Authorization"), "Bearer "))
+	r.seen(body.who)
 	d, err := r.Decide(ctx, body)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
@@ -841,13 +863,22 @@ func (r *Relay) handleLabToken(w http.ResponseWriter, req *http.Request) {
 		Code string `json:"code"`
 	}
 	json.NewDecoder(http.MaxBytesReader(w, req.Body, 1024)).Decode(&body)
-	if r.limited(req) {
-		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "Too many tries. Wait ten minutes."})
-		return
-	}
-	if !r.codeMatches(body.Code) {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "That code isn't right."})
-		return
+	// Someone who manages the server, signed in to Encore Web in this browser, needs no code.
+	bearer := strings.TrimPrefix(req.Header.Get("Authorization"), "Bearer ")
+	byToken := bearer != "" && verifyToken(r.cfg.Secret, bearer, time.Now()) && r.isAdmin(tokenSubject(bearer))
+	if !byToken {
+		if r.limited(req) {
+			writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "Too many tries. Wait ten minutes."})
+			return
+		}
+		if !r.codeMatches(body.Code) {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "That code isn't right."})
+			return
+		}
+		if !r.codeSignupOpen() {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "Open the test page from a browser where you're signed in to Encore Web as the server's owner."})
+			return
+		}
 	}
 	now := time.Now()
 	writeJSON(w, 200, map[string]string{"token": signToken(r.cfg.Secret, "lab", now.Add(24*time.Hour))})
@@ -868,6 +899,14 @@ type person struct {
 	Admin     bool   `json:"admin,omitempty"`
 	InvitedBy string `json:"invitedBy,omitempty"`
 	Since     int64  `json:"since,omitempty"`
+	// Paused: nothing plays for them until resumed (their streams end at once).
+	Paused bool `json:"paused,omitempty"`
+	// Streams: how many they may watch at once (0: the default for people who were invited).
+	Streams int `json:"streams,omitempty"`
+	// Convert: whether the server may re-encode video for them (always, for whoever manages it).
+	Convert bool `json:"convert,omitempty"`
+	// LastSeen: when they last signed in or started something (Unix seconds).
+	LastSeen int64 `json:"lastSeen,omitempty"`
 }
 
 type peopleFile struct {
@@ -971,8 +1010,12 @@ func (r *Relay) handleAuth(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	r.mu.Lock()
-	_, known := r.owners[email]
+	me, known := r.owners[email]
 	r.mu.Unlock()
+	if known && me.Paused {
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": pausedMessage, "paused": true})
+		return
+	}
 	if !known && body.Invite != "" {
 		if r.limited(req) {
 			writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "Too many tries. Wait ten minutes."})
@@ -1010,12 +1053,19 @@ func (r *Relay) handleAuth(w http.ResponseWriter, req *http.Request) {
 			writeJSON(w, http.StatusForbidden, map[string]any{"error": "That code isn't right.", "needsCode": true})
 			return
 		}
+		// Once someone manages the server, new people come by invitation only: a code that got around
+		// lets no one in.
+		if !r.codeSignupOpen() {
+			writeJSON(w, http.StatusForbidden, map[string]any{"error": "This server takes new people by invitation only. Ask its owner for an invitation link.", "needsCode": true})
+			return
+		}
 		r.mu.Lock()
 		r.owners[email] = person{Admin: true, Since: time.Now().Unix()}
 		r.saveOwners()
 		r.mu.Unlock()
 	}
 	expires := time.Now().Add(7 * 24 * time.Hour)
+	r.seen(email)
 	r.mu.Lock()
 	admin := r.owners[email].Admin
 	r.mu.Unlock()
@@ -1075,10 +1125,19 @@ func (r *Relay) handlePeople(w http.ResponseWriter, req *http.Request) {
 		InvitedBy string `json:"invitedBy,omitempty"`
 		Since     int64  `json:"since,omitempty"`
 		You       bool   `json:"you,omitempty"`
+		Paused    bool   `json:"paused,omitempty"`
+		Streams   int    `json:"streams"`
+		Convert   bool   `json:"convert"`
+		LastSeen  int64  `json:"lastSeen,omitempty"`
+		Watching  int    `json:"watching"`
 	}
 	list := []row{}
 	for e, p := range r.owners {
-		list = append(list, row{e, p.Admin, p.InvitedBy, p.Since, e == me})
+		limit := p.Streams
+		if limit == 0 && !p.Admin {
+			limit = defaultStreams
+		}
+		list = append(list, row{e, p.Admin, p.InvitedBy, p.Since, e == me, p.Paused, limit, p.Admin || p.Convert, p.LastSeen, r.watchingLocked(e)})
 	}
 	sort.Slice(list, func(i, j int) bool {
 		if list[i].Admin != list[j].Admin {
@@ -1105,6 +1164,7 @@ func (r *Relay) handleRemovePerson(w http.ResponseWriter, req *http.Request) {
 	}
 	delete(r.owners, who)
 	r.saveOwners()
+	r.endStreamsLocked(who)
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
 

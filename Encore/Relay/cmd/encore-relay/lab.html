@@ -193,10 +193,26 @@ function show() {
   if (fresh && store.get("auth")) loadTitles();
 }
 
+// The owner, signed in to Encore Web in this browser, needs no code.
+function appToken() {
+  try { const t = JSON.parse(localStorage.getItem("encore.relay") || "null"); return t && t.value; } catch { return null; }
+}
+async function labToken(code) {
+  const headers = { "content-type": "application/json" };
+  if (appToken()) headers.authorization = "Bearer " + appToken();
+  return fetch("/v1/lab/token", { method: "POST", headers, body: JSON.stringify({ code }) });
+}
+(async () => {
+  const token = store.get("token");
+  if ((token && Date.now() - token.at < 23 * 3600 * 1000) || !appToken()) return;
+  const r = await labToken("").catch(() => null);
+  if (r && r.ok) { store.set("token", { value: (await r.json()).token, at: Date.now() }); show(); }
+})();
+
 $("code-go").onclick = async () => {
   $("code-error").hidden = true;
   try {
-    const r = await fetch("/v1/lab/token", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ code: $("code").value }) });
+    const r = await labToken($("code").value);
     const body = await r.json();
     if (!r.ok) throw new Error(body.error || "That didn't work.");
     store.set("token", { value: body.token, at: Date.now() });

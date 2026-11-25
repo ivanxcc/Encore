@@ -73,6 +73,30 @@ export function Player({ type, id, videoId }: { type: string; id: string; videoI
   const [switching, setSwitching] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const attachRef = useRef<((d: Decision, at: number) => Promise<void>) | null>(null);
+  const decisionRef = useRef<Decision | null>(null); decisionRef.current = decision;
+  // A stream the server lost (it restarted for an update, say) is opened again where it was, once in a
+  // while; only if that fails does the viewer see a problem.
+  const recovered = useRef(0);
+  const recoverRef = useRef(() => {});
+  recoverRef.current = async () => {
+    const p = live.current.prepared;
+    const at = video.currentTime;
+    if (!p?.candidate || !attachRef.current || Date.now() - recovered.current < 20_000) {
+      setProblem("The stream stopped and couldn't be recovered. Try again."); setPhase("problem");
+      return;
+    }
+    recovered.current = Date.now();
+    setSwitching(true);
+    const next = await relaySession(sessionRequest(p.candidate, at)).catch(() => null);
+    if (!next || (next.mode !== "remux" && next.mode !== "direct") || !attachRef.current) {
+      setSwitching(false); setProblem("The stream stopped and couldn't be recovered. Try again."); setPhase("problem");
+      return;
+    }
+    await attachRef.current(next, at);
+    live.current.prepared = { ...p, decision: next };
+    video.play().catch(() => {});
+    setSwitching(false);
+  };
   const subChosen = useRef(false);
   // Stalls while playing (not seeking): two in a minute and a half, or one long one, and a lighter
   // source is offered.
@@ -157,7 +181,7 @@ export function Player({ type, id, videoId }: { type: string; id: string; videoI
           h.on(Hls.Events.ERROR, (_e, data) => {
             if (!data.fatal || hls !== h) return;
             if (data.type === Hls.ErrorTypes.MEDIA_ERROR) h.recoverMediaError();
-            else if (alive) { setProblem("The stream stopped and couldn't be recovered. Try again."); setPhase("problem"); }
+            else if (alive) recoverRef.current();
           });
           h.loadSource(d.playlist!);
           h.attachMedia(video);
@@ -239,7 +263,11 @@ export function Player({ type, id, videoId }: { type: string; id: string; videoI
         // After Watch Credits (or with nothing after this), the end returns to the title's page.
         if (nextRef.current && !state.current.declined) playNext(); else close();
       }),
-      on("error", () => { if (video.error && live.current.startMs === 0) { setProblem("This source didn't play. Try again in a moment."); setPhase("problem"); } }),
+      on("error", () => {
+        if (!video.error) return;
+        if (live.current.startMs === 0) { setProblem("This source didn't play. Try again in a moment."); setPhase("problem"); }
+        else if (decisionRef.current?.mode === "remux") recoverRef.current();
+      }),
     ];
     const onFull = () => setFull(!!document.fullscreenElement);
     document.addEventListener("fullscreenchange", onFull);

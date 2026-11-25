@@ -56,6 +56,8 @@ func serve(args []string) {
 	fs.Parse(args)
 	cfg := Config{
 		Convert:      os.Getenv("RELAY_CONVERT"),
+		CodeSignup:   os.Getenv("RELAY_CODE_SIGNUP") == "on",
+		StremioAPI:   os.Getenv("RELAY_STREMIO_API"), // tests only
 		Secret:       os.Getenv("RELAY_SECRET"),
 		LabCode:      os.Getenv("RELAY_LAB_CODE"),
 		CacheDir:     env("RELAY_CACHE", os.TempDir()+"/encore-relay"),

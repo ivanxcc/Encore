@@ -297,3 +297,104 @@ func TestSubtitleFilesAreRead(t *testing.T) {
 		t.Fatalf("WebVTT: %+v", cues)
 	}
 }
+
+// People who were invited watch; only the people who manage the relay invite, see the people, read
+// the counters, or pause someone. Once the relay has an owner, its code links no one new.
+func TestMembersCantManage(t *testing.T) {
+	stremio := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct{ AuthKey string }
+		json.NewDecoder(r.Body).Decode(&body)
+		switch body.AuthKey {
+		case "key-owner":
+			w.Write([]byte(`{"result":{"email":"owner@example.com"}}`))
+		case "key-member":
+			w.Write([]byte(`{"result":{"email":"member@example.com"}}`))
+		case "key-stranger":
+			w.Write([]byte(`{"result":{"email":"stranger@example.com"}}`))
+		}
+	}))
+	defer stremio.Close()
+	relay := NewRelay(Config{Secret: secret, LabCode: "K7QM-2XPD", CacheDir: t.TempDir(), DataDir: t.TempDir(), StremioAPI: stremio.URL, FFmpeg: "ffmpeg"})
+	defer relay.Close()
+	h := relay.Handler()
+	call := func(method, path, token string, body any) (int, map[string]any) {
+		raw, _ := json.Marshal(body)
+		req := httptest.NewRequest(method, path, bytes.NewReader(raw))
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		var out map[string]any
+		json.Unmarshal(rec.Body.Bytes(), &out)
+		return rec.Code, out
+	}
+
+	// The relay's code works for the first account only.
+	_, body := call("POST", "/v1/auth", "", map[string]string{"authKey": "key-owner", "code": "K7QM-2XPD"})
+	owner, _ := body["token"].(string)
+	if owner == "" || body["admin"] != true {
+		t.Fatalf("the owner linking: %v", body)
+	}
+	if code, body := call("POST", "/v1/auth", "", map[string]string{"authKey": "key-stranger", "code": "K7QM-2XPD"}); code != 403 || !strings.Contains(fmt.Sprint(body["error"]), "invitation") {
+		t.Fatalf("a second account with the code: %d %v", code, body)
+	}
+	if code, _ := call("POST", "/v1/lab/token", "", map[string]string{"code": "K7QM-2XPD"}); code != 403 {
+		t.Fatalf("a lab token by code, with an owner: %d", code)
+	}
+	if code, _ := call("POST", "/v1/lab/token", owner, map[string]string{}); code != 200 {
+		t.Fatalf("a lab token for the owner: %d", code)
+	}
+
+	_, body = call("POST", "/v1/invite", owner, nil)
+	_, body = call("POST", "/v1/auth", "", map[string]string{"authKey": "key-member", "invite": body["invite"].(string)})
+	member, _ := body["token"].(string)
+	if member == "" || body["admin"] == true {
+		t.Fatalf("the member joining: %v", body)
+	}
+	for _, c := range []struct{ method, path string }{{"POST", "/v1/invite"}, {"GET", "/v1/people"}, {"GET", "/v1/stats"}, {"POST", "/v1/speed"},
+		{"PATCH", "/v1/people/owner@example.com"}, {"DELETE", "/v1/people/owner@example.com"}} {
+		if code, _ := call(c.method, c.path, member, map[string]any{"paused": true}); code != 403 {
+			t.Fatalf("%s %s by a member: %d", c.method, c.path, code)
+		}
+	}
+	if code, _ := call("POST", "/v1/lab/token", member, map[string]string{}); code == 200 {
+		t.Fatal("a lab token for a member")
+	}
+
+	// Paused: nothing works for them, including signing in again; resumed, everything does.
+	if code, _ := call("PATCH", "/v1/people/member@example.com", owner, map[string]any{"paused": true}); code != 200 {
+		t.Fatalf("pausing: %d", code)
+	}
+	if code, body := call("POST", "/v1/session", member, map[string]string{"url": "http://example.com/a.mkv"}); code != 403 || body["paused"] != true {
+		t.Fatalf("a session while paused: %d %v", code, body)
+	}
+	if code, body := call("POST", "/v1/auth", "", map[string]string{"authKey": "key-member"}); code != 403 || body["paused"] != true {
+		t.Fatalf("signing in while paused: %d %v", code, body)
+	}
+	call("PATCH", "/v1/people/member@example.com", owner, map[string]any{"paused": false, "streams": 1})
+	if code, _ := call("POST", "/v1/auth", "", map[string]string{"authKey": "key-member"}); code != 200 {
+		t.Fatalf("signing in once resumed: %d", code)
+	}
+	_, body = call("GET", "/v1/people", owner, nil)
+	for _, p := range body["people"].([]any) {
+		row := p.(map[string]any)
+		if row["email"] == "member@example.com" && (row["streams"] != 1.0 || row["convert"] != false || row["paused"] == true) {
+			t.Fatalf("the member's row: %v", row)
+		}
+	}
+	if code, _ := call("PATCH", "/v1/people/owner@example.com", owner, map[string]any{"paused": true}); code != 400 {
+		t.Fatalf("pausing yourself: %d", code)
+	}
+	// Converting is for the owner unless allowed; the member's limit is what was set.
+	if !relay.mayConvert("owner@example.com") || relay.mayConvert("member@example.com") {
+		t.Fatal("who may convert, by default")
+	}
+	call("PATCH", "/v1/people/member@example.com", owner, map[string]any{"convert": true})
+	if limit, _ := relay.streamLimit("member@example.com"); !relay.mayConvert("member@example.com") || limit != 1 {
+		t.Fatalf("after allowing: convert %v, limit %d", relay.mayConvert("member@example.com"), limit)
+	}
+	if limit, _ := relay.streamLimit("owner@example.com"); limit != 0 {
+		t.Fatalf("the owner's limit: %d", limit)
+	}
+}

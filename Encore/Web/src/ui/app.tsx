@@ -1,6 +1,6 @@
 import { useEffect, useState } from "preact/hooks";
 import { auth, go, online, path, profileId } from "../lib/core";
-import { forgetSession, NeedsCode, relayAuth } from "../lib/api";
+import { forgetSession, NeedsCode, Paused, relayAuth } from "../lib/api";
 import { load, loaded, profile, profiles, signOut as clearLibrary } from "../lib/library";
 import { HomePage } from "./home";
 import { TitlePage } from "./detail";
@@ -9,7 +9,7 @@ import { SettingsPage } from "./settings";
 import { LinkRelay, SignIn, WhoIsWatching } from "./gates";
 import { Player } from "./player";
 import { Avatar, Link, MenuHost } from "./shared";
-import { Exit, Gear, Home, Search, Stack, Swap } from "./icons";
+import { Close, Exit, Gear, Home, Search, Stack, Swap } from "./icons";
 
 function Nav() {
   const [menu, setMenu] = useState<{ right: number } | null>(null);
@@ -46,6 +46,61 @@ function Nav() {
         </>
       )}
     </>
+  );
+}
+
+// Safari on an iPhone or iPad (iPadOS calls itself a Mac with a touch screen), not already opened from
+// the Home Screen.
+const iosSafari = (() => {
+  const ua = navigator.userAgent;
+  const ios = /iPhone|iPad|iPod/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
+  const safari = /Safari/.test(ua) && !/CriOS|FxiOS|EdgiOS|OPiOS|GSA\//.test(ua);
+  const standalone = (navigator as Navigator & { standalone?: boolean }).standalone === true || matchMedia("(display-mode: standalone)").matches;
+  return ios && safari && !standalone;
+})();
+
+/** A quiet suggestion, once (and again after a month if it's still in the browser): on the Home
+ * Screen, Encore opens full screen, without Safari's bars, like an app. */
+function InstallHint() {
+  const [shown, setShown] = useState(false);
+  useEffect(() => {
+    if (!iosSafari) return;
+    let last = 0;
+    try { last = Number(localStorage.getItem("encore.installHint") || 0); } catch {}
+    if (Date.now() - last < 30 * 86400_000) return;
+    const t = setTimeout(() => setShown(true), 6000);
+    return () => clearTimeout(t);
+  }, []);
+  if (!shown) return null;
+  const close = () => { setShown(false); try { localStorage.setItem("encore.installHint", String(Date.now())); } catch {} };
+  return (
+    <div class="install glass" role="status">
+      <img src="/icon-180.png" alt="" />
+      <div>
+        <b>Add Encore to your Home Screen</b>
+        <span>Tap <ShareGlyph /> then <em>Add to Home Screen</em>. It opens full screen, like an app. You'll sign in once more there.</span>
+      </div>
+      <button class="icon" aria-label="Not now" onClick={close}><Close /></button>
+    </div>
+  );
+}
+
+const ShareGlyph = () => (
+  <svg class="share" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-label="Share">
+    <path d="M12 3v12M8 7l4-4 4 4M6 11H5v10h14V11h-1" />
+  </svg>
+);
+
+/** The server's owner has paused this account: said plainly, with a way to check again. */
+function PausedGate({ onRetry }: { onRetry: () => void }) {
+  return (
+    <div class="stage">
+      <div class="gate-note">
+        <h1>Paused</h1>
+        <p class="quiet">Your access to this Encore server is paused. Ask its owner if you think that's a mistake.</p>
+        <div class="actions"><button class="pill primary" onClick={onRetry}>Check Again</button><button class="pill secondary" onClick={() => { auth.value = null; }}>Sign Out</button></div>
+      </div>
+    </div>
   );
 }
 
@@ -89,7 +144,7 @@ function useSpatialNavigation() {
 }
 
 export function App() {
-  const [linked, setLinked] = useState<"checking" | "yes" | "needs">("checking");
+  const [linked, setLinked] = useState<"checking" | "yes" | "needs" | "paused">("checking");
   const signedIn = !!auth.value;
   useSpatialNavigation();
 
@@ -101,11 +156,18 @@ export function App() {
       return;
     }
     load();
-    relayAuth().then(() => setLinked("yes"), (e) => setLinked(e instanceof NeedsCode ? "needs" : "yes"));
+    const settle = (e: unknown) => setLinked(e instanceof NeedsCode ? "needs" : e instanceof Paused ? "paused" : "yes");
+    // A saved token opens the app at once; the server is asked in the background whether this
+    // account is still welcome (paused or removed since), and the app follows its answer.
+    relayAuth().then(() => {
+      setLinked("yes");
+      relayAuth(undefined, true).catch((e) => { if (e instanceof NeedsCode || e instanceof Paused) settle(e); });
+    }, settle);
   }, [signedIn]);
 
   if (!signedIn) return <SignIn />;
   if (linked === "needs") return <LinkRelay onLinked={() => setLinked("yes")} />;
+  if (linked === "paused") return <PausedGate onRetry={() => relayAuth().then(() => setLinked("yes"), () => {})} />;
   if (!loaded.value || linked === "checking") return <div class="stage"><div class="spinner" /></div>;
   if (!profile.value) return <WhoIsWatching />;
 
@@ -120,5 +182,5 @@ export function App() {
   else if (parts[0] === "list") page = <ListPage />;
   else if (parts[0] === "settings") page = <SettingsPage />;
   else { page = <HomePage />; if (parts.length) queueMicrotask(() => go("/", { replace: true })); }
-  return <>{parts[0] !== "title" && <Nav />}{page}<MenuHost /></>;
+  return <>{parts[0] !== "title" && <Nav />}{page}<MenuHost />{parts[0] !== "title" && <InstallHint />}</>;
 }

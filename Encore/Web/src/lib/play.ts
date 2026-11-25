@@ -173,6 +173,10 @@ export function prepare(meta: Meta, video: Video | undefined, startAt: number, o
       }
       if (decision.convertible) convertible.push(candidate);
       lastReason = decision.reason || decision.mode;
+      // Limits and pauses are about the viewer, not the source: no other source will do better.
+      if (decision.reason === "limit" || /paused/i.test(decision.reason || "")) {
+        return { decision: null, candidate: null, startAt, problem: decision.message || decision.reason, timings: { sourcesMs, relayMs: performance.now() - relayBegan, tried } };
+      }
     }
     // Nothing plays as it is: the server converts the best one that it can (it remembers the file, so
     // asking again is quick). Never ahead of Play: converting is costly.

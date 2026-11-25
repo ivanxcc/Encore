@@ -284,7 +284,7 @@ export const encore = {
 // MARK: Relay (this site)
 
 export interface TrackInfo { index: number; codec: string; language?: string; name?: string; channels?: number; default?: boolean; forced?: boolean; text?: boolean }
-export interface Decision { mode: "direct" | "remux" | "unsupported" | "error"; reason?: string; convertible?: boolean; converted?: boolean; url?: string; id?: string; playlist?: string; duration?: number; audioCopied?: boolean; audio?: TrackInfo; audioTracks?: TrackInfo[]; subtitles?: TrackInfo[]; video?: { codec?: string; width?: number; height?: number }; timings?: { openMs: number; indexMs: number } }
+export interface Decision { mode: "direct" | "remux" | "unsupported" | "error"; reason?: string; message?: string; convertible?: boolean; converted?: boolean; url?: string; id?: string; playlist?: string; duration?: number; audioCopied?: boolean; audio?: TrackInfo; audioTracks?: TrackInfo[]; subtitles?: TrackInfo[]; video?: { codec?: string; width?: number; height?: number }; timings?: { openMs: number; indexMs: number } }
 export interface Cue { start: number; end: number; text: string }
 
 /** A subtitle track's cues the relay has found so far, after the first `after`. */
@@ -296,17 +296,21 @@ export async function relayCues(sessionId: string, track: number, after: number)
 export const subtitleFile = (url: string) => relayCall<{ cues: Cue[] }>(`/v1/subtitle?url=${encodeURIComponent(url)}`).then((b) => b.cues);
 
 export class NeedsCode extends Error {}
+/** The server's owner has paused this account. */
+export class Paused extends Error {}
 
 /** A token for the relay: remembered, renewed a day before it runs out, asked for with the sign-in. */
-export async function relayAuth(code?: string): Promise<string> {
+export async function relayAuth(code?: string, fresh = false): Promise<string> {
   const now = Date.now() / 1000;
   const have = relayToken.value;
-  if (!code && have && have.expiresAt - now > 86400) return have.value;
+  if (!code && !fresh && have && have.expiresAt - now > 86400) return have.value;
   // A link someone shared stands in for the code, once.
   const invite = code ? undefined : pendingInvite.value || undefined;
   const r = await fetch("/v1/auth", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ authKey: auth.value?.key, code, invite }) });
   const body = await r.json().catch(() => ({}));
   if (invite && r.status !== 401) pendingInvite.value = null;
+  if (r.status === 403 && body.paused) { relayToken.value = null; throw new Paused(body.error); }
+  if (r.status === 403 && body.needsCode && fresh) relayToken.value = null;   // taken off the server
   if (r.status === 403 && body.needsCode) throw new NeedsCode(code || invite ? body.error : "");
   if (!r.ok) throw new Error(body.error || "The relay refused this sign-in.");
   relayToken.value = { value: body.token, expiresAt: body.expiresAt, admin: !!body.admin };
@@ -324,9 +328,11 @@ export async function relayInvite(): Promise<{ link: string; expiresAt: number }
   return { link: `${location.origin}/join#${body.invite}`, expiresAt: body.expiresAt };
 }
 
-export interface RelayPerson { email: string; admin: boolean; invitedBy?: string; since?: number; you?: boolean }
+export interface RelayPerson { email: string; admin: boolean; invitedBy?: string; since?: number; you?: boolean; paused?: boolean; streams: number; convert: boolean; lastSeen?: number; watching: number }
 export const relayPeople = () => relayCall<{ people: RelayPerson[] }>("/v1/people").then((b) => b.people);
 export const relayRemove = (email: string) => relayCall(`/v1/people/${encodeURIComponent(email)}`, { method: "DELETE" });
+export const relayChange = (email: string, change: { paused?: boolean; streams?: number; convert?: boolean }) =>
+  relayCall(`/v1/people/${encodeURIComponent(email)}`, { method: "PATCH", body: JSON.stringify(change) });
 
 export async function relaySession(body: object): Promise<Decision> {
   const token = await relayAuth();
@@ -335,6 +341,7 @@ export async function relaySession(body: object): Promise<Decision> {
   } catch (e) {
     const err = e as { status?: number; body?: { error?: string } };
     if (err.status === 401) relayToken.value = null;
+    if (err.status === 403 && (err.body as { paused?: boolean } | undefined)?.paused) relayToken.value = null;
     return { mode: "error", reason: err.body?.error || (e as Error).message };
   }
 }
