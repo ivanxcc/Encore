@@ -284,7 +284,7 @@ export const encore = {
 // MARK: Relay (this site)
 
 export interface TrackInfo { index: number; codec: string; language?: string; name?: string; channels?: number; default?: boolean; forced?: boolean; text?: boolean }
-export interface Decision { mode: "direct" | "remux" | "unsupported" | "error"; reason?: string; message?: string; convertible?: boolean; converted?: boolean; url?: string; id?: string; playlist?: string; duration?: number; audioCopied?: boolean; audio?: TrackInfo; audioTracks?: TrackInfo[]; subtitles?: TrackInfo[]; video?: { codec?: string; width?: number; height?: number }; timings?: { openMs: number; indexMs: number } }
+export interface Decision { mode: "direct" | "remux" | "unsupported" | "error"; reason?: string; message?: string; convertible?: boolean; converted?: boolean; proxied?: boolean; url?: string; id?: string; playlist?: string; duration?: number; audioCopied?: boolean; audio?: TrackInfo; audioTracks?: TrackInfo[]; subtitles?: TrackInfo[]; video?: { codec?: string; width?: number; height?: number }; timings?: { openMs: number; indexMs: number } }
 export interface Cue { start: number; end: number; text: string }
 
 /** A subtitle track's cues the relay has found so far, after the first `after`. */
@@ -323,15 +323,54 @@ async function relayCall<T>(path: string, init: RequestInit = {}): Promise<T> {
 }
 
 /** A link that lets one more Stremio account use this server, once, within 7 days. */
-export async function relayInvite(): Promise<{ link: string; expiresAt: number }> {
-  const body = await relayCall<{ invite: string; expiresAt: number }>("/v1/invite", { method: "POST" });
-  return { link: `${location.origin}/join#${body.invite}`, expiresAt: body.expiresAt };
+export async function relayInvite(label = ""): Promise<{ link: string; expiresAt: number }> {
+  const body = await relayCall<{ invite: string; expiresAt: number }>("/v1/invite", { method: "POST", body: JSON.stringify({ label }) });
+  return { link: inviteLink(body.invite), expiresAt: body.expiresAt };
 }
+export const inviteLink = (invite: string) => `${location.origin}/join#${invite}`;
 
-export interface RelayPerson { email: string; admin: boolean; invitedBy?: string; since?: number; you?: boolean; paused?: boolean; streams: number; convert: boolean; lastSeen?: number; watching: number }
+// MARK: The owner's views (Admin)
+
+export interface Play { id: string; who: string; name?: string; profile?: string; title: string; episode?: string; type?: string; metaId?: string; quality?: string; source?: string; mode?: string; device?: string; session?: string; at: number; updated: number; ended?: number; startMs?: number; watched: number; stalls: number; seekMs?: number; errors: number; switches?: number; problem?: string }
+export interface Overview {
+  server: { version: string; uptime: number; cpus: number; load: number; memory: number; dataBytes: number; converting: number; streams: number; convertMode: string };
+  live: Play[]; traffic: { hour: number; bytes: number }[]; problems: { at: number; who?: string; what: string }[];
+}
+export interface PersonPage {
+  email: string; name?: string; admin: boolean; invitedBy?: string; since?: number; lastSeen?: number; paused: boolean; streams: number; convert: boolean; direct: boolean; watching: number;
+  profiles?: { name: string; avatar?: string; kids?: boolean; pin?: boolean }[]; devices?: Record<string, number>; plays: Play[];
+  summary: { plays7: number; hours7: number; plays30: number; hours30: number; startMs: number; stallsPerHour: number; errors30: number; converted30: number };
+  months: Record<string, { plays: number; seconds: number }>;
+}
+export interface InviteRecord { id: string; label?: string; by: string; invite?: string; created: number; expires: number; usedBy?: string; usedAt?: number; revoked?: boolean }
+export const admin = {
+  overview: () => relayCall<Overview>("/v1/admin/overview"),
+  person: (email: string) => relayCall<PersonPage>(`/v1/admin/people/${encodeURIComponent(email)}`),
+  endPlay: (id: string) => relayCall(`/v1/admin/plays/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  invites: () => relayCall<{ invites: InviteRecord[] }>("/v1/invites").then((b) => b.invites),
+  withdraw: (id: string) => relayCall(`/v1/invites/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  starter: () => relayCall<{ addons: Addon[]; from?: string }>("/v1/starter"),
+  setStarter: (addons: Addon[]) => relayCall("/v1/starter", { method: "PUT", body: JSON.stringify({ addons }) }),
+};
+
+/** Install add-ons on the signed-in account (Stremio keeps them; every Stremio app sees them). */
+export async function installAddons(more: Addon[]) {
+  const key = auth.value?.key;
+  if (!key) return;
+  const now = await stremio<{ addons: Addon[] }>("addonCollectionGet", { type: "AddonCollectionGet", authKey: key, update: true }).then((r) => r.addons || []);
+  const have = new Set(now.map((a) => a.transportUrl));
+  const addons = [...now, ...more.filter((a) => !have.has(a.transportUrl))];
+  await stremio("addonCollectionSet", { type: "AddonCollectionSet", authKey: key, addons });
+  addonsPromise = null;
+  try { localStorage.removeItem("encore.addons"); } catch {}
+}
+/** The signed-in account's add-ons, fresh (not the remembered copy). */
+export const freshAddons = () => stremio<{ addons: Addon[] }>("addonCollectionGet", { type: "AddonCollectionGet", authKey: auth.value?.key, update: true }).then((r) => (r.addons || []).filter((a) => a && a.transportUrl && a.manifest));
+
+export interface RelayPerson { email: string; name?: string; admin: boolean; invitedBy?: string; since?: number; you?: boolean; paused?: boolean; streams: number; convert: boolean; lastSeen?: number; watching: number }
 export const relayPeople = () => relayCall<{ people: RelayPerson[] }>("/v1/people").then((b) => b.people);
 export const relayRemove = (email: string) => relayCall(`/v1/people/${encodeURIComponent(email)}`, { method: "DELETE" });
-export const relayChange = (email: string, change: { paused?: boolean; streams?: number; convert?: boolean }) =>
+export const relayChange = (email: string, change: { paused?: boolean; streams?: number; convert?: boolean; direct?: boolean; name?: string }) =>
   relayCall(`/v1/people/${encodeURIComponent(email)}`, { method: "PATCH", body: JSON.stringify(change) });
 
 export async function relaySession(body: object): Promise<Decision> {

@@ -58,7 +58,7 @@ addEventListener("offline", () => { online.value = false; });
 
 // MARK: Router
 
-const TABS = ["/", "/search", "/list", "/settings"];
+const TABS = ["/", "/search", "/list", "/settings", "/admin"];
 const isTab = (p: string) => TABS.includes(p.split("?")[0]);
 
 export const path = signal(location.pathname + location.search);

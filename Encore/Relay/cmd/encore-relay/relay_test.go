@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -396,5 +397,172 @@ func TestMembersCantManage(t *testing.T) {
 	}
 	if limit, _ := relay.streamLimit("owner@example.com"); limit != 0 {
 		t.Fatalf("the owner's limit: %d", limit)
+	}
+}
+
+// The owner's views: plays reported by a player, profiles, invitations by name, withdrawing one,
+// add-ons offered to new people, and files passed on through the relay for people invited.
+func TestOwnerViews(t *testing.T) {
+	stremio := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct{ AuthKey string }
+		json.NewDecoder(r.Body).Decode(&body)
+		emails := map[string]string{"key-owner": "owner@example.com", "key-member": "member@example.com", "key-late": "late@example.com"}
+		w.Write([]byte(`{"result":{"email":"` + emails[body.AuthKey] + `"}}`))
+	}))
+	defer stremio.Close()
+	files := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.ServeContent(w, r, "a.bin", time.Time{}, bytes.NewReader(bytes.Repeat([]byte("encore"), 10000)))
+	}))
+	defer files.Close()
+	data := t.TempDir()
+	cfg := Config{Secret: secret, LabCode: "K7QM-2XPD", CacheDir: t.TempDir(), DataDir: data, StremioAPI: stremio.URL, FFmpeg: "ffmpeg", AllowPrivate: true}
+	relay := NewRelay(cfg)
+	h := relay.Handler()
+	call := func(method, path, token string, body any) (int, map[string]any) {
+		raw, _ := json.Marshal(body)
+		req := httptest.NewRequest(method, path, bytes.NewReader(raw))
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		var out map[string]any
+		json.Unmarshal(rec.Body.Bytes(), &out)
+		return rec.Code, out
+	}
+	_, body := call("POST", "/v1/auth", "", map[string]string{"authKey": "key-owner", "code": "K7QM-2XPD"})
+	owner := body["token"].(string)
+	_, body = call("POST", "/v1/invite", owner, map[string]string{"label": "Grandma"})
+	invite := body["invite"].(string)
+	_, body = call("POST", "/v1/invite", owner, map[string]string{"label": "Withdrawn"})
+	withdrawnID, withdrawn := body["id"].(string), body["invite"].(string)
+	if code, _ := call("DELETE", "/v1/invites/"+withdrawnID, owner, nil); code != 200 {
+		t.Fatalf("withdrawing: %d", code)
+	}
+	if code, body := call("POST", "/v1/auth", "", map[string]string{"authKey": "key-late", "invite": withdrawn}); code != 403 || !strings.Contains(fmt.Sprint(body["error"]), "withdrawn") {
+		t.Fatalf("a withdrawn invitation: %d %v", code, body)
+	}
+	_, body = call("POST", "/v1/auth", "", map[string]string{"authKey": "key-member", "invite": invite})
+	member := body["token"].(string)
+	_, body = call("GET", "/v1/invites", owner, nil)
+	list := body["invites"].([]any)
+	used := map[string]any{}
+	for _, x := range list {
+		if row := x.(map[string]any); row["label"] == "Grandma" {
+			used = row
+		}
+	}
+	if len(list) != 2 || used["usedBy"] != "member@example.com" || used["invite"] != nil {
+		t.Fatalf("invitations: %v", list)
+	}
+
+	// A member's player reports a play, its progress, and their profiles; another member can't touch it.
+	call("POST", "/v1/report", member, map[string]any{"kind": "profiles", "device": "iPad · Safari", "profiles": []map[string]any{{"name": "Nana"}, {"name": "Kids", "kids": true}}})
+	call("POST", "/v1/report", member, map[string]any{"kind": "play", "play": map[string]any{"id": "p1", "title": "The Long Night", "episode": "S1, E3", "profile": "Nana", "startMs": 900, "device": "iPad · Safari", "mode": "remux"}})
+	call("POST", "/v1/report", owner, map[string]any{"kind": "update", "play": map[string]any{"id": "p1", "watched": 9999}})
+	call("POST", "/v1/report", "", map[string]any{"token": member, "kind": "update", "play": map[string]any{"id": "p1", "watched": 1800, "stalls": 2}})
+	_, body = call("GET", "/v1/admin/overview", owner, nil)
+	if live := body["live"].([]any); len(live) != 1 || live[0].(map[string]any)["name"] != "Grandma" {
+		t.Fatalf("watching now: %v", body["live"])
+	}
+	_, body = call("GET", "/v1/admin/people/member@example.com", owner, nil)
+	plays := body["plays"].([]any)
+	if body["name"] != "Grandma" || len(plays) != 1 || plays[0].(map[string]any)["watched"] != 1800.0 || len(body["profiles"].([]any)) != 2 || body["direct"] != false {
+		t.Fatalf("the member's page: %v", body)
+	}
+	if s := body["summary"].(map[string]any); s["hours7"] != 0.5 || s["startMs"] != 900.0 || s["stallsPerHour"] != 4.0 {
+		t.Fatalf("summary: %v", s)
+	}
+	call("POST", "/v1/report", member, map[string]any{"kind": "end", "play": map[string]any{"id": "p1", "watched": 1900}})
+	if _, body := call("GET", "/v1/admin/overview", owner, nil); len(body["live"].([]any)) != 0 {
+		t.Fatal("a play that ended is still live")
+	}
+	if code, _ := call("GET", "/v1/admin/overview", member, nil); code != 403 {
+		t.Fatal("a member read the overview")
+	}
+
+	// Add-ons the owner offers: readable by anyone signed in, set by the owner only.
+	if code, _ := call("PUT", "/v1/starter", member, map[string]any{"addons": []any{}}); code != 403 {
+		t.Fatal("a member set the add-ons")
+	}
+	call("PUT", "/v1/starter", owner, map[string]any{"addons": []any{map[string]any{"transportUrl": "https://addon.example/manifest.json"}}})
+	if _, body := call("GET", "/v1/starter", member, nil); len(body["addons"].([]any)) != 1 {
+		t.Fatalf("starter add-ons: %v", body)
+	}
+
+	// After a restart, all of it is still there.
+	relay.Close()
+	relay = NewRelay(cfg)
+	defer relay.Close()
+	h = relay.Handler()
+	_, body = call("GET", "/v1/admin/people/member@example.com", owner, nil)
+	if plays := body["plays"].([]any); len(plays) != 1 || plays[0].(map[string]any)["watched"] != 1900.0 {
+		t.Fatalf("after a restart: %v", body["plays"])
+	}
+
+	// A file the member's browser plays as it is goes through the relay, ranges and all.
+	id := relay.addPassthrough(files.URL+"/a.bin", nil, "member@example.com")
+	req := httptest.NewRequest("GET", "/v1/p/"+id, nil)
+	req.Header.Set("Range", "bytes=6-11")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 206 || rec.Body.String() != "encore" {
+		t.Fatalf("passing a file on: %d %q", rec.Code, rec.Body.String())
+	}
+	// Removed: their plays go, and so does what they could reach.
+	call("DELETE", "/v1/people/member@example.com", owner, nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("GET", "/v1/p/"+id, nil))
+	if rec.Code != 404 {
+		t.Fatalf("a removed person's file: %d", rec.Code)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if plays := relay.activity.of("member@example.com", 10); len(plays) != 0 {
+		t.Fatalf("a removed person's plays: %d", len(plays))
+	}
+}
+
+// Plays older than 90 days become monthly totals; their detail and month files go.
+func TestOldPlaysBecomeTotals(t *testing.T) {
+	dir := t.TempDir()
+	a := openActivity(dir)
+	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	old := Play{ID: "old", Who: "a@example.com", Title: "Old", At: now.AddDate(0, -5, 0).Unix(), Watched: 3600}
+	recent := Play{ID: "new", Who: "a@example.com", Title: "New", At: now.AddDate(0, 0, -3).Unix(), Watched: 1800}
+	for _, p := range []Play{old, recent} {
+		p := p
+		a.plays = append(a.plays, &p)
+		a.byID[p.ID] = &p
+		a.write(event{K: "play", Play: p})
+	}
+	a.prune(now)
+	if len(a.plays) != 1 || a.plays[0].ID != "new" {
+		t.Fatalf("kept: %d plays", len(a.plays))
+	}
+	if _, err := os.Stat(filepath.Join(dir, "activity", "2026-06.jsonl")); !os.IsNotExist(err) {
+		t.Fatal("the old month's file is still there")
+	}
+	months := a.months("a@example.com")
+	if months["2026-06"].Seconds != 3600 || months["2026-11"].Plays != 1 {
+		t.Fatalf("months: %v", months)
+	}
+	again := openActivity(dir)
+	if again.months("a@example.com")["2026-06"].Plays != 1 {
+		t.Fatal("totals weren't kept")
+	}
+}
+
+// Every address in the app opens the app, dots and all; a missing file is a 404.
+func TestAppAddresses(t *testing.T) {
+	if _, err := fs.ReadFile(webFiles, "web/index.html"); err != nil {
+		t.Skip("the web app isn't built into this binary")
+	}
+	h := NewRelay(Config{Secret: secret, CacheDir: t.TempDir(), FFmpeg: "ffmpeg"}).Handler()
+	for path, want := range map[string]int{"/": 200, "/admin/people/someone%40example.com": 200, "/title/series/tt1": 200, "/robots.txt": 404, "/assets/missing.js": 404} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest("GET", path, nil))
+		if rec.Code != want {
+			t.Fatalf("%s: %d, expected %d", path, rec.Code, want)
+		}
 	}
 }

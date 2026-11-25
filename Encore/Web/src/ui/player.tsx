@@ -3,7 +3,8 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { back, clock, go, prefs, setPref } from "../lib/core";
 import { art, encore, meta as loadMeta, NeedsCode, relayClose, relaySession, type Decision, type Meta, type TrackInfo, type Video } from "../lib/api";
-import { flush, recordProgress } from "../lib/library";
+import { flush, profile, recordProgress } from "../lib/library";
+import { reportEnd, reportPlay, reportProblem, reportProgress, type PlayProgress } from "../lib/report";
 import { chosenSource, claim, lighter, prepare, sessionRequest, used, useNativeHls, type Candidate, type Prepared } from "../lib/play";
 import { SourcesSheet } from "./sources";
 import { lang2, languageName } from "../lib/lang";
@@ -37,6 +38,8 @@ function Preview({ session, at }: { session: string; at: number }) {
   }, [session, grid]);
   return <div class="preview">{src && <img src={src} alt="" class={ready ? "in" : ""} onLoad={() => setReady(true)} draggable={false} />}</div>;
 }
+
+const playMode = (d: Decision) => (d.converted ? "converted" : d.proxied ? "proxied" : d.mode);
 
 type Segment = { kind: "intro" | "recap" | "credits"; start: number; end: number };
 type HlsType = import("hls.js").default;
@@ -86,6 +89,7 @@ export function Player({ type, id, videoId }: { type: string; id: string; videoI
       return;
     }
     recovered.current = Date.now();
+    track.current.errors++;
     setSwitching(true);
     const next = await relaySession(sessionRequest(p.candidate, at)).catch(() => null);
     if (!next || (next.mode !== "remux" && next.mode !== "direct") || !attachRef.current) {
@@ -104,6 +108,14 @@ export function Player({ type, id, videoId }: { type: string; id: string; videoI
   const stalls = useRef<{ at: number[]; since: number; offered: boolean }>({ at: [], since: 0, offered: false });
   const live = useRef({ startMs: 0, seekMs: 0, stalls: 0, seekAt: 0, mounted: performance.now(), prepared: null as Prepared | null, lastSaved: 0, warmedNext: false });
   const hideTimer = useRef<number>();
+  // This play, as reported to the server's owner: time actually spent playing, stalls, seeks.
+  const track = useRef({ id: "", watched: 0, last: 0, seeks: 0, seekTotal: 0, switches: 0, errors: 0 });
+  const progress = (problem?: string): PlayProgress => {
+    const t = track.current, p = live.current.prepared, d = p?.decision;
+    return { id: t.id, watched: Math.round(t.watched), stalls: live.current.stalls, errors: t.errors, switches: t.switches,
+      seekMs: t.seeks ? Math.round(t.seekTotal / t.seeks) : undefined, mode: d ? playMode(d) : undefined, session: d?.id,
+      quality: p?.candidate?.quality, source: p?.candidate?.label, problem };
+  };
 
   const list = meta ? episodes(meta) : [];
   const next = episode ? list[list.findIndex((v) => v.id === episode.id) + 1] : undefined;
@@ -142,6 +154,7 @@ export function Player({ type, id, videoId }: { type: string; id: string; videoI
     setPhase("loading"); setProblem(""); setStatus("Finding the best source…"); setSegments([]); setSkipped([]); setCount(null); setDeclined(false);
     setTime(0); setDuration(0); setBuffered(0); setNeedsSound(false);
     setDecision(null); setSubKey(null); setTracksOpen(false); subChosen.current = false;
+    track.current = { id: "", watched: 0, last: 0, seeks: 0, seekTotal: 0, switches: 0, errors: 0 };
     setStruggling(null); stalls.current = { at: [], since: 0, offered: false };
     holder.current?.appendChild(video);
 
@@ -207,6 +220,7 @@ export function Player({ type, id, videoId }: { type: string; id: string; videoI
 
     return () => {
       alive = false;
+      if (track.current.id) reportEnd(progress());
       save(true);
       flush();
       hls?.destroy();
@@ -225,10 +239,27 @@ export function Player({ type, id, videoId }: { type: string; id: string; videoI
       on("timeupdate", () => {
         setTime(video.currentTime);
         if (!video.paused && video.readyState >= 3) {
-          if (live.current.startMs === 0) { live.current.startMs = performance.now() - live.current.mounted; setPhase("playing"); reveal(); }
-          if (live.current.seekAt) { live.current.seekMs = performance.now() - live.current.seekAt; live.current.seekAt = 0; }
+          if (live.current.startMs === 0) {
+            live.current.startMs = performance.now() - live.current.mounted; setPhase("playing"); reveal();
+            const { meta, episode } = state.current, p = live.current.prepared;
+            if (meta && p?.decision) {
+              track.current.id = crypto.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2);
+              track.current.last = video.currentTime;
+              reportPlay({ id: track.current.id, title: meta.name, episode: episode ? [episodeTag(episode), videoTitle(episode)].filter(Boolean).join(" · ") : undefined,
+                type: meta.type, metaId: meta.id, profile: profile.value?.name, quality: p.candidate?.quality, source: p.candidate?.label,
+                mode: playMode(p.decision), session: p.decision.id, startMs: Math.round(live.current.startMs) });
+            }
+          }
+          if (live.current.seekAt) {
+            live.current.seekMs = performance.now() - live.current.seekAt; live.current.seekAt = 0;
+            track.current.seeks++; track.current.seekTotal += live.current.seekMs;
+          }
+          // Time spent playing: small steps of the clock while it runs (a seek is a jump, not watching).
+          const step = video.currentTime - track.current.last;
+          if (step > 0 && step < 2) track.current.watched += step;
           setWaiting(false);
         }
+        track.current.last = video.currentTime;
         save();
         // Near the end: have the next episode ready so Up Next starts at once.
         const { meta } = state.current;
@@ -360,18 +391,19 @@ export function Player({ type, id, videoId }: { type: string; id: string; videoI
     if (!o?.forced) setPref("subtitles", o ? o.lang || "off" : "off");
   };
 
-  const switchAudio = async (track: TrackInfo) => {
+  const switchAudio = async (audioTrack: TrackInfo) => {
     const p = live.current.prepared, d = decision;
-    if (!p?.candidate || !d || d.audio?.index === track.index || !attachRef.current || switching) return;
+    if (!p?.candidate || !d || d.audio?.index === audioTrack.index || !attachRef.current || switching) return;
     const at = video.currentTime, resume = !video.paused;
     setSwitching(true); setTracksOpen(false);
-    const next = await relaySession(sessionRequest(p.candidate, at, { audio: track.index }));
+    const next = await relaySession(sessionRequest(p.candidate, at, { audio: audioTrack.index }));
     if (next.mode !== "remux" || !attachRef.current) {
       setSwitching(false); setNote("That audio track couldn't be played."); setTimeout(() => setNote(null), 3000);
       return;
     }
     await attachRef.current(next, at);
     live.current.prepared = { ...p, decision: next };
+    track.current.switches++;
     if (d.id) relayClose(d.id);
     if (resume) video.play().catch(() => {});
     setSwitching(false);
@@ -396,6 +428,7 @@ export function Player({ type, id, videoId }: { type: string; id: string; videoI
       if (next.mode !== "direct" && next.mode !== "remux") continue;
       await attachRef.current(next, at);
       live.current.prepared = { ...p, decision: next, candidate };
+      track.current.switches++;
       if (old?.id) relayClose(old.id);
       video.play().catch(() => {});
       stalls.current = { at: [], since: 0, offered: false };
@@ -407,6 +440,21 @@ export function Player({ type, id, videoId }: { type: string; id: string; videoI
   const audioTracks = decision?.mode === "remux" ? decision.audioTracks || [] : [];
   const hasTracks = !!decision;
   const [picking, setPicking] = useState(false);
+
+  // While playing, a word to the server every half minute; when left (or the page closes), a last one.
+  useEffect(() => {
+    if (phase !== "playing") return;
+    const t = setInterval(() => { if (track.current.id) reportProgress(progress()); }, 30_000);
+    const leave = () => { if (track.current.id) reportEnd(progress()); };
+    addEventListener("pagehide", leave);
+    return () => { clearInterval(t); removeEventListener("pagehide", leave); };
+  }, [phase]);
+  // What couldn't play is worth knowing too.
+  useEffect(() => {
+    if (phase !== "problem" || !problem) return;
+    if (track.current.id) reportProgress(progress(problem));
+    else reportProblem(`${meta?.name || "A title"}${episode ? " " + (episodeTag(episode) || "") : ""}: ${problem}`);
+  }, [phase, problem]);
 
   const toggle = () => { if (video.paused) video.play().catch(() => {}); else video.pause(); };
   const seekBy = (d: number) => { video.currentTime = Math.max(0, Math.min((video.duration || 0) - 1, video.currentTime + d)); reveal(); };

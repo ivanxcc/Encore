@@ -6,10 +6,14 @@ import { HomePage } from "./home";
 import { TitlePage } from "./detail";
 import { ListPage, SearchPage } from "./browse";
 import { SettingsPage } from "./settings";
+import { AdminPage } from "./admin";
+import { admin, freshAddons, installAddons, type Addon } from "../lib/api";
+import { reportProfiles } from "../lib/report";
+import { relayToken } from "../lib/core";
 import { LinkRelay, SignIn, WhoIsWatching } from "./gates";
 import { Player } from "./player";
 import { Avatar, Link, MenuHost } from "./shared";
-import { Close, Exit, Gear, Home, Search, Stack, Swap } from "./icons";
+import { Chart, Check, Close, Exit, Gear, Home, Search, Stack, Swap } from "./icons";
 
 function Nav() {
   const [menu, setMenu] = useState<{ right: number } | null>(null);
@@ -40,6 +44,7 @@ function Nav() {
             </button>
             <hr />
             <button role="menuitem" onClick={() => { setMenu(null); go("/settings"); }}><Gear />Settings</button>
+            {relayToken.value?.admin && <button role="menuitem" onClick={() => { setMenu(null); go("/admin"); }}><Chart />Admin</button>}
             {profiles.value.length > 1 && <button role="menuitem" onClick={() => { setMenu(null); profileId.value = null; }}><Swap />Switch Profile</button>}
             <button role="menuitem" onClick={() => { setMenu(null); auth.value = null; }}><Exit />Sign Out</button>
           </div>
@@ -90,6 +95,66 @@ const ShareGlyph = () => (
     <path d="M12 3v12M8 7l4-4 4 4M6 11H5v10h14V11h-1" />
   </svg>
 );
+
+/** Once a visit: the profiles in this household, for the server owner's People page. */
+let profilesSent = false;
+function Reports() {
+  useEffect(() => {
+    if (profilesSent || !relayToken.value) return;
+    profilesSent = true;
+    reportProfiles(profiles.value.map((p) => ({ name: p.name, avatar: p.avatar, kids: !!p.isKids, pin: !!p.pinHash })));
+  }, []);
+  return null;
+}
+
+/** For someone invited, once: the add-ons the server's owner offers, to add in one tap. */
+function StarterOffer() {
+  const [offer, setOffer] = useState<{ addons: Addon[]; from?: string } | null>(null);
+  const [chosen, setChosen] = useState<Set<string>>(new Set());
+  const [busy, setBusy] = useState(false);
+  const key = "encore.starter." + (auth.value?.email || "");
+  useEffect(() => {
+    if (relayToken.value?.admin || !auth.value) return;
+    try { if (localStorage.getItem(key)) return; } catch { return; }
+    let live = true;
+    Promise.all([admin.starter(), freshAddons()]).then(([s, mine]) => {
+      const have = new Set(mine.map((a) => a.transportUrl));
+      const missing = s.addons.filter((a) => a && a.transportUrl && !have.has(a.transportUrl));
+      if (!live) return;
+      if (!missing.length) { try { localStorage.setItem(key, "done"); } catch {} return; }
+      setChosen(new Set(missing.map((a) => a.transportUrl)));
+      setOffer({ addons: missing, from: s.from });
+    }, () => {});
+    return () => { live = false; };
+  }, []);
+  if (!offer) return null;
+  const done = () => { try { localStorage.setItem(key, "done"); } catch {} setOffer(null); };
+  const add = async () => {
+    setBusy(true);
+    try { await installAddons(offer.addons.filter((a) => chosen.has(a.transportUrl))); done(); location.reload(); } catch { setBusy(false); }
+  };
+  return (
+    <>
+      <div class="scrim dim" />
+      <div class="sources glass starter" role="dialog" aria-label="Add-ons">
+        <div class="sources-head"><div><b>Set Up Your Add-ons</b><small>{offer.from ? `${offer.from} offers these` : "This server's owner offers these"} so you can find and play everything here.</small></div></div>
+        <div class="sources-list">
+          {offer.addons.map((a) => (
+            <label key={a.transportUrl} class="setting check-row">
+              <input type="checkbox" checked={chosen.has(a.transportUrl)} onChange={() => { const n = new Set(chosen); if (n.has(a.transportUrl)) n.delete(a.transportUrl); else n.add(a.transportUrl); setChosen(n); }} />
+              <div class="words"><b>{a.manifest.name}</b><small>{(a.manifest as { description?: string }).description?.slice(0, 110) || ""}</small></div>
+            </label>
+          ))}
+          <p class="quiet note">They're added to your Stremio account, so every Stremio app sees them too. You can remove them there any time.</p>
+        </div>
+        <div class="actions sheet-actions">
+          <button class="pill secondary" onClick={done}>Not Now</button>
+          <button class="pill primary" disabled={busy || !chosen.size} onClick={add}>{busy ? "Adding…" : <><Check />Add {chosen.size} Add-on{chosen.size === 1 ? "" : "s"}</>}</button>
+        </div>
+      </div>
+    </>
+  );
+}
 
 /** The server's owner has paused this account: said plainly, with a way to check again. */
 function PausedGate({ onRetry }: { onRetry: () => void }) {
@@ -181,6 +246,8 @@ export function App() {
   else if (parts[0] === "search") page = <SearchPage />;
   else if (parts[0] === "list") page = <ListPage />;
   else if (parts[0] === "settings") page = <SettingsPage />;
+  else if (parts[0] === "admin") page = <AdminPage key={parts.join("/")} tab={new URLSearchParams(query || "").get("tab") || undefined} email={parts[1] === "people" ? parts[2] : undefined} />;
   else { page = <HomePage />; if (parts.length) queueMicrotask(() => go("/", { replace: true })); }
-  return <>{parts[0] !== "title" && <Nav />}{page}<MenuHost />{parts[0] !== "title" && <InstallHint />}</>;
+  const bare = parts[0] === "title" || (parts[0] === "admin" && parts[1] === "people");
+  return <>{!bare && <Nav />}{page}<MenuHost />{!bare && <InstallHint />}<Reports /><StarterOffer /></>;
 }

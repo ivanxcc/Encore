@@ -64,6 +64,16 @@ func (r *Relay) codeSignupOpen() bool {
 	return true
 }
 
+func (r *Relay) mayDirect(sub string) bool {
+	if !strings.Contains(sub, "@") {
+		return true
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	p := r.owners[sub]
+	return p.Admin || p.Direct
+}
+
 func (r *Relay) mayConvert(sub string) bool {
 	if !strings.Contains(sub, "@") {
 		return true
@@ -111,6 +121,11 @@ func (r *Relay) endStreamsLocked(sub string) {
 			delete(r.sessions, id)
 		}
 	}
+	for id, p := range r.through {
+		if p.owner == sub {
+			delete(r.through, id)
+		}
+	}
 }
 
 // seen notes when an account last signed in or started something (saved at most every few minutes).
@@ -135,9 +150,11 @@ func (r *Relay) handleChangePerson(w http.ResponseWriter, req *http.Request) {
 	me := tokenSubject(strings.TrimPrefix(req.Header.Get("Authorization"), "Bearer "))
 	who := strings.ToLower(req.PathValue("email"))
 	var body struct {
-		Paused  *bool `json:"paused"`
-		Streams *int  `json:"streams"`
-		Convert *bool `json:"convert"`
+		Paused  *bool   `json:"paused"`
+		Streams *int    `json:"streams"`
+		Convert *bool   `json:"convert"`
+		Direct  *bool   `json:"direct"`
+		Name    *string `json:"name"`
 	}
 	if err := readJSON(w, req, &body); err != nil {
 		return
@@ -161,6 +178,15 @@ func (r *Relay) handleChangePerson(w http.ResponseWriter, req *http.Request) {
 	}
 	if body.Convert != nil {
 		p.Convert = *body.Convert
+	}
+	if body.Direct != nil {
+		p.Direct = *body.Direct
+	}
+	if body.Name != nil {
+		p.Name = strings.TrimSpace(*body.Name)
+		if len(p.Name) > 60 {
+			p.Name = p.Name[:60]
+		}
 	}
 	r.owners[who] = p
 	r.saveOwners()

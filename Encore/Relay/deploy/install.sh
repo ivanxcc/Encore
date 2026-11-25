@@ -13,7 +13,8 @@
 #
 # Everything lives in /opt/encore-relay. Settings and secrets: /opt/encore-relay/relay.env.
 #
-# Options (environment variables): ENCORE_CLOUD_URL (default: Encore's), RELAY_HOST (Caddy mode).
+# Options (environment variables): ENCORE_CLOUD_URL (your Encore Cloud's address; kept from the last
+# install when not given), RELAY_HOST (Caddy mode).
 
 # The whole script is one function, run on the last line: bash reads it completely before anything
 # runs, so a command that reads standard input can't swallow the rest of a piped script.
@@ -22,9 +23,12 @@ set -Eeuo pipefail
 trap 'echo; echo "!! Stopped at line $LINENO: $BASH_COMMAND"; echo "   Run it again, or send this message."; exit 1' ERR
 
 REPO="${RELAY_REPO:-ivanxcc/Encore}"
-CLOUD="${ENCORE_CLOUD_URL:-https://encore-cloud.ivanchen35189.workers.dev}"
 DIR=/opt/encore-relay
 ENV="$DIR/relay.env"
+# Encore Cloud's address: given, or the one this server already has. Without one, Encore Web signs in
+# with email and password only (no QR sign-in, no profiles from the apps).
+CLOUD="${ENCORE_CLOUD_URL:-}"
+if [ -z "$CLOUD" ] && [ -f "$ENV" ]; then CLOUD="$(sed -n 's/^ENCORE_CLOUD_URL=//p' "$ENV")"; fi
 ACTION="${1:-install}"
 
 [ "$(id -u)" = 0 ] || { echo "Run this with sudo."; exit 1; }

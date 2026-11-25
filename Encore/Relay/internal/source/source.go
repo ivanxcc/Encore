@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -67,6 +68,24 @@ func Open(ctx context.Context, raw string, headers map[string]string, allowPriva
 func Client(allowPrivate bool) *http.Client {
 	return &http.Client{Transport: transport(allowPrivate), Timeout: 20 * time.Second}
 }
+
+// StreamClient is Client without an overall time limit, for passing a file on as it plays.
+func StreamClient(allowPrivate bool) *http.Client {
+	streamOnce.Do(func() {
+		streamClients[0] = &http.Client{Transport: transport(false)}
+		streamClients[1] = &http.Client{Transport: transport(true)}
+	})
+	if allowPrivate {
+		return streamClients[1]
+	}
+	return streamClients[0]
+}
+
+// One of each, so a file passed on reuses its connections across a player's many range requests.
+var (
+	streamOnce    sync.Once
+	streamClients [2]*http.Client
+)
 
 func transport(allowPrivate bool) *http.Transport {
 	dialer := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}

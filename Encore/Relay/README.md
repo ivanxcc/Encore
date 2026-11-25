@@ -40,6 +40,13 @@ GET    /v1/people             who can use the relay, their limits, last seen, wa
 PATCH  /v1/people/{email}     {paused?, streams?, convert?}: pause someone (their streams end at once) or
                               change their limits (owners only)
 DELETE /v1/people/{email}     take someone off the relay; their tokens stop working at once (owners only)
+GET    /v1/admin/overview     watching now, the machine (load, memory, data), traffic, problems (owners only)
+GET    /v1/admin/people/{e}   one person: limits, profiles, devices, plays, summary, months (owners only)
+DELETE /v1/admin/plays/{id}   stop a stream someone is watching (owners only)
+GET    /v1/invites            invitations made, open or used or withdrawn; DELETE /v1/invites/{id} withdraws
+GET    /v1/starter            add-ons the owner offers people who join (PUT to set: owners only)
+POST   /v1/report             a player's report about its own play (started, progress, left) or its profiles
+GET    /v1/p/{id}             a file played as it is, passed on through the relay
 POST   /v1/session            {url, headers?, start?, audio?, language?, convert?, preview?,
                                caps: {video: [...], audio: [...], stream?: [...]}}
                               Authorization: Bearer <token>     -> a decision (see above), with the playlist path
@@ -69,6 +76,12 @@ After that the code links no one new (`RELAY_CODE_SIGNUP=on` in `relay.env` reop
 invitation. Invited people watch, up to 2 streams at once by default, without converting; the owner can
 change both, or pause them.
 
+**Activity.** Players report their own plays (title, profile, device, time to the first frame, time
+watched, stalls, errors); the relay keeps them in `RELAY_DATA/activity` only, a file of events a month.
+After 90 days a play's detail is folded into monthly totals per person. Removing someone deletes their
+activity. People who were invited are told in Settings that the owner can see this. For them, files a
+browser plays as they are pass through the relay (`/v1/p/`), so sources only ever see the server.
+
 **Preview.** A session asked for with `preview: true` (a title page has been open a moment) makes only
 two segments, then lets go of the source; the first segment a player asks for lifts the limit. The web
 app readies only sources marked ready now, one title at a time, and closes the last one when another
@@ -93,6 +106,10 @@ On Ubuntu or Debian (Oracle Cloud free tier works, x86 or Arm):
 ```sh
 curl -fsSL https://github.com/ivanxcc/Encore/releases/download/relay-latest/install.sh | sudo bash
 ```
+
+The first time, give it your Encore Cloud's address so Encore Web can use QR sign-in and the apps'
+profiles: `curl … | sudo ENCORE_CLOUD_URL=https://<your worker> bash`. Updates keep the address already
+set.
 
 It fits in beside what the server already runs, and keeps everything in `/opt/encore-relay`:
 

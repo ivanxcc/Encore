@@ -76,6 +76,13 @@ type Relay struct {
 	toolsOnce sync.Once
 	tools     tools
 	stop      chan struct{}
+
+	started  time.Time
+	through  map[string]*passthrough  // files played as they are, through the relay
+	invites  map[string]*inviteRecord // invitations made, by id
+	starter  []json.RawMessage        // add-ons offered to people who join
+	activity *activity                // what was watched, how well it played
+	meter    meter                    // traffic and problems since the relay started
 }
 
 type Stats struct {
@@ -98,8 +105,20 @@ const (
 
 func NewRelay(cfg Config) *Relay {
 	r := &Relay{cfg: cfg, sessions: map[string]*hls.Session{}, attempts: map[string][]time.Time{},
-		owners: map[string]person{}, used: map[string]int64{}, indexes: map[string]indexed{}, stop: make(chan struct{})}
+		owners: map[string]person{}, used: map[string]int64{}, indexes: map[string]indexed{}, stop: make(chan struct{}),
+		started: time.Now(), through: map[string]*passthrough{}, invites: map[string]*inviteRecord{}}
 	r.loadOwners()
+	r.activity = openActivity(cfg.DataDir)
+	// Someone removed earlier leaves lines in the month files; they aren't read back.
+	seen := map[string]bool{}
+	for _, p := range r.activity.plays {
+		seen[p.Who] = true
+	}
+	for who := range seen {
+		if _, ok := r.owners[who]; !ok && strings.Contains(who, "@") {
+			r.activity.forget(who)
+		}
+	}
 	go r.reap()
 	return r
 }
@@ -117,11 +136,18 @@ func (r *Relay) Close() {
 func (r *Relay) reap() {
 	t := time.NewTicker(30 * time.Second)
 	defer t.Stop()
+	lastPrune := time.Now()
 	for {
 		select {
 		case <-r.stop:
 			return
 		case <-t.C:
+			if time.Since(lastPrune) > 24*time.Hour {
+				lastPrune = time.Now()
+				r.activity.mu.Lock()
+				r.activity.prune(lastPrune)
+				r.activity.mu.Unlock()
+			}
 			r.mu.Lock()
 			for id, s := range r.sessions {
 				if s.Idle() > idleLimit {
@@ -182,6 +208,8 @@ type Decision struct {
 	Message string `json:"message,omitempty"`
 	// Convertible: unsupported as it is, but this relay can re-encode it (ask again with convert).
 	Convertible bool `json:"convertible,omitempty"`
+	// Proxied: a file played as it is, passed on by the relay.
+	Proxied bool `json:"proxied,omitempty"`
 	// Converted: the video is being re-encoded as H.264 for this browser.
 	Converted bool    `json:"converted,omitempty"`
 	Reason    string  `json:"reason,omitempty"`
@@ -498,6 +526,11 @@ func (r *Relay) decideOther(ctx context.Context, req Request, src *source.HTTP, 
 	if videoOK && (audioOK || !sawAudio) {
 		r.count(func(s *Stats) { s.Direct++ })
 		d.Mode, d.URL = "direct", req.URL
+		// For people invited, through the relay unless the owner lets them play from the source.
+		if !r.mayDirect(req.who) {
+			id := r.addPassthrough(src.URL(), req.Headers, req.who)
+			d.URL, d.ID, d.Proxied = "/v1/p/"+id, id, true
+		}
 		return d
 	}
 	return unsupported(r, d, "mp4-codecs", "This MP4's codecs need converting for this browser.")
@@ -629,6 +662,15 @@ func (r *Relay) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/s/{id}/subs/{track}", r.handleCues)
 	mux.HandleFunc("GET /v1/s/{id}/thumb", r.handleThumb)
 	mux.HandleFunc("GET /v1/subtitle", r.authed(r.handleSubtitle))
+	mux.HandleFunc("GET /v1/p/{id}", r.handlePassthrough)
+	mux.HandleFunc("POST /v1/report", r.handleReport)
+	mux.HandleFunc("GET /v1/starter", r.authed(r.handleGetStarter))
+	mux.HandleFunc("PUT /v1/starter", r.adminOnly(r.handlePutStarter))
+	mux.HandleFunc("GET /v1/admin/overview", r.adminOnly(r.handleOverview))
+	mux.HandleFunc("GET /v1/admin/people/{email}", r.adminOnly(r.handlePerson))
+	mux.HandleFunc("DELETE /v1/admin/plays/{id}", r.adminOnly(r.handleEndPlay))
+	mux.HandleFunc("GET /v1/invites", r.adminOnly(r.handleInvites))
+	mux.HandleFunc("DELETE /v1/invites/{id}", r.adminOnly(r.handleRevokeInvite))
 	mux.HandleFunc("POST /v1/lab/token", r.handleLabToken)
 	mux.HandleFunc("POST /v1/auth", r.handleAuth)
 	mux.HandleFunc("POST /v1/invite", r.adminOnly(r.handleInvite))
@@ -705,6 +747,7 @@ func (r *Relay) handleSession(w http.ResponseWriter, req *http.Request) {
 	r.seen(body.who)
 	d, err := r.Decide(ctx, body)
 	if err != nil {
+		r.meter.problem(body.who, "Couldn't open a source: "+err.Error())
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 		return
 	}
@@ -771,6 +814,7 @@ func (r *Relay) handleSegment(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	r.count(func(st *Stats) { st.Segments++ })
+	w = counting{w, &r.meter}
 	w.Header().Set("Content-Type", "video/mp2t")
 	w.Header().Set("Cache-Control", "private, max-age=3600")
 	w.Header().Set("Server-Timing", fmt.Sprintf("prepare;dur=%d", took.Milliseconds()))
@@ -907,11 +951,22 @@ type person struct {
 	Convert bool `json:"convert,omitempty"`
 	// LastSeen: when they last signed in or started something (Unix seconds).
 	LastSeen int64 `json:"lastSeen,omitempty"`
+	// Name: what the owner calls them (from the invitation, or set later).
+	Name string `json:"name,omitempty"`
+	// Direct: files the browser plays as they are may come straight from the source, not through the
+	// relay (always, for whoever manages it).
+	Direct bool `json:"direct,omitempty"`
+	// Profiles: the profiles in their household, as their app last reported them.
+	Profiles []profileInfo `json:"profiles,omitempty"`
+	// Devices: the devices they've used ("iPad · Safari"), with when each was last seen.
+	Devices map[string]int64 `json:"devices,omitempty"`
 }
 
 type peopleFile struct {
-	People map[string]person `json:"people"`
-	Used   map[string]int64  `json:"usedInvites,omitempty"`
+	People  map[string]person        `json:"people"`
+	Used    map[string]int64         `json:"usedInvites,omitempty"`
+	Invites map[string]*inviteRecord `json:"invites,omitempty"`
+	Starter []json.RawMessage        `json:"starterAddons,omitempty"`
 }
 
 func (r *Relay) loadOwners() {
@@ -939,6 +994,10 @@ func (r *Relay) loadOwners() {
 		for id, exp := range f.Used {
 			r.used[id] = exp
 		}
+		for id, inv := range f.Invites {
+			r.invites[id] = inv
+		}
+		r.starter = f.Starter
 	}
 }
 
@@ -954,7 +1013,12 @@ func (r *Relay) saveOwners() {
 			delete(r.used, id)
 		}
 	}
-	raw, _ := json.MarshalIndent(peopleFile{People: r.owners, Used: r.used}, "", "  ")
+	for id, inv := range r.invites { // closed invitations are kept a month, for the list
+		if (inv.UsedBy != "" || inv.Revoked || inv.Expires < now) && now-max(inv.Expires, inv.UsedAt) > 30*86400 {
+			delete(r.invites, id)
+		}
+	}
+	raw, _ := json.MarshalIndent(peopleFile{People: r.owners, Used: r.used, Invites: r.invites, Starter: r.starter}, "", "  ")
 	os.MkdirAll(r.cfg.DataDir, 0o700)
 	os.WriteFile(path+".tmp", raw, 0o600)
 	os.Rename(path+".tmp", path)
@@ -1024,9 +1088,16 @@ func (r *Relay) handleAuth(w http.ResponseWriter, req *http.Request) {
 		id, from, exp, ok := r.readInvite(body.Invite)
 		r.mu.Lock()
 		_, taken := r.used[id]
-		if ok && !taken {
+		record := r.invites[id]
+		withdrawn := record != nil && record.Revoked
+		if ok && !taken && !withdrawn {
 			r.used[id] = exp
-			r.owners[email] = person{InvitedBy: from, Since: time.Now().Unix()}
+			p := person{InvitedBy: from, Since: time.Now().Unix()}
+			if record != nil {
+				p.Name = record.Label
+				record.UsedBy, record.UsedAt = email, time.Now().Unix()
+			}
+			r.owners[email] = p
 			r.saveOwners()
 			known = true
 		}
@@ -1035,6 +1106,8 @@ func (r *Relay) handleAuth(w http.ResponseWriter, req *http.Request) {
 			msg := "This invitation has expired. Ask for a new one."
 			if taken {
 				msg = "This invitation has already been used. Ask for a new one."
+			} else if withdrawn {
+				msg = "This invitation was withdrawn. Ask for a new one."
 			}
 			writeJSON(w, http.StatusForbidden, map[string]any{"error": msg, "needsCode": true})
 			return
@@ -1078,9 +1151,22 @@ func (r *Relay) inviteKey() string { return r.cfg.Secret + "|invite" }
 // handleInvite makes a link that lets one more Stremio account use this relay, once, within 7 days.
 func (r *Relay) handleInvite(w http.ResponseWriter, req *http.Request) {
 	from := tokenSubject(strings.TrimPrefix(req.Header.Get("Authorization"), "Bearer "))
+	var body struct {
+		Label string `json:"label"`
+	}
+	json.NewDecoder(http.MaxBytesReader(w, req.Body, 4096)).Decode(&body)
+	label := strings.TrimSpace(body.Label)
+	if len(label) > 60 {
+		label = label[:60]
+	}
 	expires := time.Now().Add(7 * 24 * time.Hour)
-	invite := signToken(r.inviteKey(), "invite:"+randomID()[:16]+":"+from, expires)
-	writeJSON(w, 200, map[string]any{"invite": invite, "expiresAt": expires.Unix()})
+	id := randomID()[:16]
+	invite := signToken(r.inviteKey(), "invite:"+id+":"+from, expires)
+	r.mu.Lock()
+	r.invites[id] = &inviteRecord{ID: id, Label: label, By: from, Link: invite, Created: time.Now().Unix(), Expires: expires.Unix()}
+	r.saveOwners()
+	r.mu.Unlock()
+	writeJSON(w, 200, map[string]any{"invite": invite, "expiresAt": expires.Unix(), "id": id})
 }
 
 func (r *Relay) readInvite(invite string) (id, from string, expires int64, ok bool) {
@@ -1130,6 +1216,7 @@ func (r *Relay) handlePeople(w http.ResponseWriter, req *http.Request) {
 		Convert   bool   `json:"convert"`
 		LastSeen  int64  `json:"lastSeen,omitempty"`
 		Watching  int    `json:"watching"`
+		Name      string `json:"name,omitempty"`
 	}
 	list := []row{}
 	for e, p := range r.owners {
@@ -1137,7 +1224,7 @@ func (r *Relay) handlePeople(w http.ResponseWriter, req *http.Request) {
 		if limit == 0 && !p.Admin {
 			limit = defaultStreams
 		}
-		list = append(list, row{e, p.Admin, p.InvitedBy, p.Since, e == me, p.Paused, limit, p.Admin || p.Convert, p.LastSeen, r.watchingLocked(e)})
+		list = append(list, row{e, p.Admin, p.InvitedBy, p.Since, e == me, p.Paused, limit, p.Admin || p.Convert, p.LastSeen, r.watchingLocked(e), p.Name})
 	}
 	sort.Slice(list, func(i, j int) bool {
 		if list[i].Admin != list[j].Admin {
@@ -1165,6 +1252,7 @@ func (r *Relay) handleRemovePerson(w http.ResponseWriter, req *http.Request) {
 	delete(r.owners, who)
 	r.saveOwners()
 	r.endStreamsLocked(who)
+	go r.activity.forget(who)
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
@@ -1207,7 +1295,9 @@ func (r *Relay) handleApp(w http.ResponseWriter, req *http.Request) {
 	}
 	raw, err := fs.ReadFile(webFiles, "web/"+name)
 	if err != nil {
-		if strings.HasPrefix(name, "assets/") || strings.Contains(filepath.Base(name), ".") {
+		// A missing file is a 404 (an asset, or a file at the top like /robots.txt); any other address
+		// is a page of the app, even with a dot in it (/admin/people/someone@example.com).
+		if strings.HasPrefix(name, "assets/") || (!strings.Contains(name, "/") && strings.Contains(name, ".")) {
 			http.NotFound(w, req)
 			return
 		}
